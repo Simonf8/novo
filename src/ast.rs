@@ -75,6 +75,10 @@ pub enum Statement {
     Return {
         value: Option<Expression>,
     },
+    Save {
+        data: Expression,
+        destination: Expression,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

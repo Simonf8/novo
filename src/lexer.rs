@@ -152,7 +152,7 @@ impl Lexer {
             "show" | "if" | "otherwise" | "repeat" | "times" | "for" | "in" | "while" | 
             "function" | "return" | "true" | "false" | "record" | "object" | "where" | 
             "select" | "average" | "sum" | "min" | "max" | "task" | "run" | "parallel" | "use" | "python" | "as" | "and" | "or" | "not" | "starts_with" | "ends_with" |
-            "together" | "read" | "json" | "get" => {
+            "together" | "read" | "json" | "get" | "save" | "to" => {
                 TokenType::Keyword(val)
             },
             _ => TokenType::Identifier(val),

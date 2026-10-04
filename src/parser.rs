@@ -88,6 +88,7 @@ impl Parser {
             TokenType::Keyword(k) if k == "repeat" => self.parse_repeat_statement(),
             TokenType::Keyword(k) if k == "function" => self.parse_function_declaration(),
             TokenType::Keyword(k) if k == "return" => self.parse_return_statement(),
+            TokenType::Keyword(k) if k == "save" => self.parse_save_statement(),
             TokenType::Identifier(_) => self.parse_assignment_or_expression(),
             _ => self.error(&format!("Unexpected token {:?}", token.token_type)),
         }
@@ -130,6 +131,14 @@ impl Parser {
         self.expect(&TokenType::Keyword("show".to_string()))?;
         let expr = self.parse_expression()?;
         Ok(Statement::Show { value: expr })
+    }
+
+    fn parse_save_statement(&mut self) -> Result<Statement, String> {
+        self.expect(&TokenType::Keyword("save".to_string()))?;
+        let data = self.parse_expression()?;
+        self.expect(&TokenType::Keyword("to".to_string()))?;
+        let destination = self.parse_expression()?;
+        Ok(Statement::Save { data, destination })
     }
 
     fn parse_if_statement(&mut self) -> Result<Statement, String> {

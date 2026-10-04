@@ -1,0 +1,10 @@
+use python time
+
+start_time = time.time()
+
+lines = (read "in.txt").split("\n")
+filtered = lines where (it.contains("error"))
+save filtered to "out.txt"
+
+end_time = time.time()
+show end_time - start_time

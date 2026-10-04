@@ -1,0 +1,11 @@
+use python numpy
+use python time
+
+start_time = time.time()
+
+matrix = numpy.random.rand(1000, 1000)
+scaled = matrix * 5.0
+mean_val = numpy.mean(scaled)
+
+end_time = time.time()
+show end_time - start_time

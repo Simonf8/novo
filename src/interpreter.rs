@@ -17,6 +17,7 @@ pub enum Value {
     },
     NativeFunction {
         name: String,
+        bound_target: Option<Box<Value>>,
     },
     PythonObject(PyObject),
     Null,
@@ -144,6 +145,33 @@ fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
     Ok(Value::PythonObject(obj))
 }
 
+fn python_operator_fallback(l: &Value, r: &Value, op: &str) -> Result<Value, String> {
+    Python::with_gil(|py| -> Result<Value, String> {
+        let py_l = value_to_py(py, l)?;
+        let py_r = value_to_py(py, r)?;
+        let op_module = PyModule::import(py, "operator").map_err(|e| e.to_string())?;
+        
+        let py_func_name = match op {
+            "+" => "add",
+            "-" => "sub",
+            "*" => "mul",
+            "/" => "truediv",
+            "%" => "mod",
+            "==" => "eq",
+            "!=" => "ne",
+            ">" => "gt",
+            "<" => "lt",
+            ">=" => "ge",
+            "<=" => "le",
+            _ => return Err(format!("Unsupported operator for Python fallback: {}", op))
+        };
+        
+        let func = op_module.getattr(py_func_name).map_err(|e| e.to_string())?;
+        let py_result = func.call1((py_l, py_r)).map_err(|e| e.to_string())?;
+        py_to_value(py, py_result.into_py(py))
+    })
+}
+
 #[derive(Clone)]
 pub struct Environment {
     pub scopes: Vec<std::collections::HashMap<String, Value>>,
@@ -210,7 +238,8 @@ impl Interpreter {
         let mut global_env = Environment::new();
         
         global_env.define("str".to_string(), Value::NativeFunction { 
-            name: "str".to_string() 
+            name: "str".to_string(),
+            bound_target: None,
         });
         
         for stmt in &program.statements {
@@ -254,8 +283,12 @@ impl Interpreter {
                     Value::Integer(i) => i,
                     _ => return Err(format!("Repeat count must be an integer, got {:?}", count_val)),
                 };
-                for _ in 0..c {
-                    if let ExecResult::Return(v) = self.execute_block(body, env)? {
+                for i in 0..c {
+                    env.push_scope();
+                    env.define("it".to_string(), Value::Integer(i));
+                    let res = self.execute_block_no_scope(body, env)?;
+                    env.pop_scope();
+                    if let ExecResult::Return(v) = res {
                         return Ok(ExecResult::Return(v));
                     }
                 }
@@ -284,19 +317,49 @@ impl Interpreter {
                 };
                 return Ok(ExecResult::Return(ret_val));
             }
+            Statement::Save { data, destination } => {
+                let data_val = self.evaluate(data, env)?;
+                let dest_val = self.evaluate(destination, env)?;
+                
+                let dest_str = match dest_val {
+                    Value::String(s) => s,
+                    _ => return Err(format!("Destination for save must be a string, got {:?}", dest_val)),
+                };
+                
+                let content = match data_val {
+                    Value::String(s) => s,
+                    Value::List(l) => {
+                        let mut result = String::new();
+                        for (i, val) in l.iter().enumerate() {
+                            if i > 0 {
+                                result.push('\n');
+                            }
+                            result.push_str(&val.to_string());
+                        }
+                        result
+                    },
+                    _ => data_val.to_string(),
+                };
+                
+                std::fs::write(&dest_str, content).map_err(|e| format!("Failed to write to {}: {}", dest_str, e))?;
+            }
         }
         Ok(ExecResult::Ok)
     }
 
     fn execute_block(&mut self, block: &Block, env: &mut Environment) -> Result<ExecResult, String> {
         env.push_scope();
+        let res = self.execute_block_no_scope(block, env);
+        env.pop_scope();
+        res
+    }
+
+    fn execute_block_no_scope(&mut self, block: &Block, env: &mut Environment) -> Result<ExecResult, String> {
         for stmt in &block.statements {
             if let ExecResult::Return(v) = self.execute(stmt, env)? {
-                env.pop_scope();
                 return Ok(ExecResult::Return(v));
             }
         }
-        env.pop_scope();
         Ok(ExecResult::Ok)
     }
 
@@ -500,6 +563,16 @@ impl Interpreter {
                             Err(format!("Property '{}' not found", property))
                         }
                     }
+                    Value::String(s) => {
+                        if property == "split" || property == "contains" {
+                            Ok(Value::NativeFunction {
+                                name: property.clone(),
+                                bound_target: Some(Box::new(Value::String(s.clone())))
+                            })
+                        } else {
+                            Err(format!("String has no property '{}'", property))
+                        }
+                    }
                     Value::PythonObject(py_obj) => {
                         Python::with_gil(|py| {
                             if let Ok(attr) = py_obj.getattr(py, property.as_str()) {
@@ -511,7 +584,7 @@ impl Interpreter {
                             }
                         })
                     }
-                    _ => Err("Property access only allowed on objects/maps or Python objects".to_string()),
+                    _ => Err("Property access only allowed on objects/maps, strings, or Python objects".to_string()),
                 }
             }
             Expression::IndexAccess { target, index } => {
@@ -708,13 +781,52 @@ impl Interpreter {
                 }
                 
                 // Handle native functions
-                if let Value::NativeFunction { name } = &func {
+                if let Value::NativeFunction { name, bound_target } = &func {
                     if name == "str" {
                         if arguments.len() != 1 {
                             return Err("str() takes exactly 1 argument".to_string());
                         }
                         let arg_val = self.evaluate(&arguments[0], env)?;
                         return Ok(Value::String(format!("{}", arg_val)));
+                    } else if name == "split" {
+                        if let Some(target) = bound_target {
+                            if let Value::String(s) = &**target {
+                                let sep = if arguments.len() == 1 {
+                                    if let Value::String(sep_str) = self.evaluate(&arguments[0], env)? {
+                                        sep_str
+                                    } else {
+                                        return Err("split() argument must be a string".to_string());
+                                    }
+                                } else if arguments.len() == 0 {
+                                    " ".to_string()
+                                } else {
+                                    return Err("split() takes 0 or 1 arguments".to_string());
+                                };
+                                
+                                let parts = if arguments.len() == 0 {
+                                    s.split_whitespace().map(|p| Value::String(p.to_string())).collect()
+                                } else {
+                                    s.split(&sep).map(|p| Value::String(p.to_string())).collect()
+                                };
+                                
+                                return Ok(Value::List(parts));
+                            }
+                        }
+                        return Err("split() can only be called on strings".to_string());
+                    } else if name == "contains" {
+                        if let Some(target) = bound_target {
+                            if let Value::String(s) = &**target {
+                                if arguments.len() != 1 {
+                                    return Err("contains() takes exactly 1 argument".to_string());
+                                }
+                                if let Value::String(sub) = self.evaluate(&arguments[0], env)? {
+                                    return Ok(Value::Boolean(s.contains(&sub)));
+                                } else {
+                                    return Err("contains() argument must be a string".to_string());
+                                }
+                            }
+                        }
+                        return Err("contains() can only be called on strings".to_string());
                     }
                 }
                 
@@ -750,6 +862,12 @@ impl Interpreter {
                 let l = self.evaluate(left, env)?;
                 let r = self.evaluate(right, env)?;
                 
+                if matches!(l, Value::PythonObject(_)) || matches!(r, Value::PythonObject(_)) {
+                    if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%" | "==" | "!=" | ">" | "<" | ">=" | "<=") {
+                        return python_operator_fallback(&l, &r, operator.as_str());
+                    }
+                }
+                
                 match operator.as_str() {
                     "+" => {
                         match (l, r) {
@@ -774,6 +892,13 @@ impl Interpreter {
                             (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
                             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
                             _ => Err("Cannot multiply these types".to_string()),
+                        }
+                    }
+                    "/" => {
+                        match (l, r) {
+                            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Float((a as f64) / (b as f64))),
+                            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+                            _ => Err("Cannot divide these types".to_string()),
                         }
                     }
                     "%" => {
