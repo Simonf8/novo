@@ -399,13 +399,22 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
             }
         }
         Instruction::GetProperty(obj, _)
-        | Instruction::Spawn(obj)
         | Instruction::Await(obj)
         | Instruction::StoreLocal(_, obj)
         | Instruction::StoreGlobal(_, obj)
         | Instruction::Cast(obj, _)
+        | Instruction::Read(obj)
+        | Instruction::Get(obj)
+        | Instruction::Where(obj, _)
+        | Instruction::Select(obj, _)
+        | Instruction::Aggregate(obj, _, _)
         | Instruction::Print(obj) => {
             rep(obj);
+        }
+        Instruction::StringInterpolate(args) => {
+            for a in args {
+                rep(a);
+            }
         }
         Instruction::PropertySet(obj, _, val) => {
             rep(obj);
@@ -433,6 +442,7 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
             }
         }
         Instruction::Constant(_)
+        | Instruction::Spawn(_)
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)

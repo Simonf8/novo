@@ -319,7 +319,87 @@ impl IRBackend {
                     Instruction::CatchException => {
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
-                    _ => unimplemented!("Instruction {:?} not implemented in IRBackend", inst),
+                    Instruction::Cast(target, type_name) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        let type_idx = chunk.add_constant(Value::String(type_name.clone()));
+                        chunk.write(OpCode::Cast(type_idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::Read(target) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        chunk.write(OpCode::Read, 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::Get(target) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        chunk.write(OpCode::Get, 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::Where(target, func_idx) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        let compiled = compiled_funcs.get(func_idx).expect("Where predicate chunk not found").clone();
+                        let val = Value::CompiledFunction {
+                            chunk: compiled,
+                            arity: 0,
+                        };
+                        let const_idx = chunk.add_constant(val);
+                        chunk.write(OpCode::Where(const_idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::Select(target, func_idx) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        let compiled = compiled_funcs.get(func_idx).expect("Select mapper chunk not found").clone();
+                        let val = Value::CompiledFunction {
+                            chunk: compiled,
+                            arity: 0,
+                        };
+                        let const_idx = chunk.add_constant(val);
+                        chunk.write(OpCode::Select(const_idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::Aggregate(target, func_idx, op) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        let compiled = compiled_funcs.get(func_idx).expect("Aggregate mapper chunk not found").clone();
+                        let val = Value::CompiledFunction {
+                            chunk: compiled,
+                            arity: 0,
+                        };
+                        let const_idx = chunk.add_constant(val);
+                        let opcode = match op.as_str() {
+                            "sum" => OpCode::AggregateSum(const_idx),
+                            "average" => OpCode::AggregateAverage(const_idx),
+                            "max" => OpCode::AggregateMax(const_idx),
+                            "min" => OpCode::AggregateMin(const_idx),
+                            _ => panic!("Unknown aggregate operator: {}", op),
+                        };
+                        chunk.write(opcode, 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::StringInterpolate(parts) => {
+                        for p in parts {
+                            self.emit_load(&mut chunk, *p, &val_to_slot);
+                        }
+                        chunk.write(OpCode::StringInterpolate(parts.len()), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::Spawn(func_idx) => {
+                        let compiled = compiled_funcs.get(func_idx).expect("Task chunk not found").clone();
+                        let val = Value::CompiledFunction {
+                            chunk: compiled,
+                            arity: 0,
+                        };
+                        let const_idx = chunk.add_constant(val);
+                        chunk.write(OpCode::SpawnConcurrent(const_idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::Await(target) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        chunk.write(OpCode::Await, 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::LoadLocal(_) | Instruction::StoreLocal(_, _) => {
+                        // Handled/eliminated during SSA conversion
+                    }
                 }
             }
 
@@ -474,12 +554,17 @@ fn get_instruction_uses(inst: &Instruction) -> Vec<ValueId> {
             u
         }
         Instruction::GetProperty(o, _)
-        | Instruction::Spawn(o)
         | Instruction::Await(o)
         | Instruction::StoreGlobal(_, o)
         | Instruction::StoreLocal(_, o)
         | Instruction::Cast(o, _)
+        | Instruction::Read(o)
+        | Instruction::Get(o)
+        | Instruction::Where(o, _)
+        | Instruction::Select(o, _)
+        | Instruction::Aggregate(o, _, _)
         | Instruction::Print(o) => vec![*o],
+        Instruction::StringInterpolate(args) => args.clone(),
         Instruction::PropertySet(o, _, v) => vec![*o, *v],
         Instruction::IndexSet(o, i, v) => vec![*o, *i, *v],
         Instruction::BuildList(args) => args.clone(),
@@ -493,6 +578,7 @@ fn get_instruction_uses(inst: &Instruction) -> Vec<ValueId> {
         }
         Instruction::Phi(operands) => operands.iter().map(|(_, v)| *v).collect(),
         Instruction::Constant(_)
+        | Instruction::Spawn(_)
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)
@@ -741,7 +827,16 @@ fn infer_integer_values(func: &FunctionIR) -> HashSet<ValueId> {
                 | Instruction::MakeClass(_, _)
                 | Instruction::CatchException
                 | Instruction::GetProperty(_, _)
-                | Instruction::IndexGet(_, _) => {
+                | Instruction::IndexGet(_, _)
+                | Instruction::Cast(_, _)
+                | Instruction::Read(_)
+                | Instruction::Get(_)
+                | Instruction::Where(_, _)
+                | Instruction::Select(_, _)
+                | Instruction::Aggregate(_, _, _)
+                | Instruction::StringInterpolate(_)
+                | Instruction::Spawn(_)
+                | Instruction::Await(_) => {
                     types.insert(*val_id, InferredType::NonInteger);
                 }
                 _ => {}
@@ -901,6 +996,24 @@ return x
         let mut vm = VM::new();
         assert_eq!(vm.interpret(chunk), crate::vm::InterpretResult::Ok);
         assert_eq!(vm.stack.pop(), Some(Value::Integer(99)));
+    }
+
+    #[test]
+    fn test_data_query_where_sum() {
+        let source = "
+nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+evens = nums where item % 2 == 0
+total = evens sum item
+return total
+";
+        let tokens = crate::lexer::Lexer::new(source).tokenize().unwrap();
+        let ast = crate::parser::Parser::new(tokens).parse().unwrap();
+        let ir = crate::ir_builder::IRBuilder::new().build(&ast).unwrap();
+        let chunk = crate::ir_backend::IRBackend::new(ir).generate().unwrap();
+
+        let mut vm = VM::new();
+        assert_eq!(vm.interpret(chunk), crate::vm::InterpretResult::Ok);
+        assert_eq!(vm.stack.pop(), Some(Value::Integer(30)));
     }
 }
 

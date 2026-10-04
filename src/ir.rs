@@ -49,8 +49,8 @@ pub enum Instruction {
     /// Read property or method
     GetProperty(ValueId, String),
     
-    /// Spawn concurrent task
-    Spawn(ValueId),
+    /// Spawn concurrent task: task func_idx
+    Spawn(usize),
     
     /// Await a promise
     Await(ValueId),
@@ -70,8 +70,19 @@ pub enum Instruction {
     IndexSet(ValueId, ValueId, ValueId),
     PropertySet(ValueId, String, ValueId),
     
-    /// Cast value to type
-    Cast(ValueId, Type),
+    /// Cast value to type or format (e.g. "json", "csv", "int", "float")
+    Cast(ValueId, String),
+
+    /// Read file content as string
+    Read(ValueId),
+    /// HTTP GET url content
+    Get(ValueId),
+    /// Query and filtering primitives
+    Where(ValueId, usize),
+    Select(ValueId, usize),
+    Aggregate(ValueId, usize, String),
+    /// String interpolation
+    StringInterpolate(Vec<ValueId>),
     
     /// Print value to standard output
     Print(ValueId),
@@ -186,7 +197,7 @@ impl std::fmt::Display for Instruction {
                 write!(f, ")")
             },
             Instruction::GetProperty(obj, prop) => write!(f, "getprop {}, \"{}\"", obj, prop),
-            Instruction::Spawn(val) => write!(f, "spawn {}", val),
+            Instruction::Spawn(idx) => write!(f, "spawn func{}", idx),
             Instruction::Await(val) => write!(f, "await {}", val),
             Instruction::LoadLocal(name) => write!(f, "loadlocal \"{}\"", name),
             Instruction::StoreLocal(name, val) => write!(f, "storelocal \"{}\", {}", name, val),
@@ -205,7 +216,13 @@ impl std::fmt::Display for Instruction {
             Instruction::IndexGet(obj, idx) => write!(f, "indexget {}, {}", obj, idx),
             Instruction::IndexSet(obj, idx, val) => write!(f, "indexset {}, {} = {}", obj, idx, val),
             Instruction::PropertySet(obj, prop, val) => write!(f, "propset {}, \"{}\" = {}", obj, prop, val),
-            Instruction::Cast(val, ty) => write!(f, "cast {}, {:?}", val, ty),
+            Instruction::Cast(val, ty) => write!(f, "cast {}, \"{}\"", val, ty),
+            Instruction::Read(val) => write!(f, "read {}", val),
+            Instruction::Get(val) => write!(f, "get {}", val),
+            Instruction::Where(val, idx) => write!(f, "where {}, func{}", val, idx),
+            Instruction::Select(val, idx) => write!(f, "select {}, func{}", val, idx),
+            Instruction::Aggregate(val, idx, op) => write!(f, "aggregate_{} {}, func{}", op, val, idx),
+            Instruction::StringInterpolate(args) => write!(f, "string_interpolate ({} parts)", args.len()),
             Instruction::Print(val) => write!(f, "print {}", val),
             Instruction::Phi(args) => {
                 write!(f, "phi [")?;
