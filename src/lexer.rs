@@ -19,6 +19,21 @@ pub struct Token {
     pub column: usize,
 }
 
+impl Token {
+    pub fn length(&self) -> usize {
+        match &self.token_type {
+            TokenType::Identifier(s) => s.len(),
+            TokenType::Integer(i) => i.to_string().len(),
+            TokenType::Float(f) => f.to_string().len(),
+            TokenType::String(s) => s.len() + 2,
+            TokenType::Keyword(k) => k.len(),
+            TokenType::Op(o) => o.len(),
+            TokenType::Punct(p) => p.len(),
+            _ => 1,
+        }
+    }
+}
+
 pub struct Lexer {
     source: Vec<char>,
     pos: usize,

@@ -1,20 +1,13 @@
 use python sqlite3
-use python time
 
-start = time.time()
-
-conn = sqlite3.connect("test.db")
-c = conn.cursor()
-c.execute("DROP TABLE IF EXISTS users")
-c.execute("CREATE TABLE users (id INTEGER, name TEXT)")
-
-repeat 100 times:
-    c.execute("INSERT INTO users VALUES (?, ?)", [it, "User " + str(it)])
-
-c.execute("SELECT * FROM users")
-rows = c.fetchall()
+conn = sqlite3.connect(":memory:")
+cursor = conn.cursor()
+cursor.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+cursor.execute("INSERT INTO users (name) VALUES ('Alice')")
+cursor.execute("INSERT INTO users (name) VALUES ('Bob')")
 conn.commit()
-conn.close()
 
-end = time.time()
-show end - start
+cursor.execute("SELECT * FROM users")
+rows = cursor.fetchall()
+show rows
+conn.close()

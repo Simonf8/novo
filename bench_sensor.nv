@@ -1,0 +1,16 @@
+use python math
+use python time
+
+start = time.time()
+
+data = [
+    {x: 1.0, y: 2.0, z: 3.0},
+    {x: 100.0, y: 200.0, z: 300.0},
+    {x: 1.5, y: 2.5, z: 3.5}
+]
+
+magnitudes = data select (math.sqrt(it.x*it.x + it.y*it.y + it.z*it.z))
+valid = magnitudes where (it < 10.0)
+
+end = time.time()
+show end - start

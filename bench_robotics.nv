@@ -1,0 +1,16 @@
+use python time
+use python random
+
+readings = []
+repeat 10 times:
+    val = random.random() * 100
+    readings = readings + [val]
+    time.sleep(0.01)
+
+avg = readings | average
+max_val = readings | max
+
+show "Sensor Readings Average:"
+show avg
+show "Max Peak:"
+show max_val

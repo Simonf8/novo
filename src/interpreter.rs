@@ -251,16 +251,26 @@ impl Interpreter {
     }
 
     fn execute(&mut self, stmt: &Statement, env: &mut Environment) -> Result<ExecResult, String> {
-        match stmt {
-            Statement::Assignment { name, value, .. } => {
+        self.execute_inner(stmt, env).map_err(|e| {
+            if e.contains(" at line ") {
+                e
+            } else {
+                format!("{} at line {}, col {}, len {}", e, stmt.span.line, stmt.span.column, stmt.span.length)
+            }
+        })
+    }
+
+    fn execute_inner(&mut self, stmt: &Statement, env: &mut Environment) -> Result<ExecResult, String> {
+        match &stmt.node {
+            StatementNode::Assignment { name, value, .. } => {
                 let val = self.evaluate(value, env)?;
                 env.define(name.clone(), val);
             }
-            Statement::Show { value } => {
+            StatementNode::Show { value } => {
                 let val = self.evaluate(value, env)?;
                 println!("{}", val);
             }
-            Statement::If { condition, body, otherwise } => {
+            StatementNode::If { condition, body, otherwise } => {
                 let cond_val = self.evaluate(condition, env)?;
                 let is_true = match cond_val {
                     Value::Boolean(b) => b,
@@ -277,7 +287,7 @@ impl Interpreter {
                     }
                 }
             }
-            Statement::Repeat { count, body } => {
+            StatementNode::Repeat { count, body } => {
                 let count_val = self.evaluate(count, env)?;
                 let c = match count_val {
                     Value::Integer(i) => i,
@@ -293,7 +303,7 @@ impl Interpreter {
                     }
                 }
             }
-            Statement::FunctionDeclaration { name, params, body, .. } => {
+            StatementNode::FunctionDeclaration { name, params, body, .. } => {
                 let param_names = params.iter().map(|(n, _)| n.clone()).collect();
                 let func_val = Value::Function {
                     params: param_names,
@@ -301,7 +311,7 @@ impl Interpreter {
                 };
                 env.define(name.clone(), func_val);
             }
-            Statement::UsePython { module, alias } => {
+            StatementNode::UsePython { module, alias } => {
                 let py_module = Python::with_gil(|py| -> Result<PyObject, String> {
                     let m = PyModule::import(py, module.as_str())
                         .map_err(|e| format!("Failed to import python module {}: {}", module, e))?;
@@ -310,14 +320,14 @@ impl Interpreter {
                 let name = alias.as_ref().unwrap_or(module).clone();
                 env.define(name, Value::PythonObject(py_module));
             }
-            Statement::Return { value } => {
+            StatementNode::Return { value } => {
                 let ret_val = match value {
                     Some(expr) => self.evaluate(expr, env)?,
                     None => Value::Null,
                 };
                 return Ok(ExecResult::Return(ret_val));
             }
-            Statement::Save { data, destination } => {
+            StatementNode::Save { data, destination } => {
                 let data_val = self.evaluate(data, env)?;
                 let dest_val = self.evaluate(destination, env)?;
                 
@@ -364,20 +374,30 @@ impl Interpreter {
     }
 
     fn evaluate(&mut self, expr: &Expression, env: &Environment) -> Result<Value, String> {
-        match expr {
-            Expression::Integer(i) => Ok(Value::Integer(*i)),
-            Expression::Float(f) => Ok(Value::Float(*f)),
-            Expression::String(s) => Ok(Value::String(s.clone())),
-            Expression::Boolean(b) => Ok(Value::Boolean(*b)),
-            Expression::Identifier(id) => env.get(id),
-            Expression::Concurrent(inner) => {
+        self.evaluate_inner(expr, env).map_err(|e| {
+            if e.contains(" at line ") {
+                e
+            } else {
+                format!("{} at line {}, col {}, len {}", e, expr.span.line, expr.span.column, expr.span.length)
+            }
+        })
+    }
+
+    fn evaluate_inner(&mut self, expr: &Expression, env: &Environment) -> Result<Value, String> {
+        match &expr.node {
+            ExpressionNode::Integer(i) => Ok(Value::Integer(*i)),
+            ExpressionNode::Float(f) => Ok(Value::Float(*f)),
+            ExpressionNode::String(s) => Ok(Value::String(s.clone())),
+            ExpressionNode::Boolean(b) => Ok(Value::Boolean(*b)),
+            ExpressionNode::Identifier(id) => env.get(id),
+            ExpressionNode::Concurrent(inner) => {
                 let prev = self.concurrent_mode;
                 self.concurrent_mode = true;
                 let result = self.evaluate(inner, env);
                 self.concurrent_mode = prev;
                 result
             }
-            Expression::Cast(expr, target_type) => {
+            ExpressionNode::Cast(expr, target_type) => {
                 let val = self.evaluate(expr, env)?;
                 let execute_cast = |v: &Value, t: &str| -> Result<Value, String> {
                     match (v, t) {
@@ -420,7 +440,7 @@ impl Interpreter {
                     _ => execute_cast(&val, target_type),
                 }
             }
-            Expression::List(items) => {
+            ExpressionNode::List(items) => {
                 if self.concurrent_mode {
                     let mut handles = Vec::new();
                     for item in items {
@@ -450,7 +470,7 @@ impl Interpreter {
                     Ok(Value::List(list))
                 }
             }
-            Expression::Read(path_expr) => {
+            ExpressionNode::Read(path_expr) => {
                 let path_val = self.evaluate(path_expr, env)?;
                 let execute_read = |path: &str| -> Result<Value, String> {
                     let content = std::fs::read_to_string(path)
@@ -494,7 +514,7 @@ impl Interpreter {
                     _ => Err("Expected string or list of strings for read".to_string()),
                 }
             }
-            Expression::Get(url_expr) => {
+            ExpressionNode::Get(url_expr) => {
                 let url_val = self.evaluate(url_expr, env)?;
                 let execute_get = |url: &str| -> Result<Value, String> {
                     Python::with_gil(|py| -> Result<Value, String> {
@@ -545,7 +565,7 @@ impl Interpreter {
                     _ => Err("Expected string or list of strings for get".to_string()),
                 }
             }
-            Expression::Map(items) => {
+            ExpressionNode::Map(items) => {
                 let mut map = HashMap::new();
                 for (key, expr) in items {
                     let val = self.evaluate(expr, env)?;
@@ -553,7 +573,7 @@ impl Interpreter {
                 }
                 Ok(Value::Map(map))
             }
-            Expression::PropertyAccess { target, property } => {
+            ExpressionNode::PropertyAccess { target, property } => {
                 let obj = self.evaluate(target, env)?;
                 match obj {
                     Value::Map(map) => {
@@ -587,7 +607,7 @@ impl Interpreter {
                     _ => Err("Property access only allowed on objects/maps, strings, or Python objects".to_string()),
                 }
             }
-            Expression::IndexAccess { target, index } => {
+            ExpressionNode::IndexAccess { target, index } => {
                 let list_val = self.evaluate(target, env)?;
                 let idx_val = self.evaluate(index, env)?;
                 match list_val {
@@ -613,7 +633,7 @@ impl Interpreter {
                     _ => Err("Can only index into a list or Python object".to_string())
                 }
             }
-            Expression::Where { target, condition } => {
+            ExpressionNode::Where { target, condition } => {
                 let list_val = self.evaluate(target, env)?;
                 
                 let items = match list_val {
@@ -645,7 +665,7 @@ impl Interpreter {
                 }
                 Ok(Value::List(result))
             }
-            Expression::Select { target, mapping } => {
+            ExpressionNode::Select { target, mapping } => {
                 let list_val = self.evaluate(target, env)?;
                 
                 let items = match list_val {
@@ -675,7 +695,7 @@ impl Interpreter {
                 }
                 Ok(Value::List(result))
             }
-            Expression::Aggregate { target, mapping, op } => {
+            ExpressionNode::Aggregate { target, mapping, op } => {
                 let list_val = self.evaluate(target, env)?;
                 let items = match list_val {
                     Value::List(l) => l,
@@ -759,7 +779,7 @@ impl Interpreter {
                     return Err(format!("Unknown aggregate op: {}", op));
                 }
             }
-            Expression::Call { callee, arguments } => {
+            ExpressionNode::Call { callee, arguments } => {
                 let func = self.evaluate(callee, env)?;
                 
                 // Handle Python objects being called
@@ -858,7 +878,7 @@ impl Interpreter {
                 func_env.pop_scope();
                 res
             }
-            Expression::BinaryOp { left, operator, right } => {
+            ExpressionNode::BinaryOp { left, operator, right } => {
                 let l = self.evaluate(left, env)?;
                 let r = self.evaluate(right, env)?;
                 
@@ -874,6 +894,16 @@ impl Interpreter {
                             (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
                             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
                             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
+                            (Value::List(a), Value::List(b)) => {
+                                let mut new_list = a.clone();
+                                new_list.extend(b.clone());
+                                Ok(Value::List(new_list))
+                            },
+                            (Value::List(a), b) => {
+                                let mut new_list = a.clone();
+                                new_list.push(b.clone());
+                                Ok(Value::List(new_list))
+                            },
                             (left_val, right_val) => Err(format!(
                                 "Cannot add {} to {}.\n\nTry converting one of them first using str().",
                                 type_name(&right_val), type_name(&left_val)
@@ -984,5 +1014,25 @@ impl Interpreter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    #[test]
+    fn test_error_span() {
+        let source = "area = 5 * \"hello\"";
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse().unwrap();
+        
+        let mut interpreter = Interpreter::new();
+        let err = interpreter.interpret(&ast).unwrap_err();
+        assert!(err.contains("len 11"), "{}", err);
     }
 }

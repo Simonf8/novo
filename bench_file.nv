@@ -1,10 +1,9 @@
-use python time
+content = read "src/main.rs"
+lines = content.split("\n")
+show "Number of lines in main.rs:"
+show lines.length()
 
-start_time = time.time()
-
-lines = (read "in.txt").split("\n")
-filtered = lines where (it.contains("error"))
-save filtered to "out.txt"
-
-end_time = time.time()
-show end_time - start_time
+# Count empty lines
+empty_count = lines | where length() == 0 | aggregate sum
+show "Empty lines:"
+show empty_count

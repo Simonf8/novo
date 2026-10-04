@@ -36,7 +36,7 @@ fn main() {
 
     let mut interpreter = interpreter::Interpreter::new();
     if let Err(e) = interpreter.interpret(&ast) {
-        eprintln!("Runtime error: {}", e);
+        print_error(&source, &e, "Runtime error");
     }
 }
 
@@ -46,15 +46,25 @@ fn print_error(source: &str, error: &str, error_type: &str) {
         let rest = &error[pos + 9..];
         if let Some(comma_pos) = rest.find(", col ") {
             let line_str = &rest[..comma_pos];
-            let col_str = &rest[comma_pos + 6..];
+            let rest_after_col = &rest[comma_pos + 6..];
+            
+            let (col_str, len_str) = if let Some(len_pos) = rest_after_col.find(", len ") {
+                (&rest_after_col[..len_pos], Some(&rest_after_col[len_pos + 6..]))
+            } else {
+                (rest_after_col, None)
+            };
+            
             if let (Ok(line), Ok(col)) = (line_str.parse::<usize>(), col_str.parse::<usize>()) {
+                let len = len_str.and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
                 let lines: Vec<&str> = source.lines().collect();
                 if line > 0 && line <= lines.len() {
-                    eprintln!("\n{}: {}\n", error_type, msg);
+                    let type_prefix = if error_type.is_empty() { "ERROR".to_string() } else { error_type.to_uppercase() };
+                    eprintln!("\n{}: {}\n", type_prefix, msg);
                     let line_text = lines[line - 1];
-                    eprintln!("{:>4} | {}", line, line_text);
+                    eprintln!("    {}", line_text);
                     let padding = " ".repeat(col.saturating_sub(1));
-                    eprintln!("     | {}^", padding);
+                    let carets = "^".repeat(len.max(1));
+                    eprintln!("    {}{}", padding, carets);
                     return;
                 }
             }

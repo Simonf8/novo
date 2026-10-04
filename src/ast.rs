@@ -1,5 +1,65 @@
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+    pub length: usize,
+}
+
+impl Span {
+    pub fn merge(&self, other: &Span) -> Span {
+        if self.line == other.line {
+            Span {
+                line: self.line,
+                column: self.column,
+                length: (other.column + other.length) - self.column,
+            }
+        } else {
+            self.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expression {
+pub struct Expression {
+    pub node: ExpressionNode,
+    pub span: Span,
+}
+
+impl Expression {
+    pub fn with_span(mut self, span: Span) -> Self {
+        self.span = span;
+        self
+    }
+}
+
+impl From<ExpressionNode> for Expression {
+    fn from(node: ExpressionNode) -> Self {
+        Expression { node, span: Span::default() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Statement {
+    pub node: StatementNode,
+    pub span: Span,
+}
+
+impl Statement {
+    pub fn with_span(mut self, span: Span) -> Self {
+        self.span = span;
+        self
+    }
+}
+
+impl From<StatementNode> for Statement {
+    fn from(node: StatementNode) -> Self {
+        Statement { node, span: Span::default() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExpressionNode {
     Integer(i64),
     Float(f64),
     String(String),
@@ -44,7 +104,7 @@ pub enum Expression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Statement {
+pub enum StatementNode {
     Assignment {
         name: String,
         value: Expression,
