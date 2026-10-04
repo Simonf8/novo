@@ -415,7 +415,8 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
         Instruction::Constant(_)
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
-        | Instruction::MakeFunction(_, _) => {}
+        | Instruction::MakeFunction(_, _)
+        | Instruction::ImportPython(_) => {}
     }
 }
 

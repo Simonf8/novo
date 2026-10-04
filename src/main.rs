@@ -8,6 +8,7 @@ mod type_checker;
 mod ir;
 mod ir_builder;
 mod ir_ssa;
+mod ir_opt;
 mod ir_backend;
 
 use std::env;

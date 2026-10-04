@@ -40,27 +40,9 @@ impl IRBackend {
     ) -> Result<Chunk, String> {
         let mut chunk = Chunk::new();
 
-        // 1. Assign local slots to parameters and all SSA ValueIds
-        let mut val_to_slot: HashMap<ValueId, usize> = HashMap::new();
+        // 1. Assign local slots using backward liveness and greedy graph coloring
+        let (val_to_slot, total_slots) = allocate_slots(func);
         let num_params = func.params.len();
-        for (i, p_id) in func.params.iter().enumerate() {
-            val_to_slot.insert(*p_id, i);
-        }
-
-        let mut next_slot = num_params;
-        let mut sorted_blocks: Vec<&crate::ir::BasicBlock> = func.blocks.values().collect();
-        sorted_blocks.sort_by_key(|b| b.id.0);
-
-        for block in &sorted_blocks {
-            for (val_id, inst) in &block.instructions {
-                if !matches!(inst, Instruction::Print(_)) {
-                    val_to_slot.insert(*val_id, next_slot);
-                    next_slot += 1;
-                }
-            }
-        }
-
-        let total_slots = next_slot;
 
         // 2. Pre-allocate local slots on VM stack
         for _ in num_params..total_slots {
@@ -217,6 +199,52 @@ impl IRBackend {
                         chunk.write(OpCode::Constant(const_idx), 0);
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
+                    Instruction::GetProperty(obj, prop) => {
+                        self.emit_load(&mut chunk, *obj, &val_to_slot);
+                        let idx = chunk.add_constant(Value::String(prop.clone()));
+                        chunk.write(OpCode::PropertyGet(idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::IndexGet(target, index) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        self.emit_load(&mut chunk, *index, &val_to_slot);
+                        chunk.write(OpCode::IndexGet, 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::IndexSet(target, index, val) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        self.emit_load(&mut chunk, *index, &val_to_slot);
+                        self.emit_load(&mut chunk, *val, &val_to_slot);
+                        chunk.write(OpCode::IndexSet, 0);
+                        chunk.write(OpCode::Pop, 0);
+                    }
+                    Instruction::PropertySet(target, prop, val) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        let idx = chunk.add_constant(Value::String(prop.clone()));
+                        self.emit_load(&mut chunk, *val, &val_to_slot);
+                        chunk.write(OpCode::PropertySet(idx), 0);
+                        chunk.write(OpCode::Pop, 0);
+                    }
+                    Instruction::BuildList(args) => {
+                        for a in args {
+                            self.emit_load(&mut chunk, *a, &val_to_slot);
+                        }
+                        chunk.write(OpCode::BuildList(args.len()), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::BuildMap(pairs) => {
+                        for (k, v) in pairs {
+                            self.emit_load(&mut chunk, *k, &val_to_slot);
+                            self.emit_load(&mut chunk, *v, &val_to_slot);
+                        }
+                        chunk.write(OpCode::BuildMap(pairs.len()), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::ImportPython(module) => {
+                        let idx = chunk.add_constant(Value::String(module.clone()));
+                        chunk.write(OpCode::ImportPython(idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
                     Instruction::Phi(_) => {
                         // Handled during SSA deconstruction before branches
                     }
@@ -251,16 +279,30 @@ impl IRBackend {
                     false_block,
                 } => {
                     self.emit_load(&mut chunk, *condition, &val_to_slot);
-                    let jmp_false = chunk.emit_jump(OpCode::JumpIfFalse(0), 0);
-                    pending_jumps.push((jmp_false, *false_block));
+                    let false_jump = chunk.emit_jump(OpCode::JumpIfFalse(0), 0);
 
                     // True branch
+                    self.emit_phi_copies(&mut chunk, *b_id, *true_block, func, &val_to_slot);
                     if let Some(&target) = block_offsets.get(true_block) {
                         let offset = chunk.code.len() + 1 - target;
                         chunk.write(OpCode::Loop(offset), 0);
                     } else {
-                        let jmp_true = chunk.emit_jump(OpCode::Jump(0), 0);
-                        pending_jumps.push((jmp_true, *true_block));
+                        let jmp = chunk.emit_jump(OpCode::Jump(0), 0);
+                        pending_jumps.push((jmp, *true_block));
+                    }
+
+                    // False branch landing
+                    let false_landing = chunk.code.len();
+                    let offset = false_landing - (false_jump + 1);
+                    chunk.code[false_jump] = OpCode::JumpIfFalse(offset);
+
+                    self.emit_phi_copies(&mut chunk, *b_id, *false_block, func, &val_to_slot);
+                    if let Some(&target) = block_offsets.get(false_block) {
+                        let offset = chunk.code.len() + 1 - target;
+                        chunk.write(OpCode::Loop(offset), 0);
+                    } else {
+                        let jmp = chunk.emit_jump(OpCode::Jump(0), 0);
+                        pending_jumps.push((jmp, *false_block));
                     }
                 }
                 Terminator::Unreachable => {
@@ -313,17 +355,262 @@ impl IRBackend {
         val_to_slot: &HashMap<ValueId, usize>,
     ) {
         if let Some(target_block) = func.blocks.get(&dst) {
+            let mut copies: Vec<(ValueId, ValueId)> = Vec::new();
             for (phi_val, inst) in &target_block.instructions {
                 if let Instruction::Phi(operands) = inst {
                     for (from_block, incoming_val) in operands {
                         if *from_block == src {
-                            self.emit_load(chunk, *incoming_val, val_to_slot);
-                            self.emit_store(chunk, *phi_val, val_to_slot);
+                            let src_slot = val_to_slot[incoming_val];
+                            let dst_slot = val_to_slot[phi_val];
+                            if src_slot != dst_slot {
+                                copies.push((*incoming_val, *phi_val));
+                            }
                             break;
                         }
                     }
                 }
             }
+
+            // Buffer strategy: push all sources onto the operand stack
+            for (src_val, _) in &copies {
+                self.emit_load(chunk, *src_val, val_to_slot);
+            }
+            // Pop in reverse order directly into the destination slots
+            for (_, phi_val) in copies.iter().rev() {
+                self.emit_store(chunk, *phi_val, val_to_slot);
+            }
         }
     }
+}
+
+fn get_instruction_uses(inst: &Instruction) -> Vec<ValueId> {
+    match inst {
+        Instruction::Add(l, r)
+        | Instruction::Sub(l, r)
+        | Instruction::Mul(l, r)
+        | Instruction::Div(l, r)
+        | Instruction::Mod(l, r)
+        | Instruction::Eq(l, r)
+        | Instruction::Neq(l, r)
+        | Instruction::Lt(l, r)
+        | Instruction::Le(l, r)
+        | Instruction::Gt(l, r)
+        | Instruction::Ge(l, r)
+        | Instruction::IndexGet(l, r) => vec![*l, *r],
+        Instruction::Call(c, args) => {
+            let mut u = vec![*c];
+            u.extend(args.iter().copied());
+            u
+        }
+        Instruction::GetProperty(o, _)
+        | Instruction::Spawn(o)
+        | Instruction::Await(o)
+        | Instruction::StoreGlobal(_, o)
+        | Instruction::StoreLocal(_, o)
+        | Instruction::Cast(o, _)
+        | Instruction::Print(o) => vec![*o],
+        Instruction::PropertySet(o, _, v) => vec![*o, *v],
+        Instruction::IndexSet(o, i, v) => vec![*o, *i, *v],
+        Instruction::BuildList(args) => args.clone(),
+        Instruction::BuildMap(pairs) => {
+            let mut u = Vec::new();
+            for (k, v) in pairs {
+                u.push(*k);
+                u.push(*v);
+            }
+            u
+        }
+        Instruction::Phi(operands) => operands.iter().map(|(_, v)| *v).collect(),
+        Instruction::Constant(_)
+        | Instruction::LoadLocal(_)
+        | Instruction::LoadGlobal(_)
+        | Instruction::MakeFunction(_, _)
+        | Instruction::ImportPython(_) => vec![],
+    }
+}
+
+fn get_terminator_uses(term: &Terminator) -> Vec<ValueId> {
+    match term {
+        Terminator::CondBranch { condition, .. } => vec![*condition],
+        Terminator::Return(Some(v)) => vec![*v],
+        _ => vec![],
+    }
+}
+
+/// Allocates local stack slots using backward liveness analysis and greedy graph coloring.
+fn allocate_slots(func: &FunctionIR) -> (HashMap<ValueId, usize>, usize) {
+    let num_params = func.params.len();
+    let mut val_to_slot: HashMap<ValueId, usize> = HashMap::new();
+    for (i, p) in func.params.iter().enumerate() {
+        val_to_slot.insert(*p, i);
+    }
+
+    let mut block_defs: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+    let mut block_phi_uses: HashMap<BlockId, HashMap<BlockId, HashSet<ValueId>>> = HashMap::new();
+    let mut block_uses: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+    let mut succs: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+
+    for (b_id, block) in &func.blocks {
+        let mut defs = HashSet::new();
+        let mut phi_uses: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+        let mut uses = HashSet::new();
+
+        for (val_id, inst) in &block.instructions {
+            if let Instruction::Phi(operands) = inst {
+                for (from_b, in_val) in operands {
+                    phi_uses.entry(*from_b).or_default().insert(*in_val);
+                }
+                defs.insert(*val_id);
+            } else {
+                for u in get_instruction_uses(inst) {
+                    if !defs.contains(&u) {
+                        uses.insert(u);
+                    }
+                }
+                if !matches!(inst, Instruction::Print(_)) {
+                    defs.insert(*val_id);
+                }
+            }
+        }
+
+        for u in get_terminator_uses(&block.terminator) {
+            if !defs.contains(&u) {
+                uses.insert(u);
+            }
+        }
+
+        let s = match &block.terminator {
+            Terminator::Branch(dst) => vec![*dst],
+            Terminator::CondBranch { true_block, false_block, .. } => {
+                vec![*true_block, *false_block]
+            }
+            _ => vec![],
+        };
+
+        block_defs.insert(*b_id, defs);
+        block_phi_uses.insert(*b_id, phi_uses);
+        block_uses.insert(*b_id, uses);
+        succs.insert(*b_id, s);
+    }
+
+    // Backward dataflow for live_in and live_out
+    let mut live_in: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+    let mut live_out: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+    let mut changed = true;
+
+    while changed {
+        changed = false;
+        for (b_id, _) in &func.blocks {
+            let mut new_live_out = HashSet::new();
+            if let Some(s_list) = succs.get(b_id) {
+                for s in s_list {
+                    if let Some(s_in) = live_in.get(s) {
+                        for &v in s_in {
+                            if !block_defs[s].contains(&v) {
+                                new_live_out.insert(v);
+                            }
+                        }
+                    }
+                    if let Some(edge_phis) = block_phi_uses.get(s).and_then(|m| m.get(b_id)) {
+                        for &v in edge_phis {
+                            new_live_out.insert(v);
+                        }
+                    }
+                }
+            }
+
+            let mut new_live_in = block_uses[b_id].clone();
+            for &v in &new_live_out {
+                if !block_defs[b_id].contains(&v) {
+                    new_live_in.insert(v);
+                }
+            }
+
+            if live_out.get(b_id) != Some(&new_live_out) {
+                live_out.insert(*b_id, new_live_out);
+                changed = true;
+            }
+            if live_in.get(b_id) != Some(&new_live_in) {
+                live_in.insert(*b_id, new_live_in);
+                changed = true;
+            }
+        }
+    }
+
+    // Build interference graph
+    let mut interferes: HashMap<ValueId, HashSet<ValueId>> = HashMap::new();
+    for (b_id, block) in &func.blocks {
+        let mut live = live_out.get(b_id).cloned().unwrap_or_default();
+        for u in get_terminator_uses(&block.terminator) {
+            live.insert(u);
+        }
+
+        for (val_id, inst) in block.instructions.iter().rev() {
+            if !matches!(inst, Instruction::Print(_)) {
+                for &other in &live {
+                    if other != *val_id {
+                        interferes.entry(*val_id).or_default().insert(other);
+                        interferes.entry(other).or_default().insert(*val_id);
+                    }
+                }
+                live.remove(val_id);
+            }
+            if !matches!(inst, Instruction::Phi(_)) {
+                for u in get_instruction_uses(inst) {
+                    live.insert(u);
+                }
+            }
+        }
+    }
+
+    // Parameters interfere with each other and anything live at entry
+    for (i, p1) in func.params.iter().enumerate() {
+        for p2 in func.params.iter().skip(i + 1) {
+            interferes.entry(*p1).or_default().insert(*p2);
+            interferes.entry(*p2).or_default().insert(*p1);
+        }
+        if let Some(entry_live) = live_in.get(&func.entry_block) {
+            for &v in entry_live {
+                if v != *p1 {
+                    interferes.entry(*p1).or_default().insert(v);
+                    interferes.entry(v).or_default().insert(*p1);
+                }
+            }
+        }
+    }
+
+    // Greedy coloring
+    let mut all_vals = Vec::new();
+    for block in func.blocks.values() {
+        for (val_id, inst) in &block.instructions {
+            if !matches!(inst, Instruction::Print(_)) && !val_to_slot.contains_key(val_id) {
+                all_vals.push(*val_id);
+            }
+        }
+    }
+    all_vals.sort_by_key(|v| v.0);
+    all_vals.dedup();
+
+    for val_id in all_vals {
+        let neighbors = interferes.get(&val_id).cloned().unwrap_or_default();
+        let mut used_slots = HashSet::new();
+        for neighbor in neighbors {
+            if let Some(&slot) = val_to_slot.get(&neighbor) {
+                used_slots.insert(slot);
+            }
+        }
+        let mut slot = num_params;
+        while used_slots.contains(&slot) {
+            slot += 1;
+        }
+        val_to_slot.insert(val_id, slot);
+    }
+
+    let total_slots = val_to_slot
+        .values()
+        .copied()
+        .max()
+        .map_or(num_params, |m| m + 1);
+
+    (val_to_slot, total_slots)
 }

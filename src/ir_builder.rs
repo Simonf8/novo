@@ -7,7 +7,6 @@ pub struct IRBuilder {
     current_func: usize,
     current_block: BlockId,
     locals: Vec<String>,
-    scope_depth: usize,
 }
 
 impl IRBuilder {
@@ -18,7 +17,6 @@ impl IRBuilder {
             current_func: 0,
             current_block: BlockId(0),
             locals: Vec::new(),
-            scope_depth: 0,
         };
         builder.current_block = builder.functions[0].new_block();
         builder.functions[0].entry_block = builder.current_block;
@@ -36,139 +34,12 @@ impl IRBuilder {
             cur_block.terminator = Terminator::Return(None);
         }
 
-        self.optimize();
-
         for func in &mut self.functions {
             crate::ir_ssa::convert_to_ssa(func);
+            crate::ir_opt::optimize(func);
         }
-
-        self.optimize();
 
         Ok(self.functions)
-    }
-
-    fn optimize(&mut self) {
-        // Simple constant folding pass
-        for func in &mut self.functions {
-            let mut constants = std::collections::HashMap::new();
-            
-            for (_, block) in func.blocks.iter_mut() {
-                for (val_id, inst) in &mut block.instructions {
-                    match inst {
-                        Instruction::Constant(c) => {
-                            constants.insert(*val_id, c.clone());
-                        }
-                        Instruction::Add(lhs, rhs) => {
-                            if let (Some(l), Some(r)) = (constants.get(lhs), constants.get(rhs)) {
-                                if let (crate::interpreter::Value::Integer(li), crate::interpreter::Value::Integer(ri)) = (l, r) {
-                                    let result = crate::interpreter::Value::Integer(li + ri);
-                                    constants.insert(*val_id, result.clone());
-                                    *inst = Instruction::Constant(result);
-                                }
-                            }
-                        }
-                        Instruction::Sub(lhs, rhs) => {
-                            if let (Some(l), Some(r)) = (constants.get(lhs), constants.get(rhs)) {
-                                if let (crate::interpreter::Value::Integer(li), crate::interpreter::Value::Integer(ri)) = (l, r) {
-                                    let result = crate::interpreter::Value::Integer(li - ri);
-                                    constants.insert(*val_id, result.clone());
-                                    *inst = Instruction::Constant(result);
-                                }
-                            }
-                        }
-                        Instruction::Mul(lhs, rhs) => {
-                            if let (Some(l), Some(r)) = (constants.get(lhs), constants.get(rhs)) {
-                                if let (crate::interpreter::Value::Integer(li), crate::interpreter::Value::Integer(ri)) = (l, r) {
-                                    let result = crate::interpreter::Value::Integer(li * ri);
-                                    constants.insert(*val_id, result.clone());
-                                    *inst = Instruction::Constant(result);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            
-            // Dead Code Elimination
-            let mut changed = true;
-            while changed {
-                changed = false;
-                let mut used = std::collections::HashSet::new();
-                
-                for (_, block) in func.blocks.iter() {
-                    for (_, inst) in &block.instructions {
-                        match inst {
-                            Instruction::Add(l, r) | Instruction::Sub(l, r) | 
-                            Instruction::Mul(l, r) | Instruction::Div(l, r) | 
-                            Instruction::Mod(l, r) | Instruction::Eq(l, r) | 
-                            Instruction::Neq(l, r) | Instruction::Lt(l, r) | 
-                            Instruction::Le(l, r) | Instruction::Gt(l, r) | 
-                            Instruction::Ge(l, r) | Instruction::IndexGet(l, r) => {
-                                used.insert(*l);
-                                used.insert(*r);
-                            }
-                            Instruction::IndexSet(obj, idx, val) => {
-                                used.insert(*obj);
-                                used.insert(*idx);
-                                used.insert(*val);
-                            }
-                            Instruction::Call(callee, args) => {
-                                used.insert(*callee);
-                                for a in args { used.insert(*a); }
-                            }
-                            Instruction::GetProperty(obj, _) | Instruction::Spawn(obj) | 
-                            Instruction::Await(obj) | Instruction::StoreLocal(_, obj) | 
-                            Instruction::StoreGlobal(_, obj) | Instruction::Cast(obj, _) |
-                            Instruction::Print(obj) => {
-                                used.insert(*obj);
-                            }
-                            Instruction::PropertySet(obj, _, val) => {
-                                used.insert(*obj);
-                                used.insert(*val);
-                            }
-                            Instruction::BuildList(args) => {
-                                for a in args { used.insert(*a); }
-                            }
-                            Instruction::BuildMap(args) => {
-                                for (k, v) in args {
-                                    used.insert(*k);
-                                    used.insert(*v);
-                                }
-                            }
-                            Instruction::Phi(args) => {
-                                for (_, v) in args { used.insert(*v); }
-                            }
-                            _ => {}
-                        }
-                    }
-                    match &block.terminator {
-                        Terminator::CondBranch { condition, .. } => { used.insert(*condition); },
-                        Terminator::Return(Some(v)) => { used.insert(*v); },
-                        _ => {}
-                    }
-                }
-                
-                for (_, block) in func.blocks.iter_mut() {
-                    let mut new_insts = Vec::new();
-                    for (val_id, inst) in block.instructions.drain(..) {
-                        let is_side_effect = matches!(inst, 
-                            Instruction::StoreLocal(_, _) | Instruction::StoreGlobal(_, _) |
-                            Instruction::Call(_, _) | Instruction::Spawn(_) |
-                            Instruction::IndexSet(_, _, _) | Instruction::PropertySet(_, _, _) |
-                            Instruction::MakeFunction(_, _) | Instruction::Print(_)
-                        );
-                        
-                        if used.contains(&val_id) || is_side_effect {
-                            new_insts.push((val_id, inst));
-                        } else {
-                            changed = true;
-                        }
-                    }
-                    block.instructions = new_insts;
-                }
-            }
-        }
     }
 
     fn emit(&mut self, inst: Instruction) -> ValueId {
@@ -183,14 +54,10 @@ impl IRBuilder {
         match &stmt.node {
             StatementNode::Assignment { name, value, .. } => {
                 let val_id = self.build_expression(value)?;
-                if self.scope_depth > 0 {
-                    if !self.locals.contains(name) {
-                        self.locals.push(name.clone());
-                    }
-                    self.emit(Instruction::StoreLocal(name.clone(), val_id));
-                } else {
-                    self.emit(Instruction::StoreGlobal(name.clone(), val_id));
+                if !self.locals.contains(name) {
+                    self.locals.push(name.clone());
                 }
+                self.emit(Instruction::StoreLocal(name.clone(), val_id));
             }
             StatementNode::Return { value } => {
                 let val_id = if let Some(expr) = value {
@@ -220,11 +87,9 @@ impl IRBuilder {
                 };
                 
                 self.current_block = true_block;
-                self.scope_depth += 1;
                 for s in &body.statements {
                     self.build_statement(s)?;
                 }
-                self.scope_depth -= 1;
                 
                 let func = &mut self.functions[self.current_func];
                 let true_end_block = func.blocks.get_mut(&self.current_block).unwrap();
@@ -234,9 +99,7 @@ impl IRBuilder {
                 
                 if let Some(other_body) = otherwise {
                     self.current_block = false_block;
-                    self.scope_depth += 1;
                     self.build_statement(other_body)?;
-                    self.scope_depth -= 1;
                     
                     let func = &mut self.functions[self.current_func];
                     let false_end_block = func.blocks.get_mut(&self.current_block).unwrap();
@@ -272,11 +135,9 @@ impl IRBuilder {
                 };
                 
                 self.current_block = body_block;
-                self.scope_depth += 1;
                 for s in &body.statements {
                     self.build_statement(s)?;
                 }
-                self.scope_depth -= 1;
                 
                 let func = &mut self.functions[self.current_func];
                 let body_end_block = func.blocks.get_mut(&self.current_block).unwrap();
@@ -305,12 +166,10 @@ impl IRBuilder {
                 let old_func = self.current_func;
                 let old_block = self.current_block;
                 let old_locals = self.locals.clone();
-                let old_scope = self.scope_depth;
                 
                 self.current_func = func_idx;
                 self.current_block = entry;
                 self.locals.clear();
-                self.scope_depth = 1;
                 
                 for (i, (p, _)) in params.iter().enumerate() {
                     self.locals.push(p.clone());
@@ -332,18 +191,76 @@ impl IRBuilder {
                 self.current_func = old_func;
                 self.current_block = old_block;
                 self.locals = old_locals;
-                self.scope_depth = old_scope;
                 
                 let val_id = self.emit(Instruction::MakeFunction(func_idx, vec![]));
                 
-                if self.scope_depth > 0 {
+                if self.current_func == 0 {
+                    self.emit(Instruction::StoreGlobal(name.clone(), val_id));
+                } else {
                     if !self.locals.contains(name) {
                         self.locals.push(name.clone());
                     }
                     self.emit(Instruction::StoreLocal(name.clone(), val_id));
-                } else {
-                    self.emit(Instruction::StoreGlobal(name.clone(), val_id));
                 }
+            }
+            StatementNode::UsePython { module, alias } => {
+                let val_id = self.emit(Instruction::ImportPython(module.clone()));
+                let name = alias.as_ref().unwrap_or(module).clone();
+                self.emit(Instruction::StoreGlobal(name, val_id));
+            }
+            StatementNode::IndexAssignment { target, index, value } => {
+                let t_id = self.build_expression(target)?;
+                let i_id = self.build_expression(index)?;
+                let v_id = self.build_expression(value)?;
+                self.emit(Instruction::IndexSet(t_id, i_id, v_id));
+            }
+            StatementNode::PropertyAssignment { target, property, value } => {
+                let t_id = self.build_expression(target)?;
+                let v_id = self.build_expression(value)?;
+                self.emit(Instruction::PropertySet(t_id, property.clone(), v_id));
+            }
+            StatementNode::Repeat { count, body } => {
+                let count_val = self.build_expression(count)?;
+                let zero = self.emit(Instruction::Constant(crate::interpreter::Value::Integer(0)));
+                let one = self.emit(Instruction::Constant(crate::interpreter::Value::Integer(1)));
+                let counter_name = format!("__repeat_i_{}", self.functions[self.current_func].new_value().0);
+
+                self.locals.push(counter_name.clone());
+                self.emit(Instruction::StoreLocal(counter_name.clone(), zero));
+
+                let func = &mut self.functions[self.current_func];
+                let cond_block = func.new_block();
+                let body_block = func.new_block();
+                let end_block = func.new_block();
+
+                let cur = func.blocks.get_mut(&self.current_block).unwrap();
+                cur.terminator = Terminator::Branch(cond_block);
+
+                self.current_block = cond_block;
+                let i_val = self.emit(Instruction::LoadLocal(counter_name.clone()));
+                let cond_id = self.emit(Instruction::Lt(i_val, count_val));
+                let cond_block_ref = self.functions[self.current_func].blocks.get_mut(&self.current_block).unwrap();
+                cond_block_ref.terminator = Terminator::CondBranch {
+                    condition: cond_id,
+                    true_block: body_block,
+                    false_block: end_block,
+                };
+
+                self.current_block = body_block;
+                for s in &body.statements {
+                    self.build_statement(s)?;
+                }
+
+                let cur_i = self.emit(Instruction::LoadLocal(counter_name.clone()));
+                let next_i = self.emit(Instruction::Add(cur_i, one));
+                self.emit(Instruction::StoreLocal(counter_name.clone(), next_i));
+
+                let body_end = self.functions[self.current_func].blocks.get_mut(&self.current_block).unwrap();
+                if let Terminator::Unreachable = body_end.terminator {
+                    body_end.terminator = Terminator::Branch(cond_block);
+                }
+
+                self.current_block = end_block;
             }
             _ => {
                 // Ignore unsupported statements for now
@@ -420,12 +337,10 @@ impl IRBuilder {
                 let old_func = self.current_func;
                 let old_block = self.current_block;
                 let old_locals = self.locals.clone();
-                let old_scope = self.scope_depth;
                 
                 self.current_func = func_idx;
                 self.current_block = entry;
                 self.locals.clear();
-                self.scope_depth = 1;
                 
                 for (i, p) in params.iter().enumerate() {
                     self.locals.push(p.clone());
@@ -442,7 +357,6 @@ impl IRBuilder {
                 self.current_func = old_func;
                 self.current_block = old_block;
                 self.locals = old_locals;
-                self.scope_depth = old_scope;
                 
                 Ok(self.emit(Instruction::MakeFunction(func_idx, vec![]))) // empty captures for now
             }

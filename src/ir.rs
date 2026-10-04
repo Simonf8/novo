@@ -76,6 +76,9 @@ pub enum Instruction {
     
     /// Phi node for SSA
     Phi(Vec<(BlockId, ValueId)>),
+
+    /// Import python module
+    ImportPython(String),
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +88,7 @@ pub struct BasicBlock {
     pub terminator: Terminator,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     Branch(BlockId),
     CondBranch {
@@ -202,6 +205,7 @@ impl std::fmt::Display for Instruction {
                 }
                 write!(f, "]")
             }
+            Instruction::ImportPython(m) => write!(f, "import_python \"{}\"", m),
         }
     }
 }
