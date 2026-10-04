@@ -107,53 +107,48 @@ fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
     Ok(Value::PythonObject(obj))
 }
 
-pub struct Environment<'a> {
-    variables: HashMap<String, Value>,
-    parent: Option<&'a Environment<'a>>,
+#[derive(Clone)]
+pub struct Environment {
+    pub scopes: Vec<std::collections::HashMap<String, Value>>,
     pub context_item: Option<Value>,
 }
 
-impl<'a> Environment<'a> {
-    pub fn new(parent: Option<&'a Environment<'a>>) -> Self {
+impl Environment {
+    pub fn new() -> Self {
         Environment {
-            variables: HashMap::new(),
-            parent,
+            scopes: vec![std::collections::HashMap::new()],
             context_item: None,
         }
     }
 
+    pub fn push_scope(&mut self) {
+        self.scopes.push(std::collections::HashMap::new());
+    }
+
+    pub fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
     pub fn define(&mut self, name: String, value: Value) {
-        self.variables.insert(name, value);
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(&name) {
+                scope.insert(name, value);
+                return;
+            }
+        }
+        self.scopes.last_mut().unwrap().insert(name, value);
     }
 
     pub fn get(&self, name: &str) -> Result<Value, String> {
-        if let Some(val) = self.find(name) {
-            Ok(val)
-        } else if let Some(val) = self.find_context() {
-            Ok(val)
-        } else {
-            Err(format!("Unknown variable '{}'", name))
+        for scope in self.scopes.iter().rev() {
+            if let Some(val) = scope.get(name) {
+                return Ok(val.clone());
+            }
         }
-    }
-
-    fn find(&self, name: &str) -> Option<Value> {
-        if let Some(val) = self.variables.get(name) {
-            Some(val.clone())
-        } else if let Some(parent) = self.parent {
-            parent.find(name)
-        } else {
-            None
-        }
-    }
-
-    fn find_context(&self) -> Option<Value> {
         if let Some(ref val) = self.context_item {
-            Some(val.clone())
-        } else if let Some(parent) = self.parent {
-            parent.find_context()
-        } else {
-            None
+            return Ok(val.clone());
         }
+        Err(format!("Unknown variable '{}'", name))
     }
 }
 
@@ -162,18 +157,20 @@ pub enum ExecResult {
     Return(Value),
 }
 
-pub struct Interpreter {}
+pub struct Interpreter {
+    pub concurrent_mode: bool,
+}
 
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter {}
+        Interpreter { concurrent_mode: false }
     }
 
     pub fn interpret(&mut self, program: &Program) -> Result<(), String> {
         // Prepare python env early to catch initialization errors
         pyo3::prepare_freethreaded_python();
         
-        let mut global_env = Environment::new(None);
+        let mut global_env = Environment::new();
         
         global_env.define("str".to_string(), Value::NativeFunction { 
             name: "str".to_string() 
@@ -187,7 +184,7 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute<'a>(&mut self, stmt: &Statement, env: &mut Environment<'a>) -> Result<ExecResult, String> {
+    fn execute(&mut self, stmt: &Statement, env: &mut Environment) -> Result<ExecResult, String> {
         match stmt {
             Statement::Assignment { name, value, .. } => {
                 let val = self.evaluate(value, env)?;
@@ -254,13 +251,15 @@ impl Interpreter {
         Ok(ExecResult::Ok)
     }
 
-    fn execute_block<'a>(&mut self, block: &Block, env: &Environment<'a>) -> Result<ExecResult, String> {
-        let mut local_env = Environment::new(Some(env));
+    fn execute_block(&mut self, block: &Block, env: &mut Environment) -> Result<ExecResult, String> {
+        env.push_scope();
         for stmt in &block.statements {
-            if let ExecResult::Return(v) = self.execute(stmt, &mut local_env)? {
+            if let ExecResult::Return(v) = self.execute(stmt, env)? {
+                env.pop_scope();
                 return Ok(ExecResult::Return(v));
             }
         }
+        env.pop_scope();
         Ok(ExecResult::Ok)
     }
 
@@ -271,12 +270,166 @@ impl Interpreter {
             Expression::String(s) => Ok(Value::String(s.clone())),
             Expression::Boolean(b) => Ok(Value::Boolean(*b)),
             Expression::Identifier(id) => env.get(id),
-            Expression::List(items) => {
-                let mut list = Vec::new();
-                for item in items {
-                    list.push(self.evaluate(item, env)?);
+            Expression::Concurrent(inner) => {
+                let prev = self.concurrent_mode;
+                self.concurrent_mode = true;
+                let result = self.evaluate(inner, env);
+                self.concurrent_mode = prev;
+                result
+            }
+            Expression::Cast(expr, target_type) => {
+                let val = self.evaluate(expr, env)?;
+                let execute_cast = |v: &Value, t: &str| -> Result<Value, String> {
+                    match (v, t) {
+                        (Value::String(s), "json") => {
+                            Python::with_gil(|py| -> Result<Value, String> {
+                                let json = PyModule::import(py, "json").map_err(|e| e.to_string())?;
+                                let loads = json.getattr("loads").map_err(|e| e.to_string())?;
+                                let py_result = loads.call1((s,)).map_err(|e| e.to_string())?;
+                                py_to_value(py, py_result.into_py(py))
+                            })
+                        }
+                        (Value::String(s), "int") => {
+                            s.parse::<i64>().map(Value::Integer).map_err(|_| "Failed to cast to int".to_string())
+                        }
+                        _ => Err(format!("Cannot cast to {}", t)),
+                    }
+                };
+                match val {
+                    Value::List(items) => {
+                        let mut results = Vec::new();
+                        for item in items {
+                            results.push(execute_cast(&item, target_type)?);
+                        }
+                        Ok(Value::List(results))
+                    }
+                    _ => execute_cast(&val, target_type),
                 }
-                Ok(Value::List(list))
+            }
+            Expression::List(items) => {
+                if self.concurrent_mode {
+                    let mut handles = Vec::new();
+                    for item in items {
+                        let env_clone = env.clone();
+                        let item_clone = item.clone();
+                        let is_concurrent = self.concurrent_mode;
+                        handles.push(std::thread::spawn(move || {
+                            let mut interp = Interpreter { concurrent_mode: is_concurrent };
+                            interp.evaluate(&item_clone, &env_clone)
+                        }));
+                    }
+                    
+                    let mut list = Vec::new();
+                    for handle in handles {
+                        match handle.join() {
+                            Ok(Ok(val)) => list.push(val),
+                            Ok(Err(e)) => return Err(e),
+                            Err(_) => return Err("Thread panicked during parallel execution".to_string()),
+                        }
+                    }
+                    Ok(Value::List(list))
+                } else {
+                    let mut list = Vec::new();
+                    for item in items {
+                        list.push(self.evaluate(item, env)?);
+                    }
+                    Ok(Value::List(list))
+                }
+            }
+            Expression::Read(path_expr) => {
+                let path_val = self.evaluate(path_expr, env)?;
+                let execute_read = |path: &str| -> Result<Value, String> {
+                    let content = std::fs::read_to_string(path)
+                        .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
+                    Ok(Value::String(content))
+                };
+                
+                match path_val {
+                    Value::String(path) => execute_read(&path),
+                    Value::List(paths) => {
+                        if self.concurrent_mode {
+                            let mut handles = Vec::new();
+                            for path_item in paths {
+                                if let Value::String(path) = path_item {
+                                    handles.push(std::thread::spawn(move || execute_read(&path)));
+                                } else {
+                                    return Err("Expected list of strings for read".to_string());
+                                }
+                            }
+                            let mut results = Vec::new();
+                            for handle in handles {
+                                match handle.join() {
+                                    Ok(Ok(val)) => results.push(val),
+                                    Ok(Err(e)) => return Err(e),
+                                    Err(_) => return Err("Thread panicked".to_string()),
+                                }
+                            }
+                            Ok(Value::List(results))
+                        } else {
+                            let mut results = Vec::new();
+                            for path_item in paths {
+                                if let Value::String(path) = path_item {
+                                    results.push(execute_read(&path)?);
+                                } else {
+                                    return Err("Expected list of strings for read".to_string());
+                                }
+                            }
+                            Ok(Value::List(results))
+                        }
+                    }
+                    _ => Err("Expected string or list of strings for read".to_string()),
+                }
+            }
+            Expression::Get(url_expr) => {
+                let url_val = self.evaluate(url_expr, env)?;
+                let execute_get = |url: &str| -> Result<Value, String> {
+                    Python::with_gil(|py| -> Result<Value, String> {
+                        let urllib = PyModule::import(py, "urllib.request").map_err(|e| format!("Failed to import urllib: {}", e))?;
+                        let urlopen = urllib.getattr("urlopen").map_err(|e| e.to_string())?;
+                        let py_result = urlopen.call1((url,)).map_err(|e| format!("HTTP request failed: {}", e))?;
+                        let read_func = py_result.getattr("read").map_err(|e| e.to_string())?;
+                        let bytes = read_func.call0().map_err(|e| e.to_string())?;
+                        let decode_func = bytes.getattr("decode").map_err(|e| e.to_string())?;
+                        let decoded = decode_func.call1(("utf-8",)).map_err(|e| e.to_string())?;
+                        py_to_value(py, decoded.into_py(py))
+                    })
+                };
+                
+                match url_val {
+                    Value::String(url) => execute_get(&url),
+                    Value::List(urls) => {
+                        if self.concurrent_mode {
+                            let mut handles = Vec::new();
+                            for url_item in urls {
+                                if let Value::String(url) = url_item {
+                                    handles.push(std::thread::spawn(move || execute_get(&url)));
+                                } else {
+                                    return Err("Expected list of strings for get".to_string());
+                                }
+                            }
+                            let mut results = Vec::new();
+                            for handle in handles {
+                                match handle.join() {
+                                    Ok(Ok(val)) => results.push(val),
+                                    Ok(Err(e)) => return Err(e),
+                                    Err(_) => return Err("Thread panicked".to_string()),
+                                }
+                            }
+                            Ok(Value::List(results))
+                        } else {
+                            let mut results = Vec::new();
+                            for url_item in urls {
+                                if let Value::String(url) = url_item {
+                                    results.push(execute_get(&url)?);
+                                } else {
+                                    return Err("Expected list of strings for get".to_string());
+                                }
+                            }
+                            Ok(Value::List(results))
+                        }
+                    }
+                    _ => Err("Expected string or list of strings for get".to_string()),
+                }
             }
             Expression::Map(items) => {
                 let mut map = HashMap::new();
@@ -298,9 +451,13 @@ impl Interpreter {
                     }
                     Value::PythonObject(py_obj) => {
                         Python::with_gil(|py| {
-                            let attr = py_obj.getattr(py, property.as_str())
-                                .map_err(|e| format!("Python error: {}", e))?;
-                            py_to_value(py, attr)
+                            if let Ok(attr) = py_obj.getattr(py, property.as_str()) {
+                                py_to_value(py, attr)
+                            } else if let Ok(item) = py_obj.call_method1(py, "__getitem__", (property.as_str(),)) {
+                                py_to_value(py, item)
+                            } else {
+                                Err(format!("Python object has no attribute or key '{}'", property))
+                            }
                         })
                     }
                     _ => Err("Property access only allowed on objects/maps or Python objects".to_string()),
@@ -309,51 +466,90 @@ impl Interpreter {
             Expression::IndexAccess { target, index } => {
                 let list_val = self.evaluate(target, env)?;
                 let idx_val = self.evaluate(index, env)?;
-                if let Value::List(items) = list_val {
-                    if let Value::Integer(i) = idx_val {
-                        if i >= 0 && (i as usize) < items.len() {
-                            Ok(items[i as usize].clone())
+                match list_val {
+                    Value::List(items) => {
+                        if let Value::Integer(i) = idx_val {
+                            if i >= 0 && (i as usize) < items.len() {
+                                Ok(items[i as usize].clone())
+                            } else {
+                                Err(format!("Index {} out of bounds", i))
+                            }
                         } else {
-                            Err(format!("Index {} out of bounds", i))
+                            Err("List index must be an integer".to_string())
                         }
-                    } else {
-                        Err("List index must be an integer".to_string())
                     }
-                } else {
-                    Err("Can only index into a list".to_string())
+                    Value::PythonObject(py_obj) => {
+                        Python::with_gil(|py| -> Result<Value, String> {
+                            let py_idx = value_to_py(py, &idx_val)?;
+                            let result = py_obj.call_method1(py, "__getitem__", (py_idx,))
+                                .map_err(|e| format!("Python index error: {}", e))?;
+                            py_to_value(py, result)
+                        })
+                    }
+                    _ => Err("Can only index into a list or Python object".to_string())
                 }
             }
             Expression::Where { target, condition } => {
                 let list_val = self.evaluate(target, env)?;
-                if let Value::List(items) = list_val {
-                    let mut result = Vec::new();
-                    for item in items {
-                        let mut local_env = Environment::new(Some(env));
-                        local_env.context_item = Some(item.clone());
-                        let cond_val = self.evaluate(condition, &local_env)?;
-                        if let Value::Boolean(true) = cond_val {
-                            result.push(item);
-                        }
+                
+                let items = match list_val {
+                    Value::List(l) => l,
+                    Value::PythonObject(py_obj) => {
+                        Python::with_gil(|py| -> Result<Vec<Value>, String> {
+                            if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
+                                let mut res = Vec::new();
+                                for item in list {
+                                    res.push(py_to_value(py, item)?);
+                                }
+                                Ok(res)
+                            } else {
+                                Err("'where' can only be used on an iterable Python object".to_string())
+                            }
+                        })?
                     }
-                    Ok(Value::List(result))
-                } else {
-                    Err("'where' can only be used on a list".to_string())
+                    _ => return Err("'where' can only be used on a list or iterable".to_string())
+                };
+                
+                let mut result = Vec::new();
+                for item in items {
+                    let mut local_env = env.clone();
+                    local_env.context_item = Some(item.clone());
+                    let cond_val = self.evaluate(condition, &local_env)?;
+                    if let Value::Boolean(true) = cond_val {
+                        result.push(item);
+                    }
                 }
+                Ok(Value::List(result))
             }
             Expression::Select { target, mapping } => {
                 let list_val = self.evaluate(target, env)?;
-                if let Value::List(items) = list_val {
-                    let mut result = Vec::new();
-                    for item in items {
-                        let mut local_env = Environment::new(Some(env));
-                        local_env.context_item = Some(item.clone());
-                        let map_val = self.evaluate(mapping, &local_env)?;
-                        result.push(map_val);
+                
+                let items = match list_val {
+                    Value::List(l) => l,
+                    Value::PythonObject(py_obj) => {
+                        Python::with_gil(|py| -> Result<Vec<Value>, String> {
+                            if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
+                                let mut res = Vec::new();
+                                for item in list {
+                                    res.push(py_to_value(py, item)?);
+                                }
+                                Ok(res)
+                            } else {
+                                Err("'select' can only be used on an iterable Python object".to_string())
+                            }
+                        })?
                     }
-                    Ok(Value::List(result))
-                } else {
-                    Err("'select' can only be used on a list".to_string())
+                    _ => return Err("'select' can only be used on a list or iterable".to_string())
+                };
+                
+                let mut result = Vec::new();
+                for item in items {
+                    let mut local_env = env.clone();
+                    local_env.context_item = Some(item.clone());
+                    let map_val = self.evaluate(mapping, &local_env)?;
+                    result.push(map_val);
                 }
+                Ok(Value::List(result))
             }
             Expression::Call { callee, arguments } => {
                 let func = self.evaluate(callee, env)?;
@@ -402,15 +598,18 @@ impl Interpreter {
                 }
                 
                 // Using a closure environment
-                let mut func_env = Environment::new(Some(env));
+                let mut func_env = env.clone();
+                func_env.push_scope(); // Create new scope for function parameters
                 for (param_name, arg_val) in params.into_iter().zip(eval_args) {
                     func_env.define(param_name, arg_val);
                 }
                 
-                match self.execute_block(&body, &func_env)? {
+                let res = match self.execute_block(&body, &mut func_env)? {
                     ExecResult::Return(v) => Ok(v),
                     ExecResult::Ok => Ok(Value::Null),
-                }
+                };
+                func_env.pop_scope();
+                res
             }
             Expression::BinaryOp { left, operator, right } => {
                 let l = self.evaluate(left, env)?;

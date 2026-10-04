@@ -6,6 +6,10 @@ pub enum Expression {
     Boolean(bool),
     Identifier(String),
     List(Vec<Expression>),
+    Concurrent(Box<Expression>),
+    Cast(Box<Expression>, String),
+    Read(Box<Expression>),
+    Get(Box<Expression>),
     Map(Vec<(String, Expression)>),
     IndexAccess {
         target: Box<Expression>,

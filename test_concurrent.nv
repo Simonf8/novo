@@ -1,0 +1,18 @@
+use python time
+
+start_time = time.time()
+show "Fetching user data with new syntax..."
+
+urls = [
+    "https://jsonplaceholder.typicode.com/users/1",
+    "https://jsonplaceholder.typicode.com/users/2",
+    "https://jsonplaceholder.typicode.com/users/3"
+]
+
+users = get urls together
+users = users as json
+names = users select item.name
+
+show names
+elapsed = time.time() - start_time
+show elapsed

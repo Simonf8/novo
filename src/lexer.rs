@@ -151,7 +151,8 @@ impl Lexer {
         let token_type = match val.as_str() {
             "show" | "if" | "otherwise" | "repeat" | "times" | "for" | "in" | "while" | 
             "function" | "return" | "true" | "false" | "record" | "object" | "where" | 
-            "select" | "task" | "run" | "parallel" | "use" | "python" | "as" | "and" | "or" | "not" => {
+            "select" | "task" | "run" | "parallel" | "use" | "python" | "as" | "and" | "or" | "not" |
+            "together" | "read" | "json" | "get" => {
                 TokenType::Keyword(val)
             },
             _ => TokenType::Identifier(val),
@@ -183,7 +184,9 @@ impl Lexer {
 
     fn read_string(&mut self) -> Result<Token, String> {
         let start_col = self.column;
+        let start_line = self.line;
         self.advance(); // skip quote
+
         let mut val = String::new();
         
         while self.peek() != '"' && self.peek() != '\0' {
@@ -203,7 +206,7 @@ impl Lexer {
         }
         
         if self.peek() == '\0' {
-            return Err("Unterminated string".to_string());
+            return Err(format!("Unterminated string at line {}, col {}", start_line, start_col));
         }
         self.advance(); // skip quote
         

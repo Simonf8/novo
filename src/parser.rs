@@ -42,12 +42,17 @@ impl Parser {
         }
     }
 
+    fn error<T>(&self, message: &str) -> Result<T, String> {
+        let token = self.peek();
+        Err(format!("{} at line {}, col {}", message, token.line, token.column))
+    }
+
     fn expect(&mut self, expected: &TokenType) -> Result<Token, String> {
         if self.peek().token_type == *expected {
             let tok = self.advance().clone();
             Ok(tok)
         } else {
-            Err(format!("Expected {:?}, got {:?}", expected, self.peek().token_type))
+            self.error(&format!("Expected {:?}, got {:?}", expected, self.peek().token_type))
         }
     }
 
@@ -84,7 +89,7 @@ impl Parser {
             TokenType::Keyword(k) if k == "function" => self.parse_function_declaration(),
             TokenType::Keyword(k) if k == "return" => self.parse_return_statement(),
             TokenType::Identifier(_) => self.parse_assignment_or_expression(),
-            _ => Err(format!("Unexpected token {:?}", token.token_type)),
+            _ => self.error(&format!("Unexpected token {:?}", token.token_type)),
         }
     }
 
@@ -92,11 +97,21 @@ impl Parser {
         self.expect(&TokenType::Keyword("use".to_string()))?;
         self.expect(&TokenType::Keyword("python".to_string()))?;
         
-        let mod_tok = self.advance().clone();
-        let module = match mod_tok.token_type {
+        let mut module = match self.advance().token_type.clone() {
             TokenType::Identifier(n) => n,
-            _ => return Err("Expected python module name".to_string()),
+            TokenType::Keyword(k) => k,
+            _ => return self.error("Expected python module name"),
         };
+        
+        while self.match_token(&TokenType::Op(".".to_string())) {
+            let next_part = match self.advance().token_type.clone() {
+                TokenType::Identifier(n) => n,
+                TokenType::Keyword(k) => k,
+                _ => return self.error("Expected identifier after '.' in module name"),
+            };
+            module.push('.');
+            module.push_str(&next_part);
+        }
         
         let mut alias = None;
         if self.match_token(&TokenType::Keyword("as".to_string())) {
@@ -104,7 +119,7 @@ impl Parser {
             if let TokenType::Identifier(n) = alias_tok.token_type {
                 alias = Some(n);
             } else {
-                return Err("Expected alias after 'as'".to_string());
+                return self.error("Expected alias after 'as'");
             }
         }
         
@@ -134,7 +149,7 @@ impl Parser {
             } else if self.peek().token_type == TokenType::Keyword("if".to_string()) {
                 otherwise = Some(Box::new(self.parse_if_statement()?));
             } else {
-                return Err("Expected ':' or 'if' after 'otherwise'".to_string());
+                return self.error("Expected ':' or 'if' after 'otherwise'");
             }
         }
         
@@ -167,14 +182,14 @@ impl Parser {
                 type_annotation: None,
             });
         }
-        Err("Expressions as statements not fully supported yet".to_string())
+        self.error("Expressions as statements not fully supported yet")
     }
 
     fn parse_assignment(&mut self) -> Result<Statement, String> {
         let name_tok = self.advance().clone();
         let name = match name_tok.token_type {
             TokenType::Identifier(n) => n,
-            _ => return Err("Expected identifier".to_string()),
+            _ => return self.error("Expected identifier"),
         };
         
         let mut type_annotation = None;
@@ -183,7 +198,7 @@ impl Parser {
             if let TokenType::Identifier(t) = type_tok.token_type {
                 type_annotation = Some(t);
             } else {
-                return Err("Expected type identifier".to_string());
+                return self.error("Expected type identifier");
             }
         }
         
@@ -198,7 +213,7 @@ impl Parser {
         let name_tok = self.advance().clone();
         let name = match name_tok.token_type {
             TokenType::Identifier(n) => n,
-            _ => return Err("Expected function name".to_string()),
+            _ => return self.error("Expected function name"),
         };
         
         self.expect(&TokenType::Punct("(".to_string()))?;
@@ -209,7 +224,7 @@ impl Parser {
                 let param_name_tok = self.advance().clone();
                 let param_name = match param_name_tok.token_type {
                     TokenType::Identifier(n) => n,
-                    _ => return Err("Expected parameter name".to_string()),
+                    _ => return self.error("Expected parameter name"),
                 };
                 
                 let mut param_type = None;
@@ -218,7 +233,7 @@ impl Parser {
                     if let TokenType::Identifier(t) = type_tok.token_type {
                         param_type = Some(t);
                     } else {
-                        return Err("Expected parameter type".to_string());
+                        return self.error("Expected parameter type");
                     }
                 }
                 
@@ -380,8 +395,17 @@ impl Parser {
                 if let TokenType::Identifier(prop) = prop_tok.token_type {
                     expr = Expression::PropertyAccess { target: Box::new(expr), property: prop };
                 } else {
-                    return Err("Expected identifier after '.'".to_string());
+                    return self.error("Expected identifier after '.'");
                 }
+            } else if self.match_token(&TokenType::Keyword("together".to_string())) {
+                expr = Expression::Concurrent(Box::new(expr));
+            } else if self.match_token(&TokenType::Keyword("as".to_string())) {
+                let type_name = match self.advance().token_type.clone() {
+                    TokenType::Identifier(n) => n,
+                    TokenType::Keyword(k) => k,
+                    _ => return self.error("Expected type after 'as'"),
+                };
+                expr = Expression::Cast(Box::new(expr), type_name);
             } else {
                 break;
             }
@@ -390,6 +414,24 @@ impl Parser {
     }
 
     fn parse_atom(&mut self) -> Result<Expression, String> {
+        if self.match_token(&TokenType::Keyword("read".to_string())) {
+            if self.match_token(&TokenType::Keyword("json".to_string())) {
+                let expr = self.parse_atom()?;
+                return Ok(Expression::Cast(
+                    Box::new(Expression::Read(Box::new(expr))),
+                    "json".to_string()
+                ));
+            } else {
+                let expr = self.parse_atom()?;
+                return Ok(Expression::Read(Box::new(expr)));
+            }
+        }
+        
+        if self.match_token(&TokenType::Keyword("get".to_string())) {
+            let expr = self.parse_atom()?;
+            return Ok(Expression::Get(Box::new(expr)));
+        }
+
         if self.match_token(&TokenType::Punct("{".to_string())) {
             let mut items = Vec::new();
             loop {
@@ -404,7 +446,7 @@ impl Parser {
                 let key = match key_tok.token_type {
                     TokenType::Identifier(k) => k,
                     TokenType::String(k) => k,
-                    _ => return Err(format!("Expected identifier or string as map key, got {:?}", key_tok.token_type)),
+                    _ => return self.error(&format!("Expected identifier or string as map key, got {:?}", key_tok.token_type)),
                 };
                 self.expect(&TokenType::Op(":".to_string()))?;
                 let value = self.parse_expression()?;
@@ -453,7 +495,8 @@ impl Parser {
             TokenType::Identifier(id) => Ok(Expression::Identifier(id)),
             TokenType::Keyword(k) if k == "true" => Ok(Expression::Boolean(true)),
             TokenType::Keyword(k) if k == "false" => Ok(Expression::Boolean(false)),
-            _ => Err(format!("Unexpected token in expression: {:?}", token.token_type)),
+            TokenType::Keyword(k) if k == "json" => Ok(Expression::Identifier(k)),
+            _ => self.error(&format!("Unexpected token in expression: {:?}", token.token_type)),
         }
     }
 }
