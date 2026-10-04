@@ -14,41 +14,124 @@ mod ir_backend;
 
 use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Instant;
+
+fn print_usage() {
+    println!("Novo — Fast, intent-driven general-purpose programming language\n");
+    println!("Usage:");
+    println!("    novo [command] [options] <file.nv>\n");
+    println!("Commands:");
+    println!("    run <file.nv>             Execute a Novo program (default)");
+    println!("    check <file.nv>           Validate syntax, types, and IR generation without executing");
+    println!("    test [dir|file]           Discover and run test suite with differential verification");
+    println!("    bench <file.nv>           Run repeated microbenchmark measurements");
+    println!("    ir <file.nv>              Emit optimized SSA intermediate representation\n");
+    println!("Options:");
+    println!("    --engine=<vm|ast|diff>    Execution engine (default: vm)");
+    println!("    --iterations=<N>, -n <N>  Benchmark iterations (default: 5)");
+    println!("    --help, -h                Show this help message");
+    println!("    --version, -v             Show version information");
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        println!("Usage: novo <command> [options] <file.nv>");
-        println!("Commands:");
-        println!("  run    Run a .nv file (default)");
-        println!("  check  Type check a .nv file");
+        print_usage();
+        return;
+    }
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        return;
+    }
+
+    if args.iter().any(|a| a == "--version" || a == "-v") {
+        println!("novo 0.1.0");
         return;
     }
 
     let mut command = "run";
-    let mut filename = "";
-    let mut engine = "vm"; // Make VM the default engine
+    let mut target = String::new();
+    let mut engine = "vm";
+    let mut iterations = 5usize;
 
     let mut arg_idx = 1;
-    if !args[arg_idx].starts_with("-") && !args[arg_idx].ends_with(".nv") {
-        command = &args[arg_idx];
-        arg_idx += 1;
+    let first = &args[1];
+    if !first.starts_with('-') && !first.ends_with(".nv") {
+        command = first.as_str();
+        arg_idx = 2;
     }
 
-    for arg in args.iter().skip(arg_idx) {
+    let mut i = arg_idx;
+    while i < args.len() {
+        let arg = &args[i];
         if arg.starts_with("--engine=") {
             engine = &arg[9..];
-        } else if !arg.starts_with("-") {
-            filename = arg;
+        } else if arg.starts_with("--iterations=") {
+            if let Ok(n) = arg[13..].parse::<usize>() {
+                iterations = n.max(1);
+            }
+        } else if (arg == "-n" || arg == "--iterations") && i + 1 < args.len() {
+            i += 1;
+            if let Ok(n) = args[i].parse::<usize>() {
+                iterations = n.max(1);
+            }
+        } else if !arg.starts_with('-') {
+            target = arg.clone();
+        }
+        i += 1;
+    }
+
+    match command {
+        "run" => {
+            if target.is_empty() {
+                eprintln!("Error: 'run' requires a .nv file path.");
+                std::process::exit(1);
+            }
+            execute_run(&target, engine);
+        }
+        "check" => {
+            if target.is_empty() {
+                eprintln!("Error: 'check' requires a .nv file path.");
+                std::process::exit(1);
+            }
+            execute_check(&target);
+        }
+        "ir" => {
+            if target.is_empty() {
+                eprintln!("Error: 'ir' requires a .nv file path.");
+                std::process::exit(1);
+            }
+            execute_ir(&target);
+        }
+        "test" => {
+            let test_target = if target.is_empty() { "tests".to_string() } else { target };
+            execute_test(&test_target, engine);
+        }
+        "bench" => {
+            if target.is_empty() {
+                eprintln!("Error: 'bench' requires a .nv file path.");
+                std::process::exit(1);
+            }
+            execute_bench(&target, iterations, engine);
+        }
+        other => {
+            eprintln!("Unknown command: '{}'. Run 'novo --help' for available commands.", other);
+            std::process::exit(1);
         }
     }
+}
 
-    if filename.is_empty() {
-        println!("Usage: novo {} [--engine=ast|vm] <file.nv>", command);
-        return;
-    }
-
-    let source = fs::read_to_string(filename).expect("Failed to read file");
+fn execute_run(filename: &str, engine: &str) {
+    let source = match fs::read_to_string(filename) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}", filename, e);
+            std::process::exit(1);
+        }
+    };
 
     let mut lexer = lexer::Lexer::new(&source);
     let tokens = match lexer.tokenize() {
@@ -68,31 +151,10 @@ fn main() {
         }
     };
 
-    if command == "ir" {
-        let builder = ir_builder::IRBuilder::new();
-        match builder.build(&ast) {
-            Ok(functions) => {
-                for f in functions {
-                    print!("{}", f);
-                }
-            }
-            Err(e) => {
-                print_error(&source, &e, "IR build error");
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
     let mut type_checker = type_checker::TypeChecker::new();
     if let Err(e) = type_checker.check_program(&ast) {
         print_error(&source, &e, "Type error");
         std::process::exit(1);
-    }
-
-    if command == "check" {
-        println!("Type checking completed successfully.");
-        return;
     }
 
     if engine == "vm" {
@@ -104,7 +166,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        
+
         let backend = ir_backend::IRBackend::new(ir);
         match backend.generate() {
             Ok(chunk) => {
@@ -130,6 +192,342 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn execute_check(filename: &str) {
+    let source = match fs::read_to_string(filename) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}", filename, e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut lexer = lexer::Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            print_error(&source, &e, "Lexer error");
+            std::process::exit(1);
+        }
+    };
+
+    let mut parser = parser::Parser::new(tokens);
+    let ast = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            print_error(&source, &e, "Syntax error");
+            std::process::exit(1);
+        }
+    };
+
+    let mut type_checker = type_checker::TypeChecker::new();
+    if let Err(e) = type_checker.check_program(&ast) {
+        print_error(&source, &e, "Type error");
+        std::process::exit(1);
+    }
+
+    let builder = ir_builder::IRBuilder::new();
+    let ir = match builder.build(&ast) {
+        Ok(ir) => ir,
+        Err(e) => {
+            print_error(&source, &e, "IR Compilation error");
+            std::process::exit(1);
+        }
+    };
+
+    let num_funcs = ir.len();
+    let num_blocks: usize = ir.iter().map(|f| f.blocks.len()).sum();
+    let num_insts: usize = ir.iter().map(|f| f.blocks.values().map(|b| b.instructions.len()).sum::<usize>()).sum();
+
+    let backend = ir_backend::IRBackend::new(ir);
+    if let Err(e) = backend.generate() {
+        print_error(&source, &e, "Codegen error");
+        std::process::exit(1);
+    }
+
+    println!("Check passed: '{}' (AST: {} statements, IR: {} functions, {} blocks, {} instructions).",
+             filename, ast.statements.len(), num_funcs, num_blocks, num_insts);
+}
+
+fn execute_ir(filename: &str) {
+    let source = match fs::read_to_string(filename) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}", filename, e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut lexer = lexer::Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            print_error(&source, &e, "Lexer error");
+            std::process::exit(1);
+        }
+    };
+
+    let mut parser = parser::Parser::new(tokens);
+    let ast = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            print_error(&source, &e, "Syntax error");
+            std::process::exit(1);
+        }
+    };
+
+    let builder = ir_builder::IRBuilder::new();
+    match builder.build(&ast) {
+        Ok(functions) => {
+            for f in functions {
+                print!("{}", f);
+            }
+        }
+        Err(e) => {
+            print_error(&source, &e, "IR build error");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn discover_tests(target: &str) -> Vec<PathBuf> {
+    let p = Path::new(target);
+    let mut files = Vec::new();
+
+    if p.is_file() {
+        if target.ends_with(".nv") {
+            files.push(p.to_path_buf());
+        }
+        return files;
+    }
+
+    if let Ok(entries) = fs::read_dir(p) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("nv") {
+                files.push(path);
+            }
+        }
+    }
+
+    files.sort();
+    files
+}
+
+fn execute_test(target: &str, engine_mode: &str) {
+    let test_files = discover_tests(target);
+    if test_files.is_empty() {
+        eprintln!("No .nv test files found in target '{}'.", target);
+        std::process::exit(1);
+    }
+
+    let current_exe = env::current_exe().expect("Failed to locate current executable");
+
+    println!("Running {} test(s) in '{}' (mode: {})...\n", test_files.len(), target, engine_mode);
+
+    let mut passed = 0;
+    let mut failed = 0;
+    let suite_start = Instant::now();
+
+    for file in &test_files {
+        let display_name = file.display().to_string();
+        print!("test {:<40} ... ", display_name);
+
+        let start = Instant::now();
+
+        if engine_mode == "diff" {
+            let ast_res = Command::new(&current_exe)
+                .arg("run")
+                .arg(file)
+                .arg("--engine=ast")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output();
+
+            let vm_res = Command::new(&current_exe)
+                .arg("run")
+                .arg(file)
+                .arg("--engine=vm")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output();
+
+            let elapsed = start.elapsed();
+
+            match (ast_res, vm_res) {
+                (Ok(ast_out), Ok(vm_out)) => {
+                    let ast_exit = ast_out.status.code().unwrap_or(-1);
+                    let vm_exit = vm_out.status.code().unwrap_or(-1);
+
+                    let ast_stdout = String::from_utf8_lossy(&ast_out.stdout).trim().to_string();
+                    let vm_stdout = String::from_utf8_lossy(&vm_out.stdout).trim().to_string();
+
+                    if ast_exit != vm_exit {
+                        println!("FAILED (exit code mismatch: AST={}, VM={}) [{} ms]",
+                                 ast_exit, vm_exit, elapsed.as_millis());
+                        failed += 1;
+                    } else if ast_stdout != vm_stdout {
+                        println!("FAILED (output mismatch) [{} ms]", elapsed.as_millis());
+                        eprintln!("  --- AST stdout ---\n{}", ast_stdout);
+                        eprintln!("  --- VM  stdout ---\n{}", vm_stdout);
+                        failed += 1;
+                    } else {
+                        println!("ok [{} ms]", elapsed.as_millis());
+                        passed += 1;
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    println!("FAILED (process execution error: {})", e);
+                    failed += 1;
+                }
+            }
+        } else {
+            let res = Command::new(&current_exe)
+                .arg("run")
+                .arg(file)
+                .arg(format!("--engine={}", engine_mode))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output();
+
+            let elapsed = start.elapsed();
+
+            match res {
+                Ok(out) => {
+                    let is_error_test = display_name.contains("error");
+                    let success = if is_error_test {
+                        !out.status.success()
+                    } else {
+                        out.status.success()
+                    };
+
+                    if success {
+                        println!("ok [{} ms]", elapsed.as_millis());
+                        passed += 1;
+                    } else {
+                        let err_msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                        if is_error_test {
+                            println!("FAILED (expected error, but succeeded) [{} ms]", elapsed.as_millis());
+                        } else {
+                            println!("FAILED (exit code: {}) [{} ms]",
+                                     out.status.code().unwrap_or(-1), elapsed.as_millis());
+                            if !err_msg.is_empty() {
+                                eprintln!("  {}", err_msg);
+                            }
+                        }
+                        failed += 1;
+                    }
+                }
+                Err(e) => {
+                    println!("FAILED (failed to execute: {})", e);
+                    failed += 1;
+                }
+            }
+        }
+    }
+
+    let total_elapsed = suite_start.elapsed();
+    println!("\nTest result: {} passed, {} failed in {:.2}s", passed, failed, total_elapsed.as_secs_f64());
+
+    if failed > 0 {
+        std::process::exit(1);
+    }
+}
+
+fn execute_bench(filename: &str, iterations: usize, engine: &str) {
+    let source = match fs::read_to_string(filename) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}", filename, e);
+            std::process::exit(1);
+        }
+    };
+
+    println!("Novo Benchmark: '{}' (engine: {}, iterations: {})", filename, engine, iterations);
+    println!("{:-<60}", "");
+
+    // 1. Measure compilation overhead
+    let compile_start = Instant::now();
+    let mut lexer = lexer::Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            print_error(&source, &e, "Lexer error");
+            std::process::exit(1);
+        }
+    };
+    let mut parser = parser::Parser::new(tokens);
+    let ast = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            print_error(&source, &e, "Syntax error");
+            std::process::exit(1);
+        }
+    };
+    let mut type_checker = type_checker::TypeChecker::new();
+    if let Err(e) = type_checker.check_program(&ast) {
+        print_error(&source, &e, "Type error");
+        std::process::exit(1);
+    }
+
+    let compile_duration = compile_start.elapsed();
+    println!("Compilation Time:       {:.3} ms", compile_duration.as_secs_f64() * 1000.0);
+
+    // 2. Measure execution iterations
+    let current_exe = env::current_exe().expect("Failed to locate current executable");
+    let mut durations: Vec<f64> = Vec::with_capacity(iterations);
+
+    for iter in 1..=iterations {
+        let run_start = Instant::now();
+        let status = Command::new(&current_exe)
+            .arg("run")
+            .arg(filename)
+            .arg(format!("--engine={}", engine))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .status();
+
+        let elapsed_ms = run_start.elapsed().as_secs_f64() * 1000.0;
+
+        match status {
+            Ok(s) if s.success() => {
+                durations.push(elapsed_ms);
+            }
+            Ok(s) => {
+                eprintln!("Iteration {} failed with exit code {}", iter, s.code().unwrap_or(-1));
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Iteration {} failed to run: {}", iter, e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let count = durations.len() as f64;
+    let min = durations.first().copied().unwrap_or(0.0);
+    let max = durations.last().copied().unwrap_or(0.0);
+    let sum: f64 = durations.iter().sum();
+    let mean = sum / count;
+
+    let median = if durations.len() % 2 == 1 {
+        durations[durations.len() / 2]
+    } else {
+        (durations[durations.len() / 2 - 1] + durations[durations.len() / 2]) / 2.0
+    };
+
+    let variance = durations.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / count;
+    let std_dev = variance.sqrt();
+
+    println!("Execution Statistics ({} runs):", iterations);
+    println!("  Mean:                 {:.3} ms (±{:.3} ms)", mean, std_dev);
+    println!("  Median:               {:.3} ms", median);
+    println!("  Min:                  {:.3} ms", min);
+    println!("  Max:                  {:.3} ms", max);
+    println!("{:-<60}", "");
 }
 
 fn print_error(source: &str, error: &str, error_type: &str) {

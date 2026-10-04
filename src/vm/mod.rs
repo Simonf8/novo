@@ -590,8 +590,8 @@ impl VM {
                 OpCode::BuildMap(count) => {
                     let mut map = std::collections::HashMap::new();
                     for _ in 0..count {
-                        let key_val = self.stack.pop().unwrap();
                         let val = self.stack.pop().unwrap();
+                        let key_val = self.stack.pop().unwrap();
                         if let Value::String(k) = key_val {
                             map.insert(k, val);
                         } else {
