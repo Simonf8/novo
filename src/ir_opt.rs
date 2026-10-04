@@ -11,6 +11,7 @@ pub fn optimize(func: &mut FunctionIR) {
         changed |= constant_propagation_and_folding(func);
         changed |= algebraic_simplification(func);
         changed |= common_subexpression_elimination(func);
+        changed |= loop_invariant_code_motion(func);
         changed |= simplify_cfg(func);
         changed |= dead_code_elimination(func);
         iteration += 1;
@@ -432,6 +433,18 @@ fn algebraic_simplification(func: &mut FunctionIR) -> bool {
                         changed = true;
                     }
                 }
+                Instruction::Div(l, r) => {
+                    if known_ints.get(r) == Some(&1) {
+                        replacements.insert(*val_id, *l);
+                        changed = true;
+                    }
+                }
+                Instruction::Mod(l, r) => {
+                    if known_ints.get(r) == Some(&1) || l == r {
+                        *inst = Instruction::Constant(Value::Integer(0));
+                        changed = true;
+                    }
+                }
                 Instruction::Eq(l, r) if l == r => {
                     *inst = Instruction::Constant(Value::Boolean(true));
                     changed = true;
@@ -491,6 +504,11 @@ fn compute_dominators(func: &FunctionIR) -> HashMap<BlockId, HashSet<BlockId>> {
                 preds.entry(*false_block).or_default().push(*src);
             }
             _ => {}
+        }
+        for (_, inst) in &block.instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                preds.entry(*catch_b).or_default().push(*src);
+            }
         }
     }
 
@@ -596,6 +614,179 @@ fn common_subexpression_elimination(func: &mut FunctionIR) -> bool {
                 substitute_instruction(inst, &replacements);
             }
             substitute_terminator(&mut block.terminator, &replacements);
+        }
+    }
+
+    changed
+}
+
+fn get_instruction_operands(inst: &Instruction) -> Vec<ValueId> {
+    match inst {
+        Instruction::Add(l, r)
+        | Instruction::Sub(l, r)
+        | Instruction::Mul(l, r)
+        | Instruction::Div(l, r)
+        | Instruction::Mod(l, r)
+        | Instruction::Eq(l, r)
+        | Instruction::Neq(l, r)
+        | Instruction::Lt(l, r)
+        | Instruction::Le(l, r)
+        | Instruction::Gt(l, r)
+        | Instruction::Ge(l, r)
+        | Instruction::IndexGet(l, r) => vec![*l, *r],
+        Instruction::Call(c, args) => {
+            let mut u = vec![*c];
+            u.extend(args.iter().copied());
+            u
+        }
+        Instruction::GetProperty(o, _)
+        | Instruction::Await(o)
+        | Instruction::StoreGlobal(_, o)
+        | Instruction::StoreLocal(_, o)
+        | Instruction::Cast(o, _)
+        | Instruction::Read(o)
+        | Instruction::Get(o)
+        | Instruction::Where(o, _)
+        | Instruction::Select(o, _)
+        | Instruction::Aggregate(o, _, _)
+        | Instruction::Print(o) => vec![*o],
+        Instruction::StringInterpolate(args) => args.clone(),
+        Instruction::PropertySet(o, _, v) => vec![*o, *v],
+        Instruction::IndexSet(o, i, v) => vec![*o, *i, *v],
+        Instruction::BuildList(args) => args.clone(),
+        Instruction::BuildMap(pairs) => {
+            let mut u = Vec::new();
+            for (k, v) in pairs {
+                u.push(*k);
+                u.push(*v);
+            }
+            u
+        }
+        Instruction::Phi(operands) => operands.iter().map(|(_, v)| *v).collect(),
+        _ => vec![],
+    }
+}
+
+fn loop_invariant_code_motion(func: &mut FunctionIR) -> bool {
+    let dom = compute_dominators(func);
+    let all_blocks: HashSet<BlockId> = func.blocks.keys().copied().collect();
+
+    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for &b in &all_blocks {
+        preds.entry(b).or_default();
+    }
+    for (src, block) in &func.blocks {
+        match &block.terminator {
+            Terminator::Branch(dst) => {
+                preds.entry(*dst).or_default().push(*src);
+            }
+            Terminator::CondBranch { true_block, false_block, .. } => {
+                preds.entry(*true_block).or_default().push(*src);
+                preds.entry(*false_block).or_default().push(*src);
+            }
+            _ => {}
+        }
+        for (_, inst) in &block.instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                preds.entry(*catch_b).or_default().push(*src);
+            }
+        }
+    }
+
+    let mut backedges: Vec<(BlockId, BlockId)> = Vec::new();
+    for (&src, block) in &func.blocks {
+        let successors = match &block.terminator {
+            Terminator::Branch(dst) => vec![*dst],
+            Terminator::CondBranch { true_block, false_block, .. } => vec![*true_block, *false_block],
+            _ => vec![],
+        };
+        for dst in successors {
+            if let Some(dom_set) = dom.get(&src) {
+                if dom_set.contains(&dst) {
+                    backedges.push((src, dst));
+                }
+            }
+        }
+    }
+
+    if backedges.is_empty() {
+        return false;
+    }
+
+    let mut changed = false;
+
+    for (latch, header) in backedges {
+        let mut loop_blocks: HashSet<BlockId> = HashSet::new();
+        loop_blocks.insert(header);
+        let mut worklist = vec![latch];
+        while let Some(b) = worklist.pop() {
+            if loop_blocks.insert(b) {
+                if let Some(p_list) = preds.get(&b) {
+                    for &p in p_list {
+                        if !loop_blocks.contains(&p) {
+                            worklist.push(p);
+                        }
+                    }
+                }
+            }
+        }
+
+        let outer_preds: Vec<BlockId> = preds.get(&header).cloned().unwrap_or_default()
+            .into_iter()
+            .filter(|p| !loop_blocks.contains(p))
+            .collect();
+
+        if outer_preds.len() != 1 {
+            continue;
+        }
+
+        let pre_header = outer_preds[0];
+        if func.blocks.get(&pre_header).map(|b| &b.terminator) != Some(&Terminator::Branch(header)) {
+            continue;
+        }
+
+        let mut loop_defs: HashSet<ValueId> = HashSet::new();
+        for &b_id in &loop_blocks {
+            if let Some(block) = func.blocks.get(&b_id) {
+                for (val_id, _) in &block.instructions {
+                    loop_defs.insert(*val_id);
+                }
+            }
+        }
+
+        let mut hoistable: Vec<(BlockId, ValueId, Instruction)> = Vec::new();
+        let mut hoisted_defs: HashSet<ValueId> = HashSet::new();
+
+        for &b_id in &loop_blocks {
+            if let Some(block) = func.blocks.get(&b_id) {
+                for (val_id, inst) in &block.instructions {
+                    if matches!(inst, Instruction::Phi(_)) {
+                        continue;
+                    }
+                    if is_pure_instruction(inst) || matches!(inst, Instruction::Constant(_)) {
+                        let uses = get_instruction_operands(inst);
+                        let all_invariant = uses.iter().all(|u| !loop_defs.contains(u) || hoisted_defs.contains(u));
+                        if all_invariant {
+                            hoistable.push((b_id, *val_id, inst.clone()));
+                            hoisted_defs.insert(*val_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if hoistable.is_empty() {
+            continue;
+        }
+
+        for (src_block_id, val_id, inst) in hoistable {
+            if let Some(src_block) = func.blocks.get_mut(&src_block_id) {
+                src_block.instructions.retain(|(v, _)| *v != val_id);
+            }
+            if let Some(pre_block) = func.blocks.get_mut(&pre_header) {
+                pre_block.instructions.push((val_id, inst));
+                changed = true;
+            }
         }
     }
 
@@ -924,5 +1115,44 @@ mod tests {
         assert!(func.blocks.contains_key(&b1));
         assert!(!func.blocks.contains_key(&b2));
         assert_eq!(func.blocks[&b0].terminator, Terminator::Branch(b1));
+    }
+
+    #[test]
+    fn test_loop_invariant_code_motion() {
+        let mut func = FunctionIR::new("test_licm".to_string());
+        let b_pre = func.new_block();
+        let b_loop = func.new_block();
+        let b_exit = func.new_block();
+        func.entry_block = b_pre;
+
+        // Pre-header definitions
+        let v_base = func.new_value();
+        let b_pre_mut = func.blocks.get_mut(&b_pre).unwrap();
+        b_pre_mut.instructions.push((v_base, Instruction::Constant(Value::Integer(100))));
+        b_pre_mut.terminator = Terminator::Branch(b_loop);
+
+        // Loop body:
+        // invariant = v_base + 5
+        // counter induction ...
+        let v_five = func.new_value();
+        let v_inv = func.new_value();
+        let v_cond = func.new_value();
+        let b_loop_mut = func.blocks.get_mut(&b_loop).unwrap();
+        b_loop_mut.instructions.push((v_five, Instruction::Constant(Value::Integer(5))));
+        b_loop_mut.instructions.push((v_inv, Instruction::Add(v_base, v_five)));
+        b_loop_mut.instructions.push((v_cond, Instruction::Constant(Value::Boolean(false))));
+        b_loop_mut.terminator = Terminator::CondBranch {
+            condition: v_cond,
+            true_block: b_loop,
+            false_block: b_exit,
+        };
+
+        let b_exit_mut = func.blocks.get_mut(&b_exit).unwrap();
+        b_exit_mut.terminator = Terminator::Return(Some(v_inv));
+
+        optimize(&mut func);
+
+        // Assert that the invariant operation was hoisted to pre-header b_pre
+        assert!(func.blocks[&b_pre].instructions.iter().any(|(v, _)| *v == v_inv));
     }
 }
