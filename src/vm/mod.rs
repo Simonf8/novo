@@ -26,6 +26,7 @@ pub struct VM {
     pub try_stack: Vec<CatchHandler>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum InterpretResult {
     Ok,
     RuntimeError(String),
@@ -82,6 +83,13 @@ impl VM {
                 match instruction {
                 OpCode::Return => {
                     let result = self.stack.pop().unwrap_or(Value::Null);
+                    while let Some(top_handler) = self.try_stack.last() {
+                        if top_handler.frame_index >= self.frames.len() {
+                            self.try_stack.pop();
+                        } else {
+                            break;
+                        }
+                    }
                     if self.frames.is_empty() {
                         self.stack.push(result);
                         return InterpretResult::Ok;
@@ -268,6 +276,87 @@ impl VM {
                         _ => throw!(frame, 'vm_loop, "Operands must be numbers".to_string()),
                     }
                 }
+                OpCode::AddInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&mut *a, &b) {
+                        *x += *y;
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::SubtractInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&mut *a, &b) {
+                        *x -= *y;
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::MultiplyInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&mut *a, &b) {
+                        *x *= *y;
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::EqualInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&*a, &b) {
+                        *a = Value::Boolean(x == y);
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::NotEqualInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&*a, &b) {
+                        *a = Value::Boolean(x != y);
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::LessInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&*a, &b) {
+                        *a = Value::Boolean(x < y);
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::LessEqualInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&*a, &b) {
+                        *a = Value::Boolean(x <= y);
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::GreaterInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&*a, &b) {
+                        *a = Value::Boolean(x > y);
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
+                OpCode::GreaterEqualInt => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.last_mut().unwrap();
+                    if let (Value::Integer(x), Value::Integer(y)) = (&*a, &b) {
+                        *a = Value::Boolean(x >= y);
+                    } else {
+                        throw!(frame, 'vm_loop, "Operands must be integers".to_string());
+                    }
+                }
                 OpCode::Jump(offset) => {
                     frame.ip += offset;
                 }
@@ -413,6 +502,31 @@ impl VM {
                                 class_name: name.clone(),
                                 properties: std::sync::Arc::new(parking_lot::RwLock::new(props)),
                             };
+                            
+                            if let Some(init_val) = methods.get("init") {
+                                if let Value::CompiledFunction { chunk: init_chunk, arity } = init_val {
+                                    if arg_count != *arity {
+                                        throw!(frame, 'vm_loop, format!("Expected {} arguments for init but got {}", arity, arg_count));
+                                    }
+                                    let mut sub_vm = VM::new();
+                                    sub_vm.globals = self.globals.clone();
+                                    let start = self.stack.len() - arg_count;
+                                    for i in 0..arg_count {
+                                        sub_vm.stack.push(self.stack[start + i].clone());
+                                    }
+                                    sub_vm.frames.push(CallFrame {
+                                        chunk: init_chunk.clone(),
+                                        ip: 0,
+                                        base_pointer: 0,
+                                    });
+                                    match sub_vm.run() {
+                                        InterpretResult::Ok => {
+                                            self.globals = sub_vm.globals;
+                                        }
+                                        InterpretResult::RuntimeError(e) => throw!(frame, 'vm_loop, e),
+                                    }
+                                }
+                            }
                             
                             self.stack.truncate(self.stack.len() - arg_count - 1);
                             self.stack.push(instance);

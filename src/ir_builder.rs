@@ -262,6 +262,97 @@ impl IRBuilder {
 
                 self.current_block = end_block;
             }
+            StatementNode::ClassDef { name, methods } => {
+                let mut method_indices = Vec::new();
+                for m in methods {
+                    if let StatementNode::FunctionDeclaration { name: ref m_name, ref params, ref body, .. } = m.node {
+                        let func_idx = self.functions.len();
+                        let mut new_func = FunctionIR::new(format!("{}::{}", name, m_name));
+                        for (_p, _) in params {
+                            let p_id = new_func.new_value();
+                            new_func.params.push(p_id);
+                        }
+                        let entry = new_func.new_block();
+                        new_func.entry_block = entry;
+                        self.functions.push(new_func);
+
+                        let old_func = self.current_func;
+                        let old_block = self.current_block;
+                        let old_locals = self.locals.clone();
+
+                        self.current_func = func_idx;
+                        self.current_block = entry;
+                        self.locals.clear();
+
+                        for (i, (p, _)) in params.iter().enumerate() {
+                            self.locals.push(p.clone());
+                            let p_id = self.functions[func_idx].params[i];
+                            self.emit(Instruction::StoreLocal(p.clone(), p_id));
+                        }
+
+                        for s in &body.statements {
+                            self.build_statement(s)?;
+                        }
+
+                        let cur_func = &mut self.functions[self.current_func];
+                        let cur_block = cur_func.blocks.get_mut(&self.current_block).unwrap();
+                        if let Terminator::Unreachable = cur_block.terminator {
+                            cur_block.terminator = Terminator::Return(None);
+                        }
+
+                        self.current_func = old_func;
+                        self.current_block = old_block;
+                        self.locals = old_locals;
+
+                        method_indices.push((m_name.clone(), func_idx));
+                    }
+                }
+                let class_id = self.emit(Instruction::MakeClass(name.clone(), method_indices));
+                self.emit(Instruction::StoreGlobal(name.clone(), class_id));
+            }
+            StatementNode::TryCatch { try_block, catch_var, catch_block } => {
+                let func = &mut self.functions[self.current_func];
+                let try_body_block = func.new_block();
+                let catch_body_block = func.new_block();
+                let merge_block = func.new_block();
+
+                // Branch to try_body_block
+                let cur = func.blocks.get_mut(&self.current_block).unwrap();
+                cur.terminator = Terminator::Branch(try_body_block);
+
+                // Build try block
+                self.current_block = try_body_block;
+                self.emit(Instruction::TryStart(catch_body_block));
+
+                for s in &try_block.statements {
+                    self.build_statement(s)?;
+                }
+
+                self.emit(Instruction::TryEnd);
+                let try_end = self.functions[self.current_func].blocks.get_mut(&self.current_block).unwrap();
+                if let Terminator::Unreachable = try_end.terminator {
+                    try_end.terminator = Terminator::Branch(merge_block);
+                }
+
+                // Build catch block
+                self.current_block = catch_body_block;
+                let err_id = self.emit(Instruction::CatchException);
+                if !self.locals.contains(catch_var) {
+                    self.locals.push(catch_var.clone());
+                }
+                self.emit(Instruction::StoreLocal(catch_var.clone(), err_id));
+
+                for s in &catch_block.statements {
+                    self.build_statement(s)?;
+                }
+
+                let catch_end = self.functions[self.current_func].blocks.get_mut(&self.current_block).unwrap();
+                if let Terminator::Unreachable = catch_end.terminator {
+                    catch_end.terminator = Terminator::Branch(merge_block);
+                }
+
+                self.current_block = merge_block;
+            }
             _ => {
                 // Ignore unsupported statements for now
             }

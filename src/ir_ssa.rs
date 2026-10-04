@@ -19,6 +19,11 @@ fn split_critical_edges(func: &mut FunctionIR) {
             }
             _ => {}
         }
+        for (_, inst) in &block.instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                preds.entry(*catch_b).or_default().push(*src_id);
+            }
+        }
     }
 
     let mut edges_to_split: Vec<(BlockId, bool, BlockId)> = Vec::new(); // (src, is_true_branch, dst)
@@ -72,11 +77,16 @@ fn find_back_edges(func: &FunctionIR) -> HashSet<(BlockId, BlockId)> {
         back_edges: &mut HashSet<(BlockId, BlockId)>,
     ) {
         state.insert(u, 1);
-        let successors = match &func.blocks.get(&u).unwrap().terminator {
+        let mut successors = match &func.blocks.get(&u).unwrap().terminator {
             Terminator::Branch(dst) => vec![*dst],
             Terminator::CondBranch { true_block, false_block, .. } => vec![*true_block, *false_block],
             _ => vec![],
         };
+        for (_, inst) in &func.blocks.get(&u).unwrap().instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                successors.push(*catch_b);
+            }
+        }
 
         for v in successors {
             match state.get(&v).copied().unwrap_or(0) {
@@ -203,6 +213,11 @@ pub fn convert_to_ssa(func: &mut FunctionIR) {
             }
             _ => {}
         }
+        for (_, inst) in &block.instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                preds.entry(*catch_b).or_default().push(*src_id);
+            }
+        }
     }
 
     // 3. Find back-edges to control block sealing
@@ -227,11 +242,16 @@ pub fn convert_to_ssa(func: &mut FunctionIR) {
         rpo: &mut Vec<BlockId>,
     ) {
         visited.insert(u);
-        let successors = match &func.blocks.get(&u).unwrap().terminator {
+        let mut successors = match &func.blocks.get(&u).unwrap().terminator {
             Terminator::Branch(dst) => vec![*dst],
             Terminator::CondBranch { true_block, false_block, .. } => vec![*true_block, *false_block],
             _ => vec![],
         };
+        for (_, inst) in &func.blocks.get(&u).unwrap().instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                successors.push(*catch_b);
+            }
+        }
         for v in successors {
             if !visited.contains(&v) && func.blocks.contains_key(&v) {
                 post_order(v, func, visited, rpo);
@@ -416,6 +436,10 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)
+        | Instruction::MakeClass(_, _)
+        | Instruction::TryStart(_)
+        | Instruction::TryEnd
+        | Instruction::CatchException
         | Instruction::ImportPython(_) => {}
     }
 }

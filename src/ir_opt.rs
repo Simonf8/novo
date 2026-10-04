@@ -92,6 +92,10 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)
+        | Instruction::MakeClass(_, _)
+        | Instruction::TryStart(_)
+        | Instruction::TryEnd
+        | Instruction::CatchException
         | Instruction::ImportPython(_) => {}
     }
 }
@@ -624,13 +628,18 @@ fn simplify_cfg(func: &mut FunctionIR) -> bool {
     }
 
     while let Some(u) = queue.pop() {
-        let successors = match &func.blocks.get(&u).unwrap().terminator {
+        let mut successors = match &func.blocks.get(&u).unwrap().terminator {
             Terminator::Branch(dst) => vec![*dst],
             Terminator::CondBranch { true_block, false_block, .. } => {
                 vec![*true_block, *false_block]
             }
             _ => vec![],
         };
+        for (_, inst) in &func.blocks.get(&u).unwrap().instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                successors.push(*catch_b);
+            }
+        }
         for v in successors {
             if func.blocks.contains_key(&v) && reachable.insert(v) {
                 queue.push(v);
@@ -659,6 +668,11 @@ fn simplify_cfg(func: &mut FunctionIR) -> bool {
                 preds.entry(*false_block).or_default().insert(*src);
             }
             _ => {}
+        }
+        for (_, inst) in &block.instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                preds.entry(*catch_b).or_default().insert(*src);
+            }
         }
     }
 
@@ -766,6 +780,10 @@ fn dead_code_elimination(func: &mut FunctionIR) -> bool {
                     | Instruction::LoadLocal(_)
                     | Instruction::LoadGlobal(_)
                     | Instruction::MakeFunction(_, _)
+                    | Instruction::MakeClass(_, _)
+                    | Instruction::TryStart(_)
+                    | Instruction::TryEnd
+                    | Instruction::CatchException
                     | Instruction::ImportPython(_) => {}
                 }
             }
@@ -794,6 +812,10 @@ fn dead_code_elimination(func: &mut FunctionIR) -> bool {
                         | Instruction::IndexSet(_, _, _)
                         | Instruction::PropertySet(_, _, _)
                         | Instruction::MakeFunction(_, _)
+                        | Instruction::MakeClass(_, _)
+                        | Instruction::TryStart(_)
+                        | Instruction::TryEnd
+                        | Instruction::CatchException
                         | Instruction::ImportPython(_)
                 );
 

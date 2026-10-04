@@ -14,6 +14,10 @@ pub enum OpCode {
     Divide,
     Modulo,
     
+    AddInt,
+    SubtractInt,
+    MultiplyInt,
+    
     True,
     False,
     Null,
@@ -23,6 +27,13 @@ pub enum OpCode {
     Less,
     GreaterEqual,
     LessEqual,
+
+    EqualInt,
+    NotEqualInt,
+    LessInt,
+    LessEqualInt,
+    GreaterInt,
+    GreaterEqualInt,
     
     JumpIfFalse(usize),
     Jump(usize),

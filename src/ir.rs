@@ -79,6 +79,14 @@ pub enum Instruction {
 
     /// Import python module
     ImportPython(String),
+
+    /// Class definition: class name, method pairs (name, func_idx)
+    MakeClass(String, Vec<(String, usize)>),
+
+    /// Exception handling
+    TryStart(BlockId),
+    TryEnd,
+    CatchException,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +214,10 @@ impl std::fmt::Display for Instruction {
                 write!(f, "]")
             }
             Instruction::ImportPython(m) => write!(f, "import_python \"{}\"", m),
+            Instruction::MakeClass(name, _) => write!(f, "makeclass \"{}\"", name),
+            Instruction::TryStart(b) => write!(f, "try_start {}", b),
+            Instruction::TryEnd => write!(f, "try_end"),
+            Instruction::CatchException => write!(f, "catch_exception"),
         }
     }
 }

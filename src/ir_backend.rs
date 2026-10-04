@@ -43,6 +43,7 @@ impl IRBackend {
         // 1. Assign local slots using backward liveness and greedy graph coloring
         let (val_to_slot, total_slots) = allocate_slots(func);
         let num_params = func.params.len();
+        let int_values = infer_integer_values(func);
 
         // 2. Pre-allocate local slots on VM stack
         for _ in num_params..total_slots {
@@ -63,13 +64,18 @@ impl IRBackend {
             order: &mut Vec<BlockId>,
         ) {
             visited.insert(u);
-            let successors = match &func.blocks.get(&u).unwrap().terminator {
+            let mut successors = match &func.blocks.get(&u).unwrap().terminator {
                 Terminator::Branch(dst) => vec![*dst],
                 Terminator::CondBranch { true_block, false_block, .. } => {
                     vec![*true_block, *false_block]
                 }
                 _ => vec![],
             };
+            for (_, inst) in &func.blocks.get(&u).unwrap().instructions {
+                if let Instruction::TryStart(catch_b) = inst {
+                    successors.push(*catch_b);
+                }
+            }
             for v in successors {
                 if !visited.contains(&v) && func.blocks.contains_key(&v) {
                     post_order(v, func, visited, order);
@@ -102,19 +108,31 @@ impl IRBackend {
                     Instruction::Add(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::Add, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::AddInt, 0);
+                        } else {
+                            chunk.write(OpCode::Add, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Sub(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::Subtract, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::SubtractInt, 0);
+                        } else {
+                            chunk.write(OpCode::Subtract, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Mul(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::Multiply, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::MultiplyInt, 0);
+                        } else {
+                            chunk.write(OpCode::Multiply, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Div(l, r) => {
@@ -132,37 +150,61 @@ impl IRBackend {
                     Instruction::Eq(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::Equal, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::EqualInt, 0);
+                        } else {
+                            chunk.write(OpCode::Equal, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Neq(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::NotEqual, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::NotEqualInt, 0);
+                        } else {
+                            chunk.write(OpCode::NotEqual, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Lt(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::Less, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::LessInt, 0);
+                        } else {
+                            chunk.write(OpCode::Less, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Le(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::LessEqual, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::LessEqualInt, 0);
+                        } else {
+                            chunk.write(OpCode::LessEqual, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Gt(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::Greater, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::GreaterInt, 0);
+                        } else {
+                            chunk.write(OpCode::Greater, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Ge(l, r) => {
                         self.emit_load(&mut chunk, *l, &val_to_slot);
                         self.emit_load(&mut chunk, *r, &val_to_slot);
-                        chunk.write(OpCode::GreaterEqual, 0);
+                        if int_values.contains(l) && int_values.contains(r) {
+                            chunk.write(OpCode::GreaterEqualInt, 0);
+                        } else {
+                            chunk.write(OpCode::GreaterEqual, 0);
+                        }
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
                     Instruction::Call(callee, args) => {
@@ -248,6 +290,35 @@ impl IRBackend {
                     Instruction::Phi(_) => {
                         // Handled during SSA deconstruction before branches
                     }
+                    Instruction::MakeClass(name, methods) => {
+                        let mut method_map = HashMap::new();
+                        for (m_name, m_idx) in methods {
+                            let compiled = compiled_funcs.get(m_idx).expect("Method chunk not found").clone();
+                            let target = &self.functions[*m_idx];
+                            let val = Value::CompiledFunction {
+                                chunk: compiled,
+                                arity: target.params.len(),
+                            };
+                            method_map.insert(m_name.clone(), val);
+                        }
+                        let class_val = Value::Class {
+                            name: name.clone(),
+                            methods: method_map,
+                        };
+                        let const_idx = chunk.add_constant(class_val);
+                        chunk.write(OpCode::Constant(const_idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::TryStart(catch_block) => {
+                        let jmp = chunk.emit_jump(OpCode::TryStart(0), 0);
+                        pending_jumps.push((jmp, *catch_block));
+                    }
+                    Instruction::TryEnd => {
+                        chunk.write(OpCode::TryEnd, 0);
+                    }
+                    Instruction::CatchException => {
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
                     _ => unimplemented!("Instruction {:?} not implemented in IRBackend", inst),
                 }
             }
@@ -319,7 +390,7 @@ impl IRBackend {
                 .unwrap_or_else(|| panic!("Target block {:?} not found in block_offsets", dst));
             let offset = target_offset - (jmp_offset + 1);
             match &mut chunk.code[jmp_offset] {
-                OpCode::Jump(j) | OpCode::JumpIfFalse(j) => {
+                OpCode::Jump(j) | OpCode::JumpIfFalse(j) | OpCode::TryStart(j) => {
                     *j = offset;
                 }
                 _ => unreachable!(),
@@ -425,6 +496,10 @@ fn get_instruction_uses(inst: &Instruction) -> Vec<ValueId> {
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)
+        | Instruction::MakeClass(_, _)
+        | Instruction::TryStart(_)
+        | Instruction::TryEnd
+        | Instruction::CatchException
         | Instruction::ImportPython(_) => vec![],
     }
 }
@@ -467,7 +542,17 @@ fn allocate_slots(func: &FunctionIR) -> (HashMap<ValueId, usize>, usize) {
                         uses.insert(u);
                     }
                 }
-                if !matches!(inst, Instruction::Print(_)) {
+                let is_void = matches!(
+                    inst,
+                    Instruction::Print(_)
+                        | Instruction::StoreGlobal(_, _)
+                        | Instruction::StoreLocal(_, _)
+                        | Instruction::PropertySet(_, _, _)
+                        | Instruction::IndexSet(_, _, _)
+                        | Instruction::TryStart(_)
+                        | Instruction::TryEnd
+                );
+                if !is_void {
                     defs.insert(*val_id);
                 }
             }
@@ -479,13 +564,18 @@ fn allocate_slots(func: &FunctionIR) -> (HashMap<ValueId, usize>, usize) {
             }
         }
 
-        let s = match &block.terminator {
+        let mut s = match &block.terminator {
             Terminator::Branch(dst) => vec![*dst],
             Terminator::CondBranch { true_block, false_block, .. } => {
                 vec![*true_block, *false_block]
             }
             _ => vec![],
         };
+        for (_, inst) in &block.instructions {
+            if let Instruction::TryStart(catch_b) = inst {
+                s.push(*catch_b);
+            }
+        }
 
         block_defs.insert(*b_id, defs);
         block_phi_uses.insert(*b_id, phi_uses);
@@ -583,7 +673,17 @@ fn allocate_slots(func: &FunctionIR) -> (HashMap<ValueId, usize>, usize) {
     let mut all_vals = Vec::new();
     for block in func.blocks.values() {
         for (val_id, inst) in &block.instructions {
-            if !matches!(inst, Instruction::Print(_)) && !val_to_slot.contains_key(val_id) {
+            let is_void = matches!(
+                inst,
+                Instruction::Print(_)
+                    | Instruction::StoreGlobal(_, _)
+                    | Instruction::StoreLocal(_, _)
+                    | Instruction::PropertySet(_, _, _)
+                    | Instruction::IndexSet(_, _, _)
+                    | Instruction::TryStart(_)
+                    | Instruction::TryEnd
+            );
+            if !is_void && !val_to_slot.contains_key(val_id) {
                 all_vals.push(*val_id);
             }
         }
@@ -614,3 +714,193 @@ fn allocate_slots(func: &FunctionIR) -> (HashMap<ValueId, usize>, usize) {
 
     (val_to_slot, total_slots)
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InferredType {
+    Unknown,
+    Integer,
+    NonInteger,
+}
+
+fn infer_integer_values(func: &FunctionIR) -> HashSet<ValueId> {
+    let mut types: HashMap<ValueId, InferredType> = HashMap::new();
+
+    // 1. Initial categorization of known producers
+    for block in func.blocks.values() {
+        for (val_id, inst) in &block.instructions {
+            match inst {
+                Instruction::Constant(Value::Integer(_)) => {
+                    types.insert(*val_id, InferredType::Integer);
+                }
+                Instruction::Constant(_)
+                | Instruction::LoadGlobal(_)
+                | Instruction::ImportPython(_)
+                | Instruction::BuildList(_)
+                | Instruction::BuildMap(_)
+                | Instruction::MakeFunction(_, _)
+                | Instruction::MakeClass(_, _)
+                | Instruction::CatchException
+                | Instruction::GetProperty(_, _)
+                | Instruction::IndexGet(_, _) => {
+                    types.insert(*val_id, InferredType::NonInteger);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 2. Optimistic seeding for Phi nodes:
+    // If a Phi has an incoming operand from a dominating/predecessor block that is Integer,
+    // and no incoming operand that is known NonInteger, tentatively hypothesize Integer.
+    for block in func.blocks.values() {
+        for (val_id, inst) in &block.instructions {
+            if let Instruction::Phi(operands) = inst {
+                let has_int = operands.iter().any(|(_, v)| types.get(v) == Some(&InferredType::Integer));
+                let has_non_int = operands.iter().any(|(_, v)| types.get(v) == Some(&InferredType::NonInteger));
+                if has_non_int {
+                    types.insert(*val_id, InferredType::NonInteger);
+                } else if has_int {
+                    types.insert(*val_id, InferredType::Integer);
+                }
+            }
+        }
+    }
+
+    // 3. Monotone fixed-point propagation
+    let mut changed = true;
+    let mut iterations = 0;
+    while changed && iterations < 20 {
+        changed = false;
+        iterations += 1;
+
+        for block in func.blocks.values() {
+            for (val_id, inst) in &block.instructions {
+                let current = types.get(val_id).copied().unwrap_or(InferredType::Unknown);
+                let next = match inst {
+                    Instruction::Add(l, r)
+                    | Instruction::Sub(l, r)
+                    | Instruction::Mul(l, r)
+                    | Instruction::Mod(l, r) => {
+                        let tl = types.get(l).copied().unwrap_or(InferredType::Unknown);
+                        let tr = types.get(r).copied().unwrap_or(InferredType::Unknown);
+                        if tl == InferredType::NonInteger || tr == InferredType::NonInteger {
+                            InferredType::NonInteger
+                        } else if tl == InferredType::Integer && tr == InferredType::Integer {
+                            InferredType::Integer
+                        } else {
+                            InferredType::Unknown
+                        }
+                    }
+                    Instruction::Phi(operands) => {
+                        let mut all_int = true;
+                        let mut any_non_int = false;
+                        for (_, v) in operands {
+                            if *v == *val_id {
+                                continue;
+                            }
+                            let tv = types.get(v).copied().unwrap_or(InferredType::Unknown);
+                            if tv == InferredType::NonInteger {
+                                any_non_int = true;
+                                break;
+                            }
+                            if tv != InferredType::Integer {
+                                all_int = false;
+                            }
+                        }
+                        if any_non_int {
+                            InferredType::NonInteger
+                        } else if all_int && !operands.is_empty() {
+                            InferredType::Integer
+                        } else {
+                            current
+                        }
+                    }
+                    _ => current,
+                };
+
+                if next != current {
+                    types.insert(*val_id, next);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    types
+        .into_iter()
+        .filter_map(|(v, t)| if t == InferredType::Integer { Some(v) } else { None })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::*;
+    use crate::vm::VM;
+
+    #[test]
+    fn test_specialized_integer_opcode_emission() {
+        let mut func = FunctionIR::new("main".to_string());
+        let b0 = func.new_block();
+        func.entry_block = b0;
+
+        let v1 = func.new_value();
+        let v2 = func.new_value();
+        let v3 = func.new_value();
+
+        let block = func.blocks.get_mut(&b0).unwrap();
+        block.instructions.push((v1, Instruction::Constant(Value::Integer(40))));
+        block.instructions.push((v2, Instruction::Constant(Value::Integer(2))));
+        block.instructions.push((v3, Instruction::Add(v1, v2)));
+        block.terminator = Terminator::Return(Some(v3));
+
+        let backend = IRBackend::new(vec![func]);
+        let chunk = backend.generate().unwrap();
+
+        assert!(chunk.code.contains(&OpCode::AddInt));
+
+        let mut vm = VM::new();
+        assert_eq!(vm.interpret(chunk), crate::vm::InterpretResult::Ok);
+        assert_eq!(vm.stack.pop(), Some(Value::Integer(42)));
+    }
+
+    #[test]
+    fn test_class_and_method_execution() {
+        let source = "
+class Greeter:
+    function hello():
+        return 42
+
+g = Greeter()
+return g.hello()
+";
+        let tokens = crate::lexer::Lexer::new(source).tokenize().unwrap();
+        let ast = crate::parser::Parser::new(tokens).parse().unwrap();
+        let ir = crate::ir_builder::IRBuilder::new().build(&ast).unwrap();
+        let chunk = crate::ir_backend::IRBackend::new(ir).generate().unwrap();
+
+        let mut vm = VM::new();
+        assert_eq!(vm.interpret(chunk), crate::vm::InterpretResult::Ok);
+        assert_eq!(vm.stack.pop(), Some(Value::Integer(42)));
+    }
+
+    #[test]
+    fn test_try_catch_execution() {
+        let source = "
+try:
+    x = undefined_variable
+catch err:
+    x = 99
+return x
+";
+        let tokens = crate::lexer::Lexer::new(source).tokenize().unwrap();
+        let ast = crate::parser::Parser::new(tokens).parse().unwrap();
+        let ir = crate::ir_builder::IRBuilder::new().build(&ast).unwrap();
+        let chunk = crate::ir_backend::IRBackend::new(ir).generate().unwrap();
+
+        let mut vm = VM::new();
+        assert_eq!(vm.interpret(chunk), crate::vm::InterpretResult::Ok);
+        assert_eq!(vm.stack.pop(), Some(Value::Integer(99)));
+    }
+}
+
