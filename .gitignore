@@ -1,1 +1,7 @@
 /target
+*.json
+*.csv
+*.txt
+*.jpg
+*.db
+tmp*.nv

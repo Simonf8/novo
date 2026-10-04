@@ -2,6 +2,8 @@ mod ast;
 mod interpreter;
 mod lexer;
 mod parser;
+mod vm;
+mod compiler;
 
 use std::env;
 use std::fs;
@@ -13,7 +15,22 @@ fn main() {
         return;
     }
 
-    let filename = &args[1];
+    let mut filename = "";
+    let mut engine = "ast";
+
+    for arg in args.iter().skip(1) {
+        if arg.starts_with("--engine=") {
+            engine = &arg[9..];
+        } else if !arg.starts_with("-") {
+            filename = arg;
+        }
+    }
+
+    if filename.is_empty() {
+        println!("Usage: novo [--engine=ast|vm] <file.nv>");
+        return;
+    }
+
     let source = fs::read_to_string(filename).expect("Failed to read file");
 
     let mut lexer = lexer::Lexer::new(&source);
@@ -34,9 +51,30 @@ fn main() {
         }
     };
 
-    let mut interpreter = interpreter::Interpreter::new();
-    if let Err(e) = interpreter.interpret(&ast) {
-        print_error(&source, &e, "Runtime error");
+    if engine == "vm" {
+        let compiler = compiler::Compiler::new();
+        match compiler.compile(&ast) {
+            Ok(chunk) => {
+                let mut vm = vm::VM::new();
+                match vm.interpret(chunk) {
+                    vm::InterpretResult::Ok => {}
+                    vm::InterpretResult::CompileError => {
+                        eprintln!("VM Compile Error");
+                    }
+                    vm::InterpretResult::RuntimeError(e) => {
+                        print_error(&source, &e, "VM Runtime Error");
+                    }
+                }
+            }
+            Err(e) => {
+                print_error(&source, &e, "Compiler error");
+            }
+        }
+    } else {
+        let mut interpreter = interpreter::Interpreter::new();
+        if let Err(e) = interpreter.interpret(&ast) {
+            print_error(&source, &e, "Runtime error");
+        }
     }
 }
 

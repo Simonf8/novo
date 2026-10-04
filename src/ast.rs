@@ -101,6 +101,11 @@ pub enum ExpressionNode {
         operator: String,
         right: Box<Expression>,
     },
+    StringInterpolation(Vec<Expression>),
+    Closure {
+        params: Vec<String>,
+        body: Box<Expression>, // Or Block if multi-line, but let's stick to Expression for now
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +143,25 @@ pub enum StatementNode {
     Save {
         data: Expression,
         destination: Expression,
+    },
+    ClassDef {
+        name: String,
+        methods: Vec<Statement>, // Actually a list of FunctionDeclarations
+    },
+    TryCatch {
+        try_block: Block,
+        catch_var: String,
+        catch_block: Block,
+    },
+    While {
+        condition: Expression,
+        body: Block,
+    },
+    Break,
+    Continue,
+    UseModule {
+        path: String,
+        alias: Option<String>,
     },
 }
 

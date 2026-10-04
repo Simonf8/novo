@@ -4,6 +4,7 @@ pub enum TokenType {
     Integer(i64),
     Float(f64),
     String(String),
+    FString(String),
     Keyword(String),
     Op(String),
     Punct(String),
@@ -26,6 +27,7 @@ impl Token {
             TokenType::Integer(i) => i.to_string().len(),
             TokenType::Float(f) => f.to_string().len(),
             TokenType::String(s) => s.len() + 2,
+            TokenType::FString(s) => s.len() + 3,
             TokenType::Keyword(k) => k.len(),
             TokenType::Op(o) => o.len(),
             TokenType::Punct(p) => p.len(),
@@ -99,6 +101,8 @@ impl Lexer {
                 tokens.push(self.read_identifier());
             } else if c.is_ascii_digit() {
                 tokens.push(self.read_number()?);
+            } else if c == 'f' && self.peek_next() == '"' {
+                tokens.push(self.read_fstring()?);
             } else if c == '"' {
                 tokens.push(self.read_string()?);
             } else {
@@ -162,12 +166,11 @@ impl Lexer {
         while self.peek().is_alphanumeric() || self.peek() == '_' {
             val.push(self.advance());
         }
-        
         let token_type = match val.as_str() {
             "show" | "if" | "otherwise" | "repeat" | "times" | "for" | "in" | "while" | 
             "function" | "return" | "true" | "false" | "record" | "object" | "where" | 
             "select" | "average" | "sum" | "min" | "max" | "task" | "run" | "parallel" | "use" | "python" | "as" | "and" | "or" | "not" | "starts_with" | "ends_with" |
-            "together" | "read" | "json" | "get" | "save" | "to" => {
+            "together" | "read" | "json" | "get" | "save" | "to" | "try" | "catch" | "break" | "continue" | "class" => {
                 TokenType::Keyword(val)
             },
             _ => TokenType::Identifier(val),
@@ -226,6 +229,40 @@ impl Lexer {
         self.advance(); // skip quote
         
         Ok(Token { token_type: TokenType::String(val), line: self.line, column: start_col })
+    }
+
+    fn read_fstring(&mut self) -> Result<Token, String> {
+        let start_col = self.column;
+        let start_line = self.line;
+        self.advance(); // skip f
+        self.advance(); // skip quote
+
+        let mut val = String::new();
+        
+        while self.peek() != '"' && self.peek() != '\0' {
+            if self.peek() == '\\' {
+                self.advance();
+                let c = self.advance();
+                match c {
+                    'n' => val.push('\n'),
+                    't' => val.push('\t'),
+                    '"' => val.push('"'),
+                    '\\' => val.push('\\'),
+                    '{' => val.push('{'),
+                    '}' => val.push('}'),
+                    _ => val.push(c),
+                }
+            } else {
+                val.push(self.advance());
+            }
+        }
+        
+        if self.peek() == '\0' {
+            return Err(format!("Unterminated f-string at line {}, col {}", start_line, start_col));
+        }
+        self.advance(); // skip quote
+        
+        Ok(Token { token_type: TokenType::FString(val), line: self.line, column: start_col })
     }
 
     fn read_operator_or_punct(&mut self) -> Result<Token, String> {

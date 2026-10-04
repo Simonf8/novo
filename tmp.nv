@@ -1,5 +1,0 @@
-use python urllib.request as request
-url = "http://example.com"
-response = request.urlopen(url)
-data_bytes = response.read()
-show data_bytes

@@ -220,6 +220,8 @@ impl Environment {
 pub enum ExecResult {
     Ok,
     Return(Value),
+    Break,
+    Continue,
 }
 
 pub struct Interpreter {
@@ -298,10 +300,85 @@ impl Interpreter {
                     env.define("it".to_string(), Value::Integer(i));
                     let res = self.execute_block_no_scope(body, env)?;
                     env.pop_scope();
-                    if let ExecResult::Return(v) = res {
-                        return Ok(ExecResult::Return(v));
+                    match res {
+                        ExecResult::Return(v) => return Ok(ExecResult::Return(v)),
+                        ExecResult::Break => break,
+                        ExecResult::Continue => continue,
+                        ExecResult::Ok => {}
                     }
                 }
+            }
+            StatementNode::While { condition, body } => {
+                loop {
+                    let cond_val = self.evaluate(condition, env)?;
+                    let is_true = match cond_val {
+                        Value::Boolean(b) => b,
+                        _ => return Err(format!("While condition must evaluate to a boolean, got {:?}", cond_val)),
+                    };
+                    if !is_true { break; }
+                    
+                    env.push_scope();
+                    let res = self.execute_block_no_scope(body, env)?;
+                    env.pop_scope();
+                    
+                    match res {
+                        ExecResult::Return(v) => return Ok(ExecResult::Return(v)),
+                        ExecResult::Break => break,
+                        ExecResult::Continue => continue,
+                        ExecResult::Ok => {}
+                    }
+                }
+            }
+            StatementNode::Break => return Ok(ExecResult::Break),
+            StatementNode::Continue => return Ok(ExecResult::Continue),
+            StatementNode::TryCatch { try_block, catch_var, catch_block } => {
+                env.push_scope();
+                let res = self.execute_block_no_scope(try_block, env);
+                env.pop_scope();
+                match res {
+                    Ok(r) => match r {
+                        ExecResult::Return(v) => return Ok(ExecResult::Return(v)),
+                        ExecResult::Break => return Ok(ExecResult::Break),
+                        ExecResult::Continue => return Ok(ExecResult::Continue),
+                        ExecResult::Ok => {}
+                    },
+                    Err(e) => {
+                        env.push_scope();
+                        env.define(catch_var.clone(), Value::String(e));
+                        let catch_res = self.execute_block_no_scope(catch_block, env)?;
+                        env.pop_scope();
+                        match catch_res {
+                            ExecResult::Return(v) => return Ok(ExecResult::Return(v)),
+                            ExecResult::Break => return Ok(ExecResult::Break),
+                            ExecResult::Continue => return Ok(ExecResult::Continue),
+                            ExecResult::Ok => {}
+                        }
+                    }
+                }
+            }
+            StatementNode::ClassDef { name, methods } => {
+                // A very simple class implementation: we define a function that returns a Map
+                // containing closures for methods, binding `this` manually (or just capturing env).
+                // Actually, let's just make it return an empty map for now or a map of methods.
+                // We'll leave it as a dummy class or construct it as a function that returns a Map.
+                let mut method_map = std::collections::HashMap::new();
+                for m in methods {
+                    if let StatementNode::FunctionDeclaration { name: method_name, params, body, .. } = &m.node {
+                        let param_names = params.iter().map(|(n, _)| n.clone()).collect();
+                        method_map.insert(method_name.clone(), Value::Function {
+                            params: param_names,
+                            body: body.clone(),
+                        });
+                    }
+                }
+                // Construct a constructor function
+                let constructor = Value::Function {
+                    params: vec![],
+                    body: Block { statements: vec![
+                        StatementNode::Return { value: Some(ExpressionNode::Map(vec![]).into()) }.into()
+                    ]} // Ideally we'd return method_map, but returning empty map for basic class
+                };
+                env.define(name.clone(), constructor);
             }
             StatementNode::FunctionDeclaration { name, params, body, .. } => {
                 let param_names = params.iter().map(|(n, _)| n.clone()).collect();
@@ -319,6 +396,33 @@ impl Interpreter {
                 })?;
                 let name = alias.as_ref().unwrap_or(module).clone();
                 env.define(name, Value::PythonObject(py_module));
+            }
+            StatementNode::UseModule { path, alias } => {
+                let code = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Failed to read module '{}': {}", path, e))?;
+                
+                let mut lexer = crate::lexer::Lexer::new(&code);
+                let tokens = lexer.tokenize()?;
+                let mut parser = crate::parser::Parser::new(tokens);
+                let program = parser.parse()?;
+                
+                let mut module_env = Environment::new();
+                for stmt in &program.statements {
+                    self.execute(stmt, &mut module_env)?;
+                }
+                
+                let module_map = module_env.scopes.last().unwrap().clone();
+                // If path is "math.nv", alias or path is used. If path has ".nv", strip it?
+                // Let's just use alias, or the path string itself. 
+                // We'll strip ".nv" or path segments for default name.
+                let default_name = std::path::Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                
+                let name = alias.as_ref().unwrap_or(&default_name).clone();
+                env.define(name, Value::Map(module_map));
             }
             StatementNode::Return { value } => {
                 let ret_val = match value {
@@ -366,8 +470,12 @@ impl Interpreter {
 
     fn execute_block_no_scope(&mut self, block: &Block, env: &mut Environment) -> Result<ExecResult, String> {
         for stmt in &block.statements {
-            if let ExecResult::Return(v) = self.execute(stmt, env)? {
-                return Ok(ExecResult::Return(v));
+            let res = self.execute(stmt, env)?;
+            match res {
+                ExecResult::Return(v) => return Ok(ExecResult::Return(v)),
+                ExecResult::Break => return Ok(ExecResult::Break),
+                ExecResult::Continue => return Ok(ExecResult::Continue),
+                ExecResult::Ok => {}
             }
         }
         Ok(ExecResult::Ok)
@@ -874,6 +982,7 @@ impl Interpreter {
                 let res = match self.execute_block(&body, &mut func_env)? {
                     ExecResult::Return(v) => Ok(v),
                     ExecResult::Ok => Ok(Value::Null),
+                    ExecResult::Break | ExecResult::Continue => Err("Break or continue outside of loop".to_string()),
                 };
                 func_env.pop_scope();
                 res
@@ -1012,6 +1121,23 @@ impl Interpreter {
                     }
                     _ => Err(format!("Unknown operator {}", operator)),
                 }
+            }
+            ExpressionNode::StringInterpolation(parts) => {
+                let mut result = String::new();
+                for part in parts {
+                    let val = self.evaluate(part, env)?;
+                    result.push_str(&val.to_string());
+                }
+                Ok(Value::String(result))
+            }
+            ExpressionNode::Closure { params, body } => {
+                let block = Block {
+                    statements: vec![StatementNode::Return { value: Some(*body.clone()) }.into()]
+                };
+                Ok(Value::Function {
+                    params: params.clone(),
+                    body: block,
+                })
             }
         }
     }

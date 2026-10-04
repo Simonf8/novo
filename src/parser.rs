@@ -89,6 +89,11 @@ impl Parser {
             TokenType::Keyword(k) if k == "function" => self.parse_function_declaration(),
             TokenType::Keyword(k) if k == "return" => self.parse_return_statement(),
             TokenType::Keyword(k) if k == "save" => self.parse_save_statement(),
+            TokenType::Keyword(k) if k == "class" => self.parse_class_def(),
+            TokenType::Keyword(k) if k == "try" => self.parse_try_catch(),
+            TokenType::Keyword(k) if k == "while" => self.parse_while(),
+            TokenType::Keyword(k) if k == "break" => self.parse_break(),
+            TokenType::Keyword(k) if k == "continue" => self.parse_continue(),
             TokenType::Identifier(_) => self.parse_assignment_or_expression(),
             _ => self.error(&format!("Unexpected token {:?}", token.token_type)),
         }
@@ -96,35 +101,50 @@ impl Parser {
 
     fn parse_use_statement(&mut self) -> Result<Statement, String> {
         self.expect(&TokenType::Keyword("use".to_string()))?;
-        self.expect(&TokenType::Keyword("python".to_string()))?;
         
-        let mut module = match self.advance().token_type.clone() {
-            TokenType::Identifier(n) => n,
-            TokenType::Keyword(k) => k,
-            _ => return self.error("Expected python module name"),
-        };
-        
-        while self.match_token(&TokenType::Op(".".to_string())) {
-            let next_part = match self.advance().token_type.clone() {
+        if self.match_token(&TokenType::Keyword("python".to_string())) {
+            let mut module = match self.advance().token_type.clone() {
                 TokenType::Identifier(n) => n,
                 TokenType::Keyword(k) => k,
-                _ => return self.error("Expected identifier after '.' in module name"),
+                _ => return self.error("Expected python module name"),
             };
-            module.push('.');
-            module.push_str(&next_part);
-        }
-        
-        let mut alias = None;
-        if self.match_token(&TokenType::Keyword("as".to_string())) {
-            let alias_tok = self.advance().clone();
-            if let TokenType::Identifier(n) = alias_tok.token_type {
-                alias = Some(n);
-            } else {
-                return self.error("Expected alias after 'as'");
+            
+            while self.match_token(&TokenType::Op(".".to_string())) {
+                let next_part = match self.advance().token_type.clone() {
+                    TokenType::Identifier(n) => n,
+                    TokenType::Keyword(k) => k,
+                    _ => return self.error("Expected identifier after '.' in module name"),
+                };
+                module.push('.');
+                module.push_str(&next_part);
             }
+            
+            let mut alias = None;
+            if self.match_token(&TokenType::Keyword("as".to_string())) {
+                let alias_tok = self.advance().clone();
+                if let TokenType::Identifier(n) = alias_tok.token_type {
+                    alias = Some(n);
+                } else {
+                    return self.error("Expected alias after 'as'");
+                }
+            }
+            
+            Ok(StatementNode::UsePython { module, alias }.into())
+        } else if let TokenType::String(path) = self.peek().token_type.clone() {
+            self.advance();
+            let mut alias = None;
+            if self.match_token(&TokenType::Keyword("as".to_string())) {
+                let alias_tok = self.advance().clone();
+                if let TokenType::Identifier(n) = alias_tok.token_type {
+                    alias = Some(n);
+                } else {
+                    return self.error("Expected alias after 'as'");
+                }
+            }
+            Ok(StatementNode::UseModule { path, alias }.into())
+        } else {
+            self.error("Expected 'python' or string literal after 'use'")
         }
-        
-        Ok(StatementNode::UsePython { module, alias }.into())
     }
 
     fn parse_show_statement(&mut self) -> Result<Statement, String> {
@@ -172,6 +192,66 @@ impl Parser {
         self.expect(&TokenType::Op(":".to_string()))?;
         let body = self.parse_block()?;
         Ok(StatementNode::Repeat { count, body }.into())
+    }
+
+    fn parse_class_def(&mut self) -> Result<Statement, String> {
+        self.expect(&TokenType::Keyword("class".to_string()))?;
+        let name_tok = self.advance().clone();
+        let name = match name_tok.token_type {
+            TokenType::Identifier(n) => n,
+            _ => return self.error("Expected class name"),
+        };
+        self.expect(&TokenType::Op(":".to_string()))?;
+        
+        self.expect(&TokenType::Indent)?;
+        let mut methods = Vec::new();
+        while self.peek().token_type != TokenType::Dedent && self.peek().token_type != TokenType::Eof {
+            let stmt = self.parse_statement()?;
+            if let StatementNode::FunctionDeclaration { .. } = stmt.node {
+                methods.push(stmt);
+            } else {
+                return self.error("Classes can only contain function declarations");
+            }
+        }
+        if self.peek().token_type == TokenType::Dedent {
+            self.advance();
+        }
+        Ok(StatementNode::ClassDef { name, methods }.into())
+    }
+
+    fn parse_try_catch(&mut self) -> Result<Statement, String> {
+        self.expect(&TokenType::Keyword("try".to_string()))?;
+        self.expect(&TokenType::Op(":".to_string()))?;
+        let try_block = self.parse_block()?;
+        
+        self.expect(&TokenType::Keyword("catch".to_string()))?;
+        let catch_var_tok = self.advance().clone();
+        let catch_var = match catch_var_tok.token_type {
+            TokenType::Identifier(n) => n,
+            _ => return self.error("Expected identifier for catch variable"),
+        };
+        self.expect(&TokenType::Op(":".to_string()))?;
+        let catch_block = self.parse_block()?;
+        
+        Ok(StatementNode::TryCatch { try_block, catch_var, catch_block }.into())
+    }
+
+    fn parse_while(&mut self) -> Result<Statement, String> {
+        self.expect(&TokenType::Keyword("while".to_string()))?;
+        let condition = self.parse_expression()?;
+        self.expect(&TokenType::Op(":".to_string()))?;
+        let body = self.parse_block()?;
+        Ok(StatementNode::While { condition, body }.into())
+    }
+
+    fn parse_break(&mut self) -> Result<Statement, String> {
+        self.expect(&TokenType::Keyword("break".to_string()))?;
+        Ok(StatementNode::Break.into())
+    }
+
+    fn parse_continue(&mut self) -> Result<Statement, String> {
+        self.expect(&TokenType::Keyword("continue".to_string()))?;
+        Ok(StatementNode::Continue.into())
     }
 
     fn parse_assignment_or_expression(&mut self) -> Result<Statement, String> {
@@ -506,6 +586,28 @@ impl Parser {
             return Ok(ExpressionNode::Map(items).into());
         }
 
+        if self.match_token(&TokenType::Op("|".to_string())) {
+            let mut params = Vec::new();
+            if self.peek().token_type != TokenType::Op("|".to_string()) {
+                loop {
+                    let param_tok = self.advance().clone();
+                    if let TokenType::Identifier(p) = param_tok.token_type {
+                        params.push(p);
+                    } else {
+                        return self.error("Expected parameter name in closure");
+                    }
+                    if self.match_token(&TokenType::Punct(",".to_string())) {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            self.expect(&TokenType::Op("|".to_string()))?;
+            let body = self.parse_expression()?;
+            return Ok(ExpressionNode::Closure { params, body: Box::new(body) }.into());
+        }
+
         if self.match_token(&TokenType::Punct("[".to_string())) {
             let mut items = Vec::new();
             loop {
@@ -535,11 +637,52 @@ impl Parser {
             TokenType::Integer(i) => Ok(Expression::from(ExpressionNode::Integer(i)).with_span(span)),
             TokenType::Float(f) => Ok(Expression::from(ExpressionNode::Float(f)).with_span(span)),
             TokenType::String(s) => Ok(Expression::from(ExpressionNode::String(s)).with_span(span)),
+            TokenType::FString(s) => self.parse_fstring(s, span),
             TokenType::Identifier(id) => Ok(Expression::from(ExpressionNode::Identifier(id)).with_span(span)),
             TokenType::Keyword(k) if k == "true" => Ok(Expression::from(ExpressionNode::Boolean(true)).with_span(span)),
             TokenType::Keyword(k) if k == "false" => Ok(Expression::from(ExpressionNode::Boolean(false)).with_span(span)),
             TokenType::Keyword(k) if k == "json" => Ok(Expression::from(ExpressionNode::Identifier(k)).with_span(span)),
             _ => self.error(&format!("Unexpected token in expression: {:?}", token.token_type)),
         }
+    }
+
+    fn parse_fstring(&mut self, s: String, span: Span) -> Result<Expression, String> {
+        let mut parts = Vec::new();
+        let mut current_str = String::new();
+        let mut in_expr = false;
+        let mut chars = s.chars().peekable();
+        
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(next) = chars.next() {
+                    current_str.push(next);
+                }
+            } else if c == '{' && !in_expr {
+                if !current_str.is_empty() {
+                    parts.push(ExpressionNode::String(current_str.clone()).into());
+                    current_str.clear();
+                }
+                in_expr = true;
+            } else if c == '}' && in_expr {
+                if !current_str.is_empty() {
+                    let mut lexer = crate::lexer::Lexer::new(&current_str);
+                    let tokens = lexer.tokenize()?;
+                    if tokens.len() > 1 {
+                        let mut parser = Parser::new(tokens);
+                        let expr = parser.parse_expression()?;
+                        parts.push(expr);
+                    }
+                    current_str.clear();
+                }
+                in_expr = false;
+            } else {
+                current_str.push(c);
+            }
+        }
+        if !current_str.is_empty() {
+            parts.push(ExpressionNode::String(current_str).into());
+        }
+        
+        Ok(Expression::from(ExpressionNode::StringInterpolation(parts)).with_span(span))
     }
 }
