@@ -114,10 +114,12 @@ fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
         return Ok(Value::PythonObject(obj));
     }
     
-    if let Ok(dict) = obj.extract::<std::collections::HashMap<String, PyObject>>(py) {
+    if let Ok(dict) = obj.downcast::<pyo3::types::PyDict>(py) {
         let mut map = std::collections::HashMap::new();
         for (k, v) in dict {
-            map.insert(k, py_to_value(py, v)?);
+            if let Ok(key_str) = k.extract::<String>() {
+                map.insert(key_str, py_to_value(py, v.into())?);
+            }
         }
         return Ok(Value::Map(map));
     }
