@@ -1,0 +1,6 @@
+function main():
+    x = 1 + 2 * 3
+    if x > 5:
+        show x
+    otherwise:
+        show 0

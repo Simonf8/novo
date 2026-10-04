@@ -6,6 +6,8 @@ mod vm;
 mod compiler;
 mod type_checker;
 mod ir;
+mod ir_builder;
+mod ir_backend;
 
 use std::env;
 use std::fs;
@@ -63,6 +65,22 @@ fn main() {
         }
     };
 
+    if command == "ir" {
+        let mut builder = ir_builder::IRBuilder::new();
+        match builder.build(&ast) {
+            Ok(functions) => {
+                for f in functions {
+                    print!("{}", f);
+                }
+            }
+            Err(e) => {
+                print_error(&source, &e, "IR build error");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let mut type_checker = type_checker::TypeChecker::new();
     if let Err(e) = type_checker.check_program(&ast) {
         print_error(&source, &e, "Type error");
@@ -75,8 +93,17 @@ fn main() {
     }
 
     if engine == "vm" {
-        let compiler = compiler::Compiler::new();
-        match compiler.compile(&ast) {
+        let mut builder = ir_builder::IRBuilder::new();
+        let ir = match builder.build(&ast) {
+            Ok(ir) => ir,
+            Err(e) => {
+                print_error(&source, &e, "IR Compilation error");
+                std::process::exit(1);
+            }
+        };
+        
+        let backend = ir_backend::IRBackend::new(ir);
+        match backend.generate() {
             Ok(chunk) => {
                 let mut vm = vm::VM::new();
                 match vm.interpret(chunk) {

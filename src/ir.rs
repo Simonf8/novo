@@ -53,8 +53,25 @@ pub enum Instruction {
     /// Await a promise
     Await(ValueId),
     
+    /// Variable access (before full SSA conversion)
+    LoadLocal(String),
+    StoreLocal(String, ValueId),
+    LoadGlobal(String),
+    /// Object allocation
+    BuildList(Vec<ValueId>),
+    BuildMap(Vec<(ValueId, ValueId)>),
+    MakeFunction(usize, Vec<String>), // function index, captures
+    
+    /// Properties & Indexing
+    IndexGet(ValueId, ValueId),
+    IndexSet(ValueId, ValueId, ValueId),
+    PropertySet(ValueId, String, ValueId),
+    
     /// Cast value to type
     Cast(ValueId, Type),
+    
+    /// Print value to standard output
+    Print(ValueId),
     
     /// Phi node for SSA
     Phi(Vec<(BlockId, ValueId)>),
@@ -116,5 +133,99 @@ impl FunctionIR {
         let id = ValueId(self.next_value_id);
         self.next_value_id += 1;
         id
+    }
+}
+
+impl std::fmt::Display for ValueId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
+impl std::fmt::Display for BlockId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "bb{}", self.0)
+    }
+}
+
+impl std::fmt::Display for Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Instruction::Constant(c) => write!(f, "const {:?}", c),
+            Instruction::Add(l, r) => write!(f, "add {}, {}", l, r),
+            Instruction::Sub(l, r) => write!(f, "sub {}, {}", l, r),
+            Instruction::Mul(l, r) => write!(f, "mul {}, {}", l, r),
+            Instruction::Div(l, r) => write!(f, "div {}, {}", l, r),
+            Instruction::Mod(l, r) => write!(f, "mod {}, {}", l, r),
+            Instruction::Eq(l, r) => write!(f, "eq {}, {}", l, r),
+            Instruction::Neq(l, r) => write!(f, "neq {}, {}", l, r),
+            Instruction::Lt(l, r) => write!(f, "lt {}, {}", l, r),
+            Instruction::Le(l, r) => write!(f, "le {}, {}", l, r),
+            Instruction::Gt(l, r) => write!(f, "gt {}, {}", l, r),
+            Instruction::Ge(l, r) => write!(f, "ge {}, {}", l, r),
+            Instruction::Call(callee, args) => {
+                write!(f, "call {}(", callee)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            },
+            Instruction::GetProperty(obj, prop) => write!(f, "getprop {}, \"{}\"", obj, prop),
+            Instruction::Spawn(val) => write!(f, "spawn {}", val),
+            Instruction::Await(val) => write!(f, "await {}", val),
+            Instruction::LoadLocal(name) => write!(f, "loadlocal \"{}\"", name),
+            Instruction::StoreLocal(name, val) => write!(f, "storelocal \"{}\", {}", name, val),
+            Instruction::LoadGlobal(name) => write!(f, "loadglobal \"{}\"", name),
+            Instruction::StoreGlobal(name, val) => write!(f, "storeglobal \"{}\", {}", name, val),
+            Instruction::BuildList(args) => {
+                write!(f, "buildlist [")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, "]")
+            },
+            Instruction::BuildMap(_) => write!(f, "buildmap ..."),
+            Instruction::MakeFunction(idx, _) => write!(f, "makefunc func{}", idx),
+            Instruction::IndexGet(obj, idx) => write!(f, "indexget {}, {}", obj, idx),
+            Instruction::IndexSet(obj, idx, val) => write!(f, "indexset {}, {} = {}", obj, idx, val),
+            Instruction::PropertySet(obj, prop, val) => write!(f, "propset {}, \"{}\" = {}", obj, prop, val),
+            Instruction::Cast(val, ty) => write!(f, "cast {}, {:?}", val, ty),
+            Instruction::Print(val) => write!(f, "print {}", val),
+            Instruction::Phi(args) => write!(f, "phi ..."),
+        }
+    }
+}
+
+impl std::fmt::Display for Terminator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Terminator::Branch(b) => write!(f, "br {}", b),
+            Terminator::CondBranch { condition, true_block, false_block } => {
+                write!(f, "br_if {}, {}, {}", condition, true_block, false_block)
+            }
+            Terminator::Return(Some(v)) => write!(f, "ret {}", v),
+            Terminator::Return(None) => write!(f, "ret void"),
+            Terminator::Unreachable => write!(f, "unreachable"),
+        }
+    }
+}
+
+impl std::fmt::Display for FunctionIR {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "func {}() {{", self.name)?;
+        
+        let mut sorted_blocks: Vec<_> = self.blocks.values().collect();
+        sorted_blocks.sort_by_key(|b| b.id.0);
+        
+        for block in sorted_blocks {
+            writeln!(f, "{}:", block.id)?;
+            for (val_id, inst) in &block.instructions {
+                writeln!(f, "  {} = {}", val_id, inst)?;
+            }
+            writeln!(f, "  {}", block.terminator)?;
+        }
+        writeln!(f, "}}")
     }
 }
