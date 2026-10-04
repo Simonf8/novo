@@ -430,3 +430,72 @@ fn substitute_terminator(term: &mut Terminator, replacements: &HashMap<ValueId, 
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir_builder::IRBuilder;
+
+    #[test]
+    fn test_ssa_if_phi() {
+        let source = r#"
+function test_if(c):
+    x = 10
+    if c > 0:
+        x = 20
+    otherwise:
+        x = 30
+    return x
+"#;
+        let tokens = crate::lexer::Lexer::new(source).tokenize().unwrap();
+        let program = crate::parser::Parser::new(tokens).parse().unwrap();
+        let builder = IRBuilder::new();
+        let functions = builder.build(&program).unwrap();
+
+        // Check the compiled function
+        let func = &functions[1];
+        let mut has_phi = false;
+        for block in func.blocks.values() {
+            for (_, inst) in &block.instructions {
+                if let Instruction::Phi(operands) = inst {
+                    has_phi = true;
+                    assert_eq!(operands.len(), 2);
+                }
+                // Verify no StoreLocal or LoadLocal remains
+                assert!(!matches!(inst, Instruction::StoreLocal(_, _) | Instruction::LoadLocal(_)));
+            }
+        }
+        assert!(has_phi, "Expected Phi node in if-else merge block");
+    }
+
+    #[test]
+    fn test_ssa_while_phi() {
+        let source = r#"
+function test_while(n):
+    total = 0
+    i = 0
+    while i < n:
+        total = total + i
+        i = i + 1
+    return total
+"#;
+        let tokens = crate::lexer::Lexer::new(source).tokenize().unwrap();
+        let program = crate::parser::Parser::new(tokens).parse().unwrap();
+        let builder = IRBuilder::new();
+        let functions = builder.build(&program).unwrap();
+
+        let func = &functions[1];
+        let mut phi_count = 0;
+        for block in func.blocks.values() {
+            for (_, inst) in &block.instructions {
+                if let Instruction::Phi(operands) = inst {
+                    phi_count += 1;
+                    assert_eq!(operands.len(), 2);
+                }
+                assert!(!matches!(inst, Instruction::StoreLocal(_, _) | Instruction::LoadLocal(_)));
+            }
+        }
+        assert_eq!(phi_count, 2, "Expected 2 loop header phis for total and i");
+    }
+}
+

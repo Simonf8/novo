@@ -41,6 +41,8 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Integer(a), Value::Integer(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Integer(a), Value::Float(b)) => (*a as f64) == *b,
+            (Value::Float(a), Value::Integer(b)) => *a == (*b as f64),
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::List(a), Value::List(b)) => std::sync::Arc::ptr_eq(a, b),
