@@ -32,6 +32,7 @@ impl Chunk {
         self.code.len() - 1
     }
 
+    #[allow(dead_code)]
     pub fn patch_jump(&mut self, offset: usize) {
         let jump = self.code.len() - 1 - offset;
         match &mut self.code[offset] {

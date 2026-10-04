@@ -24,6 +24,7 @@ pub enum Value {
         bound_target: Option<Box<Value>>,
     },
     PythonObject(PyObject),
+    #[allow(dead_code)]
     Class {
         name: String,
         methods: HashMap<String, Value>,

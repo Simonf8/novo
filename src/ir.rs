@@ -8,6 +8,7 @@ pub struct ValueId(pub usize);
 pub struct BlockId(pub usize);
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum Type {
     Int,
     Float,
@@ -22,6 +23,7 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum Instruction {
     /// Load a constant
     Constant(crate::interpreter::Value),

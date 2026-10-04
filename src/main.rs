@@ -3,6 +3,7 @@ mod interpreter;
 mod lexer;
 mod parser;
 mod vm;
+#[allow(dead_code)]
 mod compiler;
 mod type_checker;
 mod ir;
