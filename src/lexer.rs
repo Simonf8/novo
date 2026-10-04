@@ -97,12 +97,12 @@ impl Lexer {
                 self.advance();
             } else if c == '#' {
                 self.skip_comment();
+            } else if c == 'f' && self.peek_next() == '"' {
+                tokens.push(self.read_fstring()?);
             } else if c.is_alphabetic() || c == '_' {
                 tokens.push(self.read_identifier());
             } else if c.is_ascii_digit() {
                 tokens.push(self.read_number()?);
-            } else if c == 'f' && self.peek_next() == '"' {
-                tokens.push(self.read_fstring()?);
             } else if c == '"' {
                 tokens.push(self.read_string()?);
             } else {

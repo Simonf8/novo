@@ -1,0 +1,2 @@
+total: Int = 10
+total = "hello"

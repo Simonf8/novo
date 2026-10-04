@@ -1,0 +1,5 @@
+
+m: Map[String, Int] = {"x": 10}
+a: Int = m["x"]
+b: String = m["x"]
+

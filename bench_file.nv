@@ -1,9 +1,15 @@
+use python time
+start = time.time()
+
 content = read "src/main.rs"
 lines = content.split("\n")
 show "Number of lines in main.rs:"
 show lines.length()
 
 # Count empty lines
-empty_count = lines | where length() == 0 | aggregate sum
+empty_count = lines where item.length() == 0 sum 1
 show "Empty lines:"
 show empty_count
+
+end = time.time()
+show end - start

@@ -26,4 +26,19 @@ impl Chunk {
         self.constants.push(value);
         self.constants.len() - 1
     }
+
+    pub fn emit_jump(&mut self, opcode: OpCode, line: usize) -> usize {
+        self.write(opcode, line);
+        self.code.len() - 1
+    }
+
+    pub fn patch_jump(&mut self, offset: usize) {
+        let jump = self.code.len() - 1 - offset;
+        match &mut self.code[offset] {
+            OpCode::JumpIfFalse(j) | OpCode::Jump(j) => {
+                *j = jump;
+            }
+            _ => panic!("Attempted to patch a non-jump instruction"),
+        }
+    }
 }

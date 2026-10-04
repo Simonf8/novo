@@ -1,0 +1,5 @@
+
+name: String = "Alice"
+greeting: String = f"{name} is {20 + 5} years old"
+show greeting
+

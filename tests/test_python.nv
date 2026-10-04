@@ -1,0 +1,3 @@
+use python math
+a = math.sqrt(16)
+show a

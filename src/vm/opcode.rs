@@ -7,19 +7,18 @@ pub enum OpCode {
     SetLocal(usize),
     GetGlobal(usize),
     SetGlobal(usize),
+    PushContextItem,
+    PopContextItem,
     
     Add,
     Subtract,
     Multiply,
     Divide,
     Modulo,
-    Negate,
     
     True,
     False,
     Null,
-    Not,
-    
     Equal,
     NotEqual,
     Greater,
@@ -34,6 +33,8 @@ pub enum OpCode {
     Call(usize),
     Return,
     
+    ImportPython(usize),
+    
     BuildList(usize),
     BuildMap(usize),
     IndexGet,
@@ -41,5 +42,16 @@ pub enum OpCode {
     PropertyGet(usize),
     PropertySet(usize),
     
+    Read,
+    Get,
+    Cast(usize),
+    StringInterpolate(usize),
+
     Print,
+    AggregateSum,
+    AggregateAverage,
+    AggregateMax,
+    AggregateMin,
+    TryStart(usize),
+    TryEnd,
 }

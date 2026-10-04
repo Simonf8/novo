@@ -1,5 +1,8 @@
 use python urllib.request as urllib
 
+use python time
+start = time.time()
+
 url = "https://example.com"
 html = get url
 title_parts = html.split("<title>")
@@ -9,3 +12,6 @@ if title_parts.length() > 1:
     show title
 otherwise:
     show "No title found"
+
+end = time.time()
+show end - start

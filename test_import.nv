@@ -1,0 +1,2 @@
+use python math
+show math.sqrt(25)

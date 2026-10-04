@@ -1,0 +1,5 @@
+function test() -> List[Int]:
+    x: List[Int] = ["hello"]
+    return x
+
+test()

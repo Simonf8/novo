@@ -1,7 +1,7 @@
 use crate::ast::*;
 use std::collections::HashMap;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyTuple};
+use pyo3::types::PyTuple;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -9,18 +9,31 @@ pub enum Value {
     Float(f64),
     String(String),
     Boolean(bool),
-    List(Vec<Value>),
-    Map(HashMap<String, Value>),
+    List(std::sync::Arc<parking_lot::RwLock<Vec<Value>>>),
+    Map(std::sync::Arc<parking_lot::RwLock<HashMap<String, Value>>>),
     Function {
         params: Vec<String>,
         body: Block,
+    },
+    CompiledFunction {
+        chunk: std::sync::Arc<crate::vm::chunk::Chunk>,
+        arity: usize,
     },
     NativeFunction {
         name: String,
         bound_target: Option<Box<Value>>,
     },
     PythonObject(PyObject),
+    Class {
+        name: String,
+        methods: HashMap<String, Value>,
+    },
+    Instance {
+        class_name: String,
+        properties: std::sync::Arc<parking_lot::RwLock<HashMap<String, Value>>>,
+    },
     Null,
+    Promise(std::sync::Arc<parking_lot::RwLock<Option<Result<Value, String>>>>),
 }
 
 impl PartialEq for Value {
@@ -30,8 +43,8 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
-            (Value::List(a), Value::List(b)) => a == b,
-            (Value::Map(a), Value::Map(b)) => a == b,
+            (Value::List(a), Value::List(b)) => std::sync::Arc::ptr_eq(a, b),
+            (Value::Map(a), Value::Map(b)) => std::sync::Arc::ptr_eq(a, b),
             (Value::Null, Value::Null) => true,
             _ => false,
         }
@@ -49,6 +62,9 @@ fn type_name(val: &Value) -> &'static str {
         Value::Function { .. } | Value::NativeFunction { .. } => "a function",
         Value::PythonObject(_) => "a python object",
         Value::Null => "null",
+        Value::CompiledFunction { .. } => "function",
+        Value::Class { .. } => "class",
+        Value::Instance { .. } => "an instance",
     }
 }
 
@@ -60,21 +76,24 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "{}", s),
             Value::Boolean(b) => write!(f, "{}", if *b { "true" } else { "false" }),
             Value::List(l) => {
-                let items: Vec<String> = l.iter().map(|v| format!("{}", v)).collect();
+                let items: Vec<String> = l.read().iter().map(|v| format!("{}", v)).collect();
                 write!(f, "[{}]", items.join(", "))
             }
             Value::Map(m) => {
-                let items: Vec<String> = m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
+                let items: Vec<String> = m.read().iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
                 write!(f, "{{{}}}", items.join(", "))
             }
             Value::Function { .. } | Value::NativeFunction { .. } => write!(f, "<function>"),
             Value::PythonObject(_) => write!(f, "<python_object>"),
             Value::Null => write!(f, "null"),
+            Value::CompiledFunction { .. } => write!(f, "<compiled function>"),
+            Value::Class { name, .. } => write!(f, "<class {}>", name),
+            Value::Instance { class_name, .. } => write!(f, "<{} instance>", class_name),
         }
     }
 }
 
-fn value_to_py(py: Python, val: &Value) -> Result<PyObject, String> {
+pub fn value_to_py(py: Python, val: &Value) -> Result<PyObject, String> {
     match val {
         Value::Integer(i) => Ok(i.into_py(py)),
         Value::Float(f) => Ok(f.into_py(py)),
@@ -82,7 +101,7 @@ fn value_to_py(py: Python, val: &Value) -> Result<PyObject, String> {
         Value::Boolean(b) => Ok(b.into_py(py)),
         Value::List(list) => {
             let mut py_list = Vec::new();
-            for item in list {
+            for item in list.read().iter() {
                 py_list.push(value_to_py(py, item)?);
             }
             Ok(py_list.into_py(py))
@@ -93,7 +112,7 @@ fn value_to_py(py: Python, val: &Value) -> Result<PyObject, String> {
     }
 }
 
-fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
+pub fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
     // Attempt basic extraction
     if let Ok(b) = obj.extract::<bool>(py) {
         return Ok(Value::Boolean(b));
@@ -122,7 +141,7 @@ fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
                 map.insert(key_str, py_to_value(py, v.into())?);
             }
         }
-        return Ok(Value::Map(map));
+        return Ok(Value::Map(std::sync::Arc::new(parking_lot::RwLock::new(map))));
     }
     
     if let Ok(list) = obj.downcast::<pyo3::types::PyList>(py) {
@@ -130,7 +149,7 @@ fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
         for item in list {
             vec.push(py_to_value(py, item.into())?);
         }
-        return Ok(Value::List(vec));
+        return Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(vec))));
     }
 
     if let Ok(tuple) = obj.downcast::<pyo3::types::PyTuple>(py) {
@@ -138,14 +157,14 @@ fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
         for item in tuple {
             vec.push(py_to_value(py, item.into())?);
         }
-        return Ok(Value::List(vec));
+        return Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(vec))));
     }
     
     // Otherwise, keep it as a Python object
     Ok(Value::PythonObject(obj))
 }
 
-fn python_operator_fallback(l: &Value, r: &Value, op: &str) -> Result<Value, String> {
+pub fn python_operator_fallback(l: &Value, r: &Value, op: &str) -> Result<Value, String> {
     Python::with_gil(|py| -> Result<Value, String> {
         let py_l = value_to_py(py, l)?;
         let py_r = value_to_py(py, r)?;
@@ -267,6 +286,9 @@ impl Interpreter {
             StatementNode::Assignment { name, value, .. } => {
                 let val = self.evaluate(value, env)?;
                 env.define(name.clone(), val);
+            }
+            StatementNode::IndexAssignment { .. } | StatementNode::PropertyAssignment { .. } => {
+                return Err("Index and Property assignment are only supported in VM mode.".to_string());
             }
             StatementNode::Show { value } => {
                 let val = self.evaluate(value, env)?;
@@ -422,7 +444,7 @@ impl Interpreter {
                     .to_string();
                 
                 let name = alias.as_ref().unwrap_or(&default_name).clone();
-                env.define(name, Value::Map(module_map));
+                env.define(name, Value::Map(std::sync::Arc::new(parking_lot::RwLock::new(module_map))));
             }
             StatementNode::Return { value } => {
                 let ret_val = match value {
@@ -444,7 +466,7 @@ impl Interpreter {
                     Value::String(s) => s,
                     Value::List(l) => {
                         let mut result = String::new();
-                        for (i, val) in l.iter().enumerate() {
+                        for (i, val) in l.read().iter().enumerate() {
                             if i > 0 {
                                 result.push('\n');
                             }
@@ -540,10 +562,10 @@ impl Interpreter {
                 match val {
                     Value::List(items) => {
                         let mut results = Vec::new();
-                        for item in items {
+                        for item in items.read().iter() {
                             results.push(execute_cast(&item, target_type)?);
                         }
-                        Ok(Value::List(results))
+                        Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(results))))
                     }
                     _ => execute_cast(&val, target_type),
                 }
@@ -569,13 +591,13 @@ impl Interpreter {
                             Err(_) => return Err("Thread panicked during parallel execution".to_string()),
                         }
                     }
-                    Ok(Value::List(list))
+                    Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(list))))
                 } else {
                     let mut list = Vec::new();
                     for item in items {
                         list.push(self.evaluate(item, env)?);
                     }
-                    Ok(Value::List(list))
+                    Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(list))))
                 }
             }
             ExpressionNode::Read(path_expr) => {
@@ -588,7 +610,8 @@ impl Interpreter {
                 
                 match path_val {
                     Value::String(path) => execute_read(&path),
-                    Value::List(paths) => {
+                    Value::List(paths_arc) => {
+                        let paths = paths_arc.read().clone();
                         if self.concurrent_mode {
                             let mut handles = Vec::new();
                             for path_item in paths {
@@ -606,7 +629,7 @@ impl Interpreter {
                                     Err(_) => return Err("Thread panicked".to_string()),
                                 }
                             }
-                            Ok(Value::List(results))
+                            Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(results))))
                         } else {
                             let mut results = Vec::new();
                             for path_item in paths {
@@ -616,7 +639,7 @@ impl Interpreter {
                                     return Err("Expected list of strings for read".to_string());
                                 }
                             }
-                            Ok(Value::List(results))
+                            Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(results))))
                         }
                     }
                     _ => Err("Expected string or list of strings for read".to_string()),
@@ -639,7 +662,8 @@ impl Interpreter {
                 
                 match url_val {
                     Value::String(url) => execute_get(&url),
-                    Value::List(urls) => {
+                    Value::List(urls_arc) => {
+                        let urls = urls_arc.read().clone();
                         if self.concurrent_mode {
                             let mut handles = Vec::new();
                             for url_item in urls {
@@ -657,7 +681,7 @@ impl Interpreter {
                                     Err(_) => return Err("Thread panicked".to_string()),
                                 }
                             }
-                            Ok(Value::List(results))
+                            Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(results))))
                         } else {
                             let mut results = Vec::new();
                             for url_item in urls {
@@ -667,7 +691,7 @@ impl Interpreter {
                                     return Err("Expected list of strings for get".to_string());
                                 }
                             }
-                            Ok(Value::List(results))
+                            Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(results))))
                         }
                     }
                     _ => Err("Expected string or list of strings for get".to_string()),
@@ -679,12 +703,13 @@ impl Interpreter {
                     let val = self.evaluate(expr, env)?;
                     map.insert(key.clone(), val);
                 }
-                Ok(Value::Map(map))
+                Ok(Value::Map(std::sync::Arc::new(parking_lot::RwLock::new(map))))
             }
             ExpressionNode::PropertyAccess { target, property } => {
                 let obj = self.evaluate(target, env)?;
                 match obj {
-                    Value::Map(map) => {
+                    Value::Map(map_arc) => {
+                        let map = map_arc.read();
                         if let Some(val) = map.get(property) {
                             Ok(val.clone())
                         } else {
@@ -719,7 +744,8 @@ impl Interpreter {
                 let list_val = self.evaluate(target, env)?;
                 let idx_val = self.evaluate(index, env)?;
                 match list_val {
-                    Value::List(items) => {
+                    Value::List(items_arc) => {
+                        let items = items_arc.read();
                         if let Value::Integer(i) = idx_val {
                             if i >= 0 && (i as usize) < items.len() {
                                 Ok(items[i as usize].clone())
@@ -745,7 +771,7 @@ impl Interpreter {
                 let list_val = self.evaluate(target, env)?;
                 
                 let items = match list_val {
-                    Value::List(l) => l,
+                    Value::List(l) => l.read().clone(),
                     Value::PythonObject(py_obj) => {
                         Python::with_gil(|py| -> Result<Vec<Value>, String> {
                             if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
@@ -771,13 +797,13 @@ impl Interpreter {
                         result.push(item);
                     }
                 }
-                Ok(Value::List(result))
+                Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(result))))
             }
             ExpressionNode::Select { target, mapping } => {
                 let list_val = self.evaluate(target, env)?;
                 
                 let items = match list_val {
-                    Value::List(l) => l,
+                    Value::List(l) => l.read().clone(),
                     Value::PythonObject(py_obj) => {
                         Python::with_gil(|py| -> Result<Vec<Value>, String> {
                             if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
@@ -801,12 +827,12 @@ impl Interpreter {
                     let map_val = self.evaluate(mapping, &local_env)?;
                     result.push(map_val);
                 }
-                Ok(Value::List(result))
+                Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(result))))
             }
             ExpressionNode::Aggregate { target, mapping, op } => {
                 let list_val = self.evaluate(target, env)?;
                 let items = match list_val {
-                    Value::List(l) => l,
+                    Value::List(l) => l.read().clone(),
                     Value::PythonObject(py_obj) => {
                         Python::with_gil(|py| -> Result<Vec<Value>, String> {
                             if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
@@ -931,13 +957,13 @@ impl Interpreter {
                                     return Err("split() takes 0 or 1 arguments".to_string());
                                 };
                                 
-                                let parts = if arguments.len() == 0 {
+                                let parts: Vec<Value> = if arguments.len() == 0 {
                                     s.split_whitespace().map(|p| Value::String(p.to_string())).collect()
                                 } else {
                                     s.split(&sep).map(|p| Value::String(p.to_string())).collect()
                                 };
                                 
-                                return Ok(Value::List(parts));
+                                return Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(parts))));
                             }
                         }
                         return Err("split() can only be called on strings".to_string());
@@ -1004,14 +1030,14 @@ impl Interpreter {
                             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
                             (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
                             (Value::List(a), Value::List(b)) => {
-                                let mut new_list = a.clone();
-                                new_list.extend(b.clone());
-                                Ok(Value::List(new_list))
+                                let mut new_list_vec = a.read().clone();
+                                new_list_vec.extend(b.read().clone());
+                                Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(new_list_vec))))
                             },
                             (Value::List(a), b) => {
-                                let mut new_list = a.clone();
-                                new_list.push(b.clone());
-                                Ok(Value::List(new_list))
+                                let mut new_list_vec = a.read().clone();
+                                new_list_vec.push(b.clone());
+                                Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(new_list_vec))))
                             },
                             (left_val, right_val) => Err(format!(
                                 "Cannot add {} to {}.\n\nTry converting one of them first using str().",
@@ -1139,6 +1165,14 @@ impl Interpreter {
                     body: block,
                 })
             }
+            ExpressionNode::ImportPython(m) => {
+                let py_module = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
+                    let module = PyModule::import(py, m.as_str())?;
+                    Ok(module.into())
+                }).map_err(|e| e.to_string())?;
+                Ok(Value::PythonObject(py_module))
+            }
+            ExpressionNode::Null => Ok(Value::Null),
         }
     }
 }

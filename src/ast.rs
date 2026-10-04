@@ -45,6 +45,7 @@ pub struct Statement {
     pub span: Span,
 }
 
+#[allow(dead_code)]
 impl Statement {
     pub fn with_span(mut self, span: Span) -> Self {
         self.span = span;
@@ -106,6 +107,8 @@ pub enum ExpressionNode {
         params: Vec<String>,
         body: Box<Expression>, // Or Block if multi-line, but let's stick to Expression for now
     },
+    ImportPython(String),
+    Null,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +117,16 @@ pub enum StatementNode {
         name: String,
         value: Expression,
         type_annotation: Option<String>,
+    },
+    IndexAssignment {
+        target: Expression,
+        index: Expression,
+        value: Expression,
+    },
+    PropertyAssignment {
+        target: Expression,
+        property: String,
+        value: Expression,
     },
     Show {
         value: Expression,

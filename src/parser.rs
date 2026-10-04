@@ -81,22 +81,25 @@ impl Parser {
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
         let token = self.peek().clone();
-        match &token.token_type {
-            TokenType::Keyword(k) if k == "use" => self.parse_use_statement(),
-            TokenType::Keyword(k) if k == "show" => self.parse_show_statement(),
-            TokenType::Keyword(k) if k == "if" => self.parse_if_statement(),
-            TokenType::Keyword(k) if k == "repeat" => self.parse_repeat_statement(),
-            TokenType::Keyword(k) if k == "function" => self.parse_function_declaration(),
-            TokenType::Keyword(k) if k == "return" => self.parse_return_statement(),
-            TokenType::Keyword(k) if k == "save" => self.parse_save_statement(),
-            TokenType::Keyword(k) if k == "class" => self.parse_class_def(),
-            TokenType::Keyword(k) if k == "try" => self.parse_try_catch(),
-            TokenType::Keyword(k) if k == "while" => self.parse_while(),
-            TokenType::Keyword(k) if k == "break" => self.parse_break(),
-            TokenType::Keyword(k) if k == "continue" => self.parse_continue(),
-            TokenType::Identifier(_) => self.parse_assignment_or_expression(),
-            _ => self.error(&format!("Unexpected token {:?}", token.token_type)),
-        }
+        let start_span = Span { line: token.line, column: token.column, length: 0 };
+        let mut stmt = match &token.token_type {
+            TokenType::Keyword(k) if k == "use" => self.parse_use_statement()?,
+            TokenType::Keyword(k) if k == "show" => self.parse_show_statement()?,
+            TokenType::Keyword(k) if k == "if" => self.parse_if_statement()?,
+            TokenType::Keyword(k) if k == "repeat" => self.parse_repeat_statement()?,
+            TokenType::Keyword(k) if k == "function" => self.parse_function_declaration()?,
+            TokenType::Keyword(k) if k == "return" => self.parse_return_statement()?,
+            TokenType::Keyword(k) if k == "save" => self.parse_save_statement()?,
+            TokenType::Keyword(k) if k == "class" => self.parse_class_def()?,
+            TokenType::Keyword(k) if k == "try" => self.parse_try_catch()?,
+            TokenType::Keyword(k) if k == "while" => self.parse_while()?,
+            TokenType::Keyword(k) if k == "break" => self.parse_break()?,
+            TokenType::Keyword(k) if k == "continue" => self.parse_continue()?,
+            TokenType::Identifier(_) => self.parse_assignment_or_expression()?,
+            _ => return self.error(&format!("Unexpected token {:?}", token.token_type)),
+        };
+        stmt.span = start_span;
+        Ok(stmt)
     }
 
     fn parse_use_statement(&mut self) -> Result<Statement, String> {
@@ -256,12 +259,45 @@ impl Parser {
 
     fn parse_assignment_or_expression(&mut self) -> Result<Statement, String> {
         if let Some(next) = self.peek_next() {
-            if next.token_type == TokenType::Op("=".to_string()) || next.token_type == TokenType::Op(":".to_string()) {
+            if next.token_type == TokenType::Op(":".to_string()) {
                 return self.parse_assignment();
+            }
+            if next.token_type == TokenType::Op("=".to_string()) {
+                if let TokenType::Identifier(_) = self.peek().token_type {
+                    return self.parse_assignment();
+                }
             }
         }
         
         let expr = self.parse_expression()?;
+        if self.match_token(&TokenType::Op("=".to_string())) {
+            let rhs = self.parse_expression()?;
+            match expr.node {
+                ExpressionNode::Identifier(name) => {
+                    return Ok(StatementNode::Assignment {
+                        name,
+                        value: rhs,
+                        type_annotation: None,
+                    }.into());
+                }
+                ExpressionNode::IndexAccess { target, index } => {
+                    return Ok(StatementNode::IndexAssignment {
+                        target: *target,
+                        index: *index,
+                        value: rhs,
+                    }.into());
+                }
+                ExpressionNode::PropertyAccess { target, property } => {
+                    return Ok(StatementNode::PropertyAssignment {
+                        target: *target,
+                        property,
+                        value: rhs,
+                    }.into());
+                }
+                _ => return self.error("Invalid assignment target"),
+            }
+        }
+        
         if let ExpressionNode::Call { .. } = expr.node {
             // Treat function calls as statements if they stand alone (by mapping them to dummy assignment or we can just return it if we add ExprStmt)
             // Let's add it as a dummy assignment to '_' for now, to keep AST simple.
@@ -283,12 +319,7 @@ impl Parser {
         
         let mut type_annotation = None;
         if self.match_token(&TokenType::Op(":".to_string())) {
-            let type_tok = self.advance().clone();
-            if let TokenType::Identifier(t) = type_tok.token_type {
-                type_annotation = Some(t);
-            } else {
-                return self.error("Expected type identifier");
-            }
+            type_annotation = Some(self.parse_type_annotation()?);
         }
         
         self.expect(&TokenType::Op("=".to_string()))?;
@@ -318,12 +349,7 @@ impl Parser {
                 
                 let mut param_type = None;
                 if self.match_token(&TokenType::Op(":".to_string())) {
-                    let type_tok = self.advance().clone();
-                    if let TokenType::Identifier(t) = type_tok.token_type {
-                        param_type = Some(t);
-                    } else {
-                        return self.error("Expected parameter type");
-                    }
+                    param_type = Some(self.parse_type_annotation()?);
                 }
                 
                 params.push((param_name, param_type));
@@ -339,12 +365,7 @@ impl Parser {
         
         let mut return_type = None;
         if self.match_token(&TokenType::Op("->".to_string())) {
-            let type_tok = self.advance().clone();
-            if let TokenType::Identifier(t) = type_tok.token_type {
-                return_type = Some(t);
-            } else {
-                return Err("Expected return type".to_string());
-            }
+            return_type = Some(self.parse_type_annotation()?);
         }
         
         let body;
@@ -357,6 +378,29 @@ impl Parser {
         }
         
         Ok(StatementNode::FunctionDeclaration { name, params, return_type, body }.into())
+    }
+
+    fn parse_type_annotation(&mut self) -> Result<String, String> {
+        let type_tok = self.advance().clone();
+        let mut base = match type_tok.token_type {
+            TokenType::Identifier(t) => t,
+            _ => return self.error("Expected type identifier"),
+        };
+        
+        if self.match_token(&TokenType::Punct("[".to_string())) {
+            base.push('[');
+            loop {
+                base.push_str(&self.parse_type_annotation()?);
+                if self.match_token(&TokenType::Punct(",".to_string())) {
+                    base.push(',');
+                } else {
+                    break;
+                }
+            }
+            self.expect(&TokenType::Punct("]".to_string()))?;
+            base.push(']');
+        }
+        Ok(base)
     }
 
     fn parse_return_statement(&mut self) -> Result<Statement, String> {

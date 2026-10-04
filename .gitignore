@@ -1,7 +1,29 @@
 /target
+
+# Novo benchmark outputs and test files
 *.json
 *.csv
 *.txt
 *.jpg
 *.db
 tmp*.nv
+
+# Rust
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db

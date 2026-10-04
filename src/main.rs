@@ -4,6 +4,7 @@ mod lexer;
 mod parser;
 mod vm;
 mod compiler;
+mod type_checker;
 
 use std::env;
 use std::fs;
@@ -51,6 +52,12 @@ fn main() {
         }
     };
 
+    let mut type_checker = type_checker::TypeChecker::new();
+    if let Err(e) = type_checker.check_program(&ast) {
+        print_error(&source, &e, "Type error");
+        return;
+    }
+
     if engine == "vm" {
         let compiler = compiler::Compiler::new();
         match compiler.compile(&ast) {
@@ -58,11 +65,10 @@ fn main() {
                 let mut vm = vm::VM::new();
                 match vm.interpret(chunk) {
                     vm::InterpretResult::Ok => {}
-                    vm::InterpretResult::CompileError => {
-                        eprintln!("VM Compile Error");
-                    }
                     vm::InterpretResult::RuntimeError(e) => {
+                        eprintln!("VM Runtime Error: {}", e);
                         print_error(&source, &e, "VM Runtime Error");
+                        std::process::exit(1);
                     }
                 }
             }

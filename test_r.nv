@@ -1,0 +1,4 @@
+use python random
+r = []
+r = r + [random.random() * 100]
+show r
