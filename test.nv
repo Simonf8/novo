@@ -4,3 +4,4 @@ function main():
         show x
     otherwise:
         show 0
+main()

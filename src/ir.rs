@@ -57,6 +57,7 @@ pub enum Instruction {
     LoadLocal(String),
     StoreLocal(String, ValueId),
     LoadGlobal(String),
+    StoreGlobal(String, ValueId),
     /// Object allocation
     BuildList(Vec<ValueId>),
     BuildMap(Vec<(ValueId, ValueId)>),
@@ -193,7 +194,14 @@ impl std::fmt::Display for Instruction {
             Instruction::PropertySet(obj, prop, val) => write!(f, "propset {}, \"{}\" = {}", obj, prop, val),
             Instruction::Cast(val, ty) => write!(f, "cast {}, {:?}", val, ty),
             Instruction::Print(val) => write!(f, "print {}", val),
-            Instruction::Phi(args) => write!(f, "phi ..."),
+            Instruction::Phi(args) => {
+                write!(f, "phi [")?;
+                for (i, (b, v)) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}: {}", b, v)?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }

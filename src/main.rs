@@ -7,6 +7,7 @@ mod compiler;
 mod type_checker;
 mod ir;
 mod ir_builder;
+mod ir_ssa;
 mod ir_backend;
 
 use std::env;
@@ -66,7 +67,7 @@ fn main() {
     };
 
     if command == "ir" {
-        let mut builder = ir_builder::IRBuilder::new();
+        let builder = ir_builder::IRBuilder::new();
         match builder.build(&ast) {
             Ok(functions) => {
                 for f in functions {
@@ -93,7 +94,7 @@ fn main() {
     }
 
     if engine == "vm" {
-        let mut builder = ir_builder::IRBuilder::new();
+        let builder = ir_builder::IRBuilder::new();
         let ir = match builder.build(&ast) {
             Ok(ir) => ir,
             Err(e) => {

@@ -1,0 +1,20 @@
+function test_if(cond):
+    x = 10
+    if cond > 0:
+        x = 20
+    otherwise:
+        x = 30
+    show x
+
+function test_loop(n):
+    total = 0
+    i = 0
+    while i < n:
+        total = total + i
+        i = i + 1
+    show total
+
+test_if(1)
+test_if(0)
+test_loop(5)
+test_loop(10)

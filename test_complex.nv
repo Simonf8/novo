@@ -1,0 +1,22 @@
+function factorial(n):
+    result = 1
+    i = 1
+    while i <= n:
+        result = result * i
+        i = i + 1
+    return result
+
+function collatz(n):
+    steps = 0
+    curr = n
+    while curr != 1:
+        if curr % 2 == 0:
+            curr = curr / 2
+        otherwise:
+            curr = curr * 3 + 1
+        steps = steps + 1
+    return steps
+
+show factorial(5)
+show factorial(6)
+show collatz(6)

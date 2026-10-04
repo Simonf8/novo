@@ -1,7 +1,6 @@
 
 use crate::ast::{Expression, ExpressionNode, Program, Statement, StatementNode};
 use crate::ir::*;
-use std::collections::HashMap;
 
 pub struct IRBuilder {
     pub functions: Vec<FunctionIR>,
@@ -35,6 +34,12 @@ impl IRBuilder {
         let cur_block = &mut cur_func.blocks.get_mut(&self.current_block).unwrap();
         if let Terminator::Unreachable = cur_block.terminator {
             cur_block.terminator = Terminator::Return(None);
+        }
+
+        self.optimize();
+
+        for func in &mut self.functions {
+            crate::ir_ssa::convert_to_ssa(func);
         }
 
         self.optimize();
@@ -211,7 +216,7 @@ impl IRBuilder {
                 current_block_ref.terminator = Terminator::CondBranch {
                     condition: cond_id,
                     true_block,
-                    false_block: if otherwise.is_some() { false_block } else { merge_block },
+                    false_block,
                 };
                 
                 self.current_block = true_block;
@@ -238,6 +243,10 @@ impl IRBuilder {
                     if let Terminator::Unreachable = false_end_block.terminator {
                         false_end_block.terminator = Terminator::Branch(merge_block);
                     }
+                } else {
+                    let func = &mut self.functions[self.current_func];
+                    let false_block_ref = func.blocks.get_mut(&false_block).unwrap();
+                    false_block_ref.terminator = Terminator::Branch(merge_block);
                 }
                 
                 self.current_block = merge_block;
@@ -284,7 +293,7 @@ impl IRBuilder {
             StatementNode::FunctionDeclaration { name, params, body, .. } => {
                 let func_idx = self.functions.len();
                 let mut new_func = FunctionIR::new(name.clone());
-                for (p, _) in params {
+                for (_p, _) in params {
                     let p_id = new_func.new_value();
                     new_func.params.push(p_id);
                 }

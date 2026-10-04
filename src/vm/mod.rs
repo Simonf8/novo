@@ -272,9 +272,9 @@ impl VM {
                     frame.ip += offset;
                 }
                 OpCode::JumpIfFalse(offset) => {
-                    let val = self.stack.last().unwrap();
+                    let val = self.stack.pop().unwrap();
                     let condition = match val {
-                        Value::Boolean(b) => *b,
+                        Value::Boolean(b) => b,
                         Value::Null => false,
                         _ => true,
                     };
