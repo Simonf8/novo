@@ -511,13 +511,13 @@ impl Parser {
     }
 
     fn parse_multiplication(&mut self) -> Result<Expression, String> {
-        let mut left = self.parse_primary()?;
+        let mut left = self.parse_unary()?;
         
         while let TokenType::Op(op) = &self.peek().token_type {
             if ["*", "/", "%"].contains(&op.as_str()) {
                 let operator = op.clone();
                 self.advance();
-                let right = self.parse_primary()?;
+                let right = self.parse_unary()?;
                 let span = left.span.merge(&right.span);
                 left = Expression::from(ExpressionNode::BinaryOp { left: Box::new(left), operator, right: Box::new(right) }).with_span(span);
             } else {
@@ -525,6 +525,18 @@ impl Parser {
             }
         }
         Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expression, String> {
+        if self.match_token(&TokenType::Keyword("together".to_string())) {
+            let expr = self.parse_unary()?;
+            return Ok(ExpressionNode::Concurrent(Box::new(expr)).into());
+        }
+        if self.match_token(&TokenType::Keyword("await".to_string())) {
+            let expr = self.parse_unary()?;
+            return Ok(ExpressionNode::Await(Box::new(expr)).into());
+        }
+        self.parse_primary()
     }
 
     fn parse_primary(&mut self) -> Result<Expression, String> {
@@ -557,8 +569,6 @@ impl Parser {
                     _ => return self.error("Expected identifier after '.'"),
                 };
                 expr = ExpressionNode::PropertyAccess { target: Box::new(expr), property: prop }.into();
-            } else if self.match_token(&TokenType::Keyword("together".to_string())) {
-                expr = ExpressionNode::Concurrent(Box::new(expr)).into();
             } else if self.match_token(&TokenType::Keyword("as".to_string())) {
                 let type_name = match self.advance().token_type.clone() {
                     TokenType::Identifier(n) => n,

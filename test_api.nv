@@ -1,0 +1,6 @@
+
+url = "https://jsonplaceholder.typicode.com/todos/1"
+data = get url
+result = parse_json(data)
+show result
+show result.title

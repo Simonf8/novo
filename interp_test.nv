@@ -1,5 +1,10 @@
 
-name: String = "Alice"
-greeting: String = f"{name} is {20 + 5} years old"
-show greeting
+function work():
+    show "Starting work..."
+    return 100
+
+p = together work()
+show "Doing other stuff..."
+result = await p
+show result
 

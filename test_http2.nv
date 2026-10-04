@@ -1,0 +1,4 @@
+
+url = "http://example.com"
+html = get url
+show html

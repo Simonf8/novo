@@ -33,10 +33,12 @@ pub enum InterpretResult {
 
 impl VM {
     pub fn new() -> Self {
+        let mut globals = HashMap::new();
+        globals.insert("parse_json".to_string(), Value::NativeFunction { name: "parse_json".to_string(), bound_target: None });
         VM {
             frames: Vec::new(),
             stack: Vec::new(),
-            globals: HashMap::new(),
+            globals,
             context_item_stack: Vec::new(),
             try_stack: Vec::new(),
         }
@@ -81,6 +83,7 @@ impl VM {
                 OpCode::Return => {
                     let result = self.stack.pop().unwrap_or(Value::Null);
                     if self.frames.is_empty() {
+                        self.stack.push(result);
                         return InterpretResult::Ok;
                     }
                     self.stack.truncate(frame.base_pointer - 1);
@@ -124,13 +127,6 @@ impl VM {
                     } else {
                         throw!(frame, 'vm_loop, "Global name must be a string".to_string());
                     }
-                }
-                OpCode::PushContextItem => {
-                    let val = self.stack.last().unwrap().clone();
-                    self.context_item_stack.push(val);
-                }
-                OpCode::PopContextItem => {
-                    self.context_item_stack.pop();
                 }
                 OpCode::True => self.stack.push(Value::Boolean(true)),
                 OpCode::False => self.stack.push(Value::Boolean(false)),
@@ -358,6 +354,45 @@ impl VM {
                                         Err("length() requires a string or list target".to_string())
                                     }
                                 }
+                                "push" => {
+                                    if let Some(Value::List(l)) = target_val {
+                                        if args.len() == 1 {
+                                            l.write().push(args[0].clone());
+                                            Ok(Value::Null)
+                                        } else {
+                                            Err("push() requires exactly 1 argument".to_string())
+                                        }
+                                    } else {
+                                        Err("push() requires a list target".to_string())
+                                    }
+                                }
+                                "pop" => {
+                                    if let Some(Value::List(l)) = target_val {
+                                        if args.is_empty() {
+                                            Ok(l.write().pop().unwrap_or(Value::Null))
+                                        } else {
+                                            Err("pop() requires exactly 0 arguments".to_string())
+                                        }
+                                    } else {
+                                        Err("pop() requires a list target".to_string())
+                                    }
+                                }
+                                "parse_json" => {
+                                    if args.len() == 1 {
+                                        if let Value::String(s) = &args[0] {
+                                            pyo3::Python::with_gil(|py| -> Result<Value, String> {
+                                                let json = pyo3::types::PyModule::import(py, "json").map_err(|e| e.to_string())?;
+                                                let loads = json.getattr("loads").map_err(|e| e.to_string())?;
+                                                let py_result = loads.call1((s.as_str(),)).map_err(|e| e.to_string())?;
+                                                crate::interpreter::py_to_value(py, py_result.into())
+                                            })
+                                        } else {
+                                            Err("parse_json() requires a string argument".to_string())
+                                        }
+                                    } else {
+                                        Err("parse_json() requires exactly 1 argument".to_string())
+                                    }
+                                }
                                 _ => Err(format!("Unknown native function: {}", name)),
                             };
                             
@@ -524,7 +559,7 @@ impl VM {
                             }
                         }
                         Value::List(l) => {
-                            if name == "length" {
+                            if name == "length" || name == "push" || name == "pop" {
                                 self.stack.push(Value::NativeFunction {
                                     name,
                                     bound_target: Some(Box::new(Value::List(l))),
@@ -574,10 +609,62 @@ impl VM {
                     }
                     self.stack.push(Value::Null);
                 }
-                OpCode::AggregateSum | OpCode::AggregateAverage | OpCode::AggregateMax | OpCode::AggregateMin => {
+                OpCode::Select(closure_idx) => {
                     let target = self.stack.pop().unwrap();
+                    let closure = match &frame.chunk.constants[closure_idx] {
+                        Value::CompiledFunction { chunk, .. } => chunk.clone(),
+                        _ => throw!(frame, 'vm_loop, "Expected CompiledFunction".to_string()),
+                    };
                     if let Value::List(l) = target {
-                        let items = l.read();
+                        let items = l.read().clone();
+                        let mut result = Vec::with_capacity(items.len());
+                        for item in items {
+                            self.context_item_stack.push(item);
+                            match self.execute_closure(closure.clone()) {
+                                Ok(val) => result.push(val),
+                                Err(e) => throw!(frame, 'vm_loop, e),
+                            }
+                            self.context_item_stack.pop();
+                        }
+                        self.stack.push(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(result))));
+                    } else {
+                        throw!(frame, 'vm_loop, "'select' requires a list".to_string());
+                    }
+                }
+                OpCode::Where(closure_idx) => {
+                    let target = self.stack.pop().unwrap();
+                    let closure = match &frame.chunk.constants[closure_idx] {
+                        Value::CompiledFunction { chunk, .. } => chunk.clone(),
+                        _ => throw!(frame, 'vm_loop, "Expected CompiledFunction".to_string()),
+                    };
+                    if let Value::List(l) = target {
+                        let items = l.read().clone();
+                        let mut result = Vec::new();
+                        for item in items {
+                            self.context_item_stack.push(item.clone());
+                            let cond = match self.execute_closure(closure.clone()) {
+                                Ok(val) => val,
+                                Err(e) => throw!(frame, 'vm_loop, e),
+                            };
+                            self.context_item_stack.pop();
+                            
+                            if let Value::Boolean(true) = cond {
+                                result.push(item);
+                            }
+                        }
+                        self.stack.push(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(result))));
+                    } else {
+                        throw!(frame, 'vm_loop, "'where' requires a list".to_string());
+                    }
+                }
+                OpCode::AggregateSum(closure_idx) | OpCode::AggregateAverage(closure_idx) | OpCode::AggregateMax(closure_idx) | OpCode::AggregateMin(closure_idx) => {
+                    let target = self.stack.pop().unwrap();
+                    let closure = match &frame.chunk.constants[closure_idx] {
+                        Value::CompiledFunction { chunk, .. } => chunk.clone(),
+                        _ => throw!(frame, 'vm_loop, "Expected CompiledFunction".to_string()),
+                    };
+                    if let Value::List(l) = target {
+                        let items = l.read().clone();
                         if items.is_empty() {
                             self.stack.push(Value::Null);
                         } else {
@@ -589,43 +676,50 @@ impl VM {
                             let mut min_int = i64::MAX;
                             let mut min_float = f64::INFINITY;
                             
-                            for val in items.iter() {
+                            for item in items.iter() {
+                                self.context_item_stack.push(item.clone());
+                                let val = match self.execute_closure(closure.clone()) {
+                                    Ok(v) => v,
+                                    Err(e) => throw!(frame, 'vm_loop, e),
+                                };
+                                self.context_item_stack.pop();
+                                
                                 match val {
                                     Value::Integer(i) => {
-                                        let f = *i as f64;
-                                        if is_float { running_float += f; } else { running_int += *i; }
+                                        let f = i as f64;
+                                        if is_float { running_float += f; } else { running_int += i; }
                                         if !is_float {
-                                            if *i > max_int { max_int = *i; }
-                                            if *i < min_int { min_int = *i; }
+                                            if i > max_int { max_int = i; }
+                                            if i < min_int { min_int = i; }
                                         }
                                         if f > max_float { max_float = f; }
                                         if f < min_float { min_float = f; }
                                     }
                                     Value::Float(f) => {
                                         if !is_float { is_float = true; running_float = running_int as f64; }
-                                        running_float += *f;
-                                        if *f > max_float { max_float = *f; }
-                                        if *f < min_float { min_float = *f; }
+                                        running_float += f;
+                                        if f > max_float { max_float = f; }
+                                        if f < min_float { min_float = f; }
                                     }
                                     _ => throw!(frame, 'vm_loop, "Aggregate requires numeric values".to_string()),
                                 }
                             }
                             
                             match instruction {
-                                OpCode::AggregateSum => {
+                                OpCode::AggregateSum(_) => {
                                     if is_float { self.stack.push(Value::Float(running_float)); }
                                     else { self.stack.push(Value::Integer(running_int)); }
                                 }
-                                OpCode::AggregateAverage => {
+                                OpCode::AggregateAverage(_) => {
                                     let count = items.len() as f64;
                                     if is_float { self.stack.push(Value::Float(running_float / count)); }
                                     else { self.stack.push(Value::Float((running_int as f64) / count)); }
                                 }
-                                OpCode::AggregateMax => {
+                                OpCode::AggregateMax(_) => {
                                     if is_float { self.stack.push(Value::Float(max_float)); }
                                     else { self.stack.push(Value::Integer(max_int)); }
                                 }
-                                OpCode::AggregateMin => {
+                                OpCode::AggregateMin(_) => {
                                     if is_float { self.stack.push(Value::Float(min_float)); }
                                     else { self.stack.push(Value::Integer(min_int)); }
                                 }
@@ -768,6 +862,62 @@ impl VM {
                 OpCode::TryEnd => {
                     self.try_stack.pop();
                 }
+                OpCode::SpawnConcurrent(idx) => {
+                    let func = frame.chunk.constants[idx].clone();
+                    if let Value::CompiledFunction { chunk, arity: _ } = func {
+                        let mut new_vm = VM::new();
+                        new_vm.globals = self.globals.clone();
+                        
+                        let result_arc = std::sync::Arc::new(parking_lot::RwLock::new(None));
+                        let ret_arc = result_arc.clone();
+                        
+                        std::thread::spawn(move || {
+                            let call_frame = CallFrame {
+                                chunk,
+                                ip: 0,
+                                base_pointer: 0,
+                            };
+                            new_vm.frames.push(call_frame);
+                            match new_vm.run() {
+                                InterpretResult::Ok => {
+                                    let ret = new_vm.stack.pop().unwrap_or(Value::Null);
+                                    *result_arc.write() = Some(Ok(ret));
+                                }
+                                InterpretResult::RuntimeError(e) => {
+                                    *result_arc.write() = Some(Err(e));
+                                }
+                            }
+                        });
+                        
+                        self.stack.push(Value::Promise(ret_arc));
+                    } else {
+                        throw!(frame, 'vm_loop, "SpawnConcurrent requires a CompiledFunction".to_string());
+                    }
+                }
+                OpCode::Await => {
+                    let promise_val = self.stack.pop().unwrap();
+                    if let Value::Promise(arc) = promise_val {
+                        // Busy-wait for simplicity, or we can use a condvar.
+                        // For a simple implementation, loop and sleep until it's Some.
+                        loop {
+                            let val_opt = arc.read().clone();
+                            if let Some(res) = val_opt {
+                                match res {
+                                    Ok(v) => {
+                                        self.stack.push(v);
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        throw!(frame, 'vm_loop, e);
+                                    }
+                                }
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    } else {
+                        throw!(frame, 'vm_loop, "Await requires a Promise".to_string());
+                    }
+                }
             }
             }
             
@@ -780,6 +930,27 @@ impl VM {
                 self.stack.truncate(frame.base_pointer - 1);
             }
             self.stack.push(result);
+        }
+    }
+
+    fn execute_closure(&mut self, chunk: std::sync::Arc<crate::vm::Chunk>) -> Result<Value, String> {
+        let mut sub_vm = VM::new();
+        sub_vm.globals = self.globals.clone();
+        sub_vm.context_item_stack = self.context_item_stack.clone();
+        
+        sub_vm.frames.push(CallFrame {
+            chunk,
+            ip: 0,
+            base_pointer: 0,
+        });
+        
+        match sub_vm.run() {
+            InterpretResult::Ok => {
+                let ret = sub_vm.stack.pop().unwrap_or(Value::Null);
+                self.globals = sub_vm.globals;
+                Ok(ret)
+            }
+            InterpretResult::RuntimeError(e) => Err(e),
         }
     }
 }

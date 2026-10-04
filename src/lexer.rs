@@ -170,7 +170,7 @@ impl Lexer {
             "show" | "if" | "otherwise" | "repeat" | "times" | "for" | "in" | "while" | 
             "function" | "return" | "true" | "false" | "record" | "object" | "where" | 
             "select" | "average" | "sum" | "min" | "max" | "task" | "run" | "parallel" | "use" | "python" | "as" | "and" | "or" | "not" | "starts_with" | "ends_with" |
-            "together" | "read" | "json" | "get" | "save" | "to" | "try" | "catch" | "break" | "continue" | "class" => {
+            "together" | "await" | "read" | "json" | "get" | "save" | "to" | "try" | "catch" | "break" | "continue" | "class" => {
                 TokenType::Keyword(val)
             },
             _ => TokenType::Identifier(val),
@@ -298,7 +298,7 @@ impl Lexer {
             return Ok(Token { token_type: TokenType::Op(op), line: self.line, column: start_col });
         }
         
-        if "+-*/%=<>:.".contains(char) {
+        if "+-*/%=<>:.|".contains(char) {
             return Ok(Token { token_type: TokenType::Op(op), line: self.line, column: start_col });
         }
         if "()[]{},".contains(char) {

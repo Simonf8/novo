@@ -1,0 +1,7 @@
+
+function compute() -> Int:
+    return 42
+
+prom = together compute()
+val = await prom
+show val

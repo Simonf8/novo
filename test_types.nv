@@ -1,0 +1,9 @@
+
+function add(x: Int, y: Int) -> Int:
+    return x + y
+
+# Should compile successfully
+val1 = add(10, 20)
+
+# Should fail type checking
+val2 = add("hello", 20)

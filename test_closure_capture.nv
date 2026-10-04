@@ -1,0 +1,7 @@
+
+function make_adder(x: Int) -> Function:
+    return |y| y + x
+
+adder = make_adder(10)
+val = adder(5)
+show val

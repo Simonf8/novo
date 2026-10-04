@@ -1,0 +1,8 @@
+
+lst = [1, 2, 3]
+len = lst.length
+len_fail: String = lst.length
+
+s = "hello"
+has_l = s.contains("l")
+has_fail: Int = s.contains("l")

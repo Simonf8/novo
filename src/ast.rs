@@ -107,8 +107,8 @@ pub enum ExpressionNode {
         params: Vec<String>,
         body: Box<Expression>, // Or Block if multi-line, but let's stick to Expression for now
     },
-    ImportPython(String),
-    Null,
+
+    Await(Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

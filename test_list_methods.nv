@@ -1,0 +1,7 @@
+
+lst = [1, 2, 3]
+lst.push(4)
+show lst
+last = lst.pop()
+show lst
+show last

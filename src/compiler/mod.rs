@@ -320,27 +320,57 @@ impl Compiler {
             }
             ExpressionNode::Aggregate { target, mapping, op } => {
                 self.compile_expression(target)?;
-                self.chunk.write(OpCode::PushContextItem, expr.span.line);
-                self.compile_expression(mapping)?;
-                self.chunk.write(OpCode::PopContextItem, expr.span.line);
+                let mut child_compiler = Compiler::new();
+                child_compiler.compile_expression(mapping)?;
+                child_compiler.chunk.write(OpCode::Return, expr.span.line);
+                let func_val = Value::CompiledFunction {
+                    chunk: std::sync::Arc::new(child_compiler.chunk),
+                    arity: 0,
+                };
+                let constant_idx = self.chunk.add_constant(func_val);
                 
                 match op.as_str() {
-                    "sum" => self.chunk.write(OpCode::AggregateSum, expr.span.line),
-                    "average" => self.chunk.write(OpCode::AggregateAverage, expr.span.line),
-                    "max" => self.chunk.write(OpCode::AggregateMax, expr.span.line),
-                    "min" => self.chunk.write(OpCode::AggregateMin, expr.span.line),
+                    "sum" => self.chunk.write(OpCode::AggregateSum(constant_idx), expr.span.line),
+                    "average" => self.chunk.write(OpCode::AggregateAverage(constant_idx), expr.span.line),
+                    "max" => self.chunk.write(OpCode::AggregateMax(constant_idx), expr.span.line),
+                    "min" => self.chunk.write(OpCode::AggregateMin(constant_idx), expr.span.line),
                     _ => return Err(format!("Unknown aggregate operator: {}", op)),
                 }
             }
-            ExpressionNode::Where { target: _target, condition: _condition } => {
-                // Not fully mapped to real VM OpCodes natively yet, but we'll emit what we can
-                return Err(format!("Expression type not fully implemented in compiler yet: {:?}", expr.node));
+            ExpressionNode::Where { target, condition } => {
+                self.compile_expression(target)?;
+                let mut child_compiler = Compiler::new();
+                child_compiler.compile_expression(condition)?;
+                child_compiler.chunk.write(OpCode::Return, expr.span.line);
+                let func_val = Value::CompiledFunction {
+                    chunk: std::sync::Arc::new(child_compiler.chunk),
+                    arity: 0,
+                };
+                let constant_idx = self.chunk.add_constant(func_val);
+                self.chunk.write(OpCode::Where(constant_idx), expr.span.line);
             }
-            ExpressionNode::Select { target: _target, mapping: _mapping } => {
-                return Err(format!("Expression type not fully implemented in compiler yet: {:?}", expr.node));
+            ExpressionNode::Select { target, mapping } => {
+                self.compile_expression(target)?;
+                let mut child_compiler = Compiler::new();
+                child_compiler.compile_expression(mapping)?;
+                child_compiler.chunk.write(OpCode::Return, expr.span.line);
+                let func_val = Value::CompiledFunction {
+                    chunk: std::sync::Arc::new(child_compiler.chunk),
+                    arity: 0,
+                };
+                let constant_idx = self.chunk.add_constant(func_val);
+                self.chunk.write(OpCode::Select(constant_idx), expr.span.line);
             }
-            ExpressionNode::Concurrent(_block) => {
-                return Err(format!("Expression type not fully implemented in compiler yet: {:?}", expr.node));
+            ExpressionNode::Concurrent(expr_in) => {
+                let mut child_compiler = Compiler::new();
+                child_compiler.compile_expression(expr_in)?;
+                child_compiler.chunk.write(OpCode::Return, expr.span.line);
+                let func_val = Value::CompiledFunction {
+                    chunk: std::sync::Arc::new(child_compiler.chunk),
+                    arity: 0,
+                };
+                let constant_idx = self.chunk.add_constant(func_val);
+                self.chunk.write(OpCode::SpawnConcurrent(constant_idx), expr.span.line);
             }
             ExpressionNode::StringInterpolation(parts) => {
                 for part in parts {
@@ -348,15 +378,23 @@ impl Compiler {
                 }
                 self.chunk.write(OpCode::StringInterpolate(parts.len()), expr.span.line);
             }
-            ExpressionNode::Closure { params: _params, body: _body } => {
-                return Err(format!("Expression type not fully implemented in compiler yet: {:?}", expr.node));
+            ExpressionNode::Closure { params, body } => {
+                let mut child_compiler = Compiler::new();
+                for param in params {
+                    child_compiler.locals.push(param.clone());
+                }
+                child_compiler.compile_expression(body)?;
+                child_compiler.chunk.write(OpCode::Return, expr.span.line);
+                let func_val = Value::CompiledFunction {
+                    chunk: std::sync::Arc::new(child_compiler.chunk),
+                    arity: params.len(),
+                };
+                let constant_idx = self.chunk.add_constant(func_val);
+                self.chunk.write(OpCode::Constant(constant_idx), expr.span.line);
             }
-            ExpressionNode::Null => {
-                self.chunk.write(OpCode::Null, expr.span.line);
-            }
-            ExpressionNode::ImportPython(module) => {
-                let mod_idx = self.chunk.add_constant(Value::String(module.clone()));
-                self.chunk.write(OpCode::ImportPython(mod_idx), expr.span.line);
+            ExpressionNode::Await(expr_in) => {
+                self.compile_expression(expr_in)?;
+                self.chunk.write(OpCode::Await, expr.span.line);
             }
         }
         Ok(())

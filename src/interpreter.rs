@@ -65,6 +65,7 @@ fn type_name(val: &Value) -> &'static str {
         Value::CompiledFunction { .. } => "function",
         Value::Class { .. } => "class",
         Value::Instance { .. } => "an instance",
+        Value::Promise(_) => "a promise",
     }
 }
 
@@ -89,6 +90,7 @@ impl std::fmt::Display for Value {
             Value::CompiledFunction { .. } => write!(f, "<compiled function>"),
             Value::Class { name, .. } => write!(f, "<class {}>", name),
             Value::Instance { class_name, .. } => write!(f, "<{} instance>", class_name),
+            Value::Promise(_) => write!(f, "<promise>"),
         }
     }
 }
@@ -1165,14 +1167,20 @@ impl Interpreter {
                     body: block,
                 })
             }
-            ExpressionNode::ImportPython(m) => {
-                let py_module = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                    let module = PyModule::import(py, m.as_str())?;
-                    Ok(module.into())
-                }).map_err(|e| e.to_string())?;
-                Ok(Value::PythonObject(py_module))
+            ExpressionNode::Await(expr) => {
+                let promise_val = self.evaluate(expr, env)?;
+                if let Value::Promise(arc) = promise_val {
+                    loop {
+                        let val_opt = arc.read().clone();
+                        if let Some(res) = val_opt {
+                            return res;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                } else {
+                    Err("Await requires a Promise".to_string())
+                }
             }
-            ExpressionNode::Null => Ok(Value::Null),
         }
     }
 }

@@ -5,6 +5,7 @@ mod parser;
 mod vm;
 mod compiler;
 mod type_checker;
+mod ir;
 
 use std::env;
 use std::fs;
@@ -12,14 +13,24 @@ use std::fs;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        println!("Usage: novo <file.nv>");
+        println!("Usage: novo <command> [options] <file.nv>");
+        println!("Commands:");
+        println!("  run    Run a .nv file (default)");
+        println!("  check  Type check a .nv file");
         return;
     }
 
+    let mut command = "run";
     let mut filename = "";
-    let mut engine = "ast";
+    let mut engine = "vm"; // Make VM the default engine
 
-    for arg in args.iter().skip(1) {
+    let mut arg_idx = 1;
+    if !args[arg_idx].starts_with("-") && !args[arg_idx].ends_with(".nv") {
+        command = &args[arg_idx];
+        arg_idx += 1;
+    }
+
+    for arg in args.iter().skip(arg_idx) {
         if arg.starts_with("--engine=") {
             engine = &arg[9..];
         } else if !arg.starts_with("-") {
@@ -28,7 +39,7 @@ fn main() {
     }
 
     if filename.is_empty() {
-        println!("Usage: novo [--engine=ast|vm] <file.nv>");
+        println!("Usage: novo {} [--engine=ast|vm] <file.nv>", command);
         return;
     }
 
@@ -39,7 +50,7 @@ fn main() {
         Ok(t) => t,
         Err(e) => {
             print_error(&source, &e, "Lexer error");
-            return;
+            std::process::exit(1);
         }
     };
 
@@ -48,13 +59,18 @@ fn main() {
         Ok(p) => p,
         Err(e) => {
             print_error(&source, &e, "Syntax error");
-            return;
+            std::process::exit(1);
         }
     };
 
     let mut type_checker = type_checker::TypeChecker::new();
     if let Err(e) = type_checker.check_program(&ast) {
         print_error(&source, &e, "Type error");
+        std::process::exit(1);
+    }
+
+    if command == "check" {
+        println!("Type checking completed successfully.");
         return;
     }
 
@@ -74,12 +90,14 @@ fn main() {
             }
             Err(e) => {
                 print_error(&source, &e, "Compiler error");
+                std::process::exit(1);
             }
         }
     } else {
         let mut interpreter = interpreter::Interpreter::new();
         if let Err(e) = interpreter.interpret(&ast) {
             print_error(&source, &e, "Runtime error");
+            std::process::exit(1);
         }
     }
 }

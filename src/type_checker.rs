@@ -9,6 +9,8 @@ pub enum Type {
     Bool,
     List(Box<Type>),
     Map(Box<Type>, Box<Type>),
+    Function(Vec<Type>, Box<Type>),
+    Promise(Box<Type>),
     Any,
     None,
 }
@@ -49,6 +51,18 @@ impl Type {
         match (self, other) {
             (Type::List(a), Type::List(b)) => a.is_assignable_to(b),
             (Type::Map(ka, va), Type::Map(kb, vb)) => ka.is_assignable_to(kb) && va.is_assignable_to(vb),
+            (Type::Promise(a), Type::Promise(b)) => a.is_assignable_to(b),
+            (Type::Function(pa, ra), Type::Function(pb, rb)) => {
+                if pa.len() != pb.len() {
+                    return false;
+                }
+                for (a, b) in pa.iter().zip(pb.iter()) {
+                    if !a.is_assignable_to(b) {
+                        return false;
+                    }
+                }
+                ra.is_assignable_to(rb)
+            },
             (a, b) => a == b,
         }
     }
@@ -61,8 +75,10 @@ pub struct TypeChecker {
 
 impl TypeChecker {
     pub fn new() -> Self {
+        let mut globals = HashMap::new();
+        globals.insert("parse_json".to_string(), Type::Any);
         TypeChecker {
-            scopes: vec![HashMap::new()],
+            scopes: vec![globals],
             current_return_type: None,
         }
     }
@@ -180,7 +196,12 @@ impl TypeChecker {
             }
             StatementNode::FunctionDeclaration { name, params, return_type, body } => {
                 let ret_ty = return_type.as_ref().map(|t| Type::from_string(t)).unwrap_or(Type::Any);
-                self.define_variable(name.clone(), Type::Any); // Functions are Any for now
+                let mut p_types = Vec::new();
+                for (_, p_ty) in params.iter() {
+                    let ty = p_ty.as_ref().map(|t| Type::from_string(t)).unwrap_or(Type::Any);
+                    p_types.push(ty);
+                }
+                self.define_variable(name.clone(), Type::Function(p_types.clone(), Box::new(ret_ty.clone())));
                 
                 self.push_scope();
                 let prev_ret_ty = self.current_return_type.clone();
@@ -254,7 +275,8 @@ impl TypeChecker {
                 Ok(Type::List(Box::new(list_ty)))
             }
             ExpressionNode::Concurrent(inner) => {
-                self.check_expression(inner)
+                let inner_ty = self.check_expression(inner)?;
+                Ok(Type::Promise(Box::new(inner_ty)))
             }
             ExpressionNode::Map(items) => {
                 let mut key_ty = Type::Any;
@@ -306,11 +328,26 @@ impl TypeChecker {
                 Ok(Type::Any)
             }
             ExpressionNode::Call { callee, arguments } => {
-                self.check_expression(callee)?;
+                let callee_ty = self.check_expression(callee)?;
+                let mut arg_tys = Vec::new();
                 for arg in arguments {
-                    self.check_expression(arg)?;
+                    arg_tys.push(self.check_expression(arg)?);
                 }
-                Ok(Type::Any)
+                match callee_ty {
+                    Type::Function(param_tys, ret_ty) => {
+                        if param_tys.len() != arg_tys.len() {
+                            return Err(format!("Arity mismatch at line {}: expected {} arguments, got {}", expr.span.line, param_tys.len(), arg_tys.len()));
+                        }
+                        for (i, (p_ty, a_ty)) in param_tys.iter().zip(arg_tys.iter()).enumerate() {
+                            if !a_ty.is_assignable_to(p_ty) {
+                                return Err(format!("Type mismatch in argument {} at line {}: expected {:?}, got {:?}", i+1, expr.span.line, p_ty, a_ty));
+                            }
+                        }
+                        Ok(*ret_ty)
+                    }
+                    Type::Any => Ok(Type::Any),
+                    _ => Err(format!("Cannot call non-function type {:?} at line {}", callee_ty, expr.span.line)),
+                }
             }
             ExpressionNode::IndexAccess { target, index } => {
                 let target_ty = self.check_expression(target)?;
@@ -333,9 +370,33 @@ impl TypeChecker {
                     _ => Err(format!("Cannot index into type {:?} at line {}", target_ty, expr.span.line)),
                 }
             }
-            ExpressionNode::PropertyAccess { target, .. } => {
-                self.check_expression(target)?;
-                Ok(Type::Any)
+            ExpressionNode::PropertyAccess { target, property } => {
+                let target_ty = self.check_expression(target)?;
+                match target_ty {
+                    Type::List(inner) => {
+                        if property == "length" {
+                            Ok(Type::Int)
+                        } else if property == "push" {
+                            Ok(Type::Function(vec![*inner.clone()], Box::new(Type::None)))
+                        } else if property == "pop" {
+                            Ok(Type::Function(vec![], inner))
+                        } else {
+                            Ok(Type::Any)
+                        }
+                    }
+                    Type::String => {
+                        if property == "length" {
+                            Ok(Type::Int)
+                        } else if property == "split" {
+                            Ok(Type::Function(vec![Type::String], Box::new(Type::List(Box::new(Type::String)))))
+                        } else if property == "contains" {
+                            Ok(Type::Function(vec![Type::String], Box::new(Type::Bool)))
+                        } else {
+                            Ok(Type::Any)
+                        }
+                    }
+                    _ => Ok(Type::Any),
+                }
             }
             ExpressionNode::Where { target, condition } => {
                 let target_ty = self.check_expression(target)?;
@@ -391,15 +452,23 @@ impl TypeChecker {
             }
             ExpressionNode::Closure { params, body } => {
                 self.push_scope();
+                let mut p_tys = Vec::new();
                 for param in params {
                     self.define_variable(param.clone(), Type::Any);
+                    p_tys.push(Type::Any);
                 }
-                self.check_expression(body)?;
+                let ret_ty = self.check_expression(body)?;
                 self.pop_scope();
-                Ok(Type::Any) // Could type as Function/Closure later
+                Ok(Type::Function(p_tys, Box::new(ret_ty)))
             }
-            ExpressionNode::ImportPython(_) => Ok(Type::Any),
-            ExpressionNode::Null => Ok(Type::None),
+            ExpressionNode::Await(expr) => {
+                let promise_type = self.check_expression(expr)?;
+                match promise_type {
+                    Type::Promise(inner) => Ok(*inner),
+                    Type::Any => Ok(Type::Any),
+                    _ => Err(format!("Await requires a Promise type, got {:?} at line {}", promise_type, expr.span.line)),
+                }
+            }
         }
     }
 }

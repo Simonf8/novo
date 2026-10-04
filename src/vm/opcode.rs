@@ -7,8 +7,6 @@ pub enum OpCode {
     SetLocal(usize),
     GetGlobal(usize),
     SetGlobal(usize),
-    PushContextItem,
-    PopContextItem,
     
     Add,
     Subtract,
@@ -48,10 +46,14 @@ pub enum OpCode {
     StringInterpolate(usize),
 
     Print,
-    AggregateSum,
-    AggregateAverage,
-    AggregateMax,
-    AggregateMin,
+    AggregateSum(usize),
+    AggregateAverage(usize),
+    AggregateMax(usize),
+    AggregateMin(usize),
+    Select(usize),
+    Where(usize),
     TryStart(usize),
     TryEnd,
+    SpawnConcurrent(usize),
+    Await,
 }
