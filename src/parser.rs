@@ -295,6 +295,18 @@ impl Parser {
             } else if self.match_token(&TokenType::Keyword("select".to_string())) {
                 let mapping = self.parse_logical_or()?;
                 left = Expression::Select { target: Box::new(left), mapping: Box::new(mapping) };
+            } else if self.match_token(&TokenType::Keyword("average".to_string())) {
+                let mapping = self.parse_logical_or()?;
+                left = Expression::Aggregate { target: Box::new(left), mapping: Box::new(mapping), op: "average".to_string() };
+            } else if self.match_token(&TokenType::Keyword("sum".to_string())) {
+                let mapping = self.parse_logical_or()?;
+                left = Expression::Aggregate { target: Box::new(left), mapping: Box::new(mapping), op: "sum".to_string() };
+            } else if self.match_token(&TokenType::Keyword("min".to_string())) {
+                let mapping = self.parse_logical_or()?;
+                left = Expression::Aggregate { target: Box::new(left), mapping: Box::new(mapping), op: "min".to_string() };
+            } else if self.match_token(&TokenType::Keyword("max".to_string())) {
+                let mapping = self.parse_logical_or()?;
+                left = Expression::Aggregate { target: Box::new(left), mapping: Box::new(mapping), op: "max".to_string() };
             } else {
                 break;
             }
@@ -323,15 +335,25 @@ impl Parser {
     fn parse_comparison(&mut self) -> Result<Expression, String> {
         let mut left = self.parse_addition()?;
         
-        while let TokenType::Op(op) = &self.peek().token_type {
-            if ["==", "!=", "<", ">", "<=", ">="].contains(&op.as_str()) {
-                let operator = op.clone();
-                self.advance();
-                let right = self.parse_addition()?;
-                left = Expression::BinaryOp { left: Box::new(left), operator, right: Box::new(right) };
-            } else {
-                break;
+        loop {
+            if let TokenType::Op(op) = &self.peek().token_type {
+                if ["==", "!=", "<", ">", "<=", ">="].contains(&op.as_str()) {
+                    let operator = op.clone();
+                    self.advance();
+                    let right = self.parse_addition()?;
+                    left = Expression::BinaryOp { left: Box::new(left), operator, right: Box::new(right) };
+                    continue;
+                }
+            } else if let TokenType::Keyword(kw) = &self.peek().token_type {
+                if ["starts_with", "ends_with"].contains(&kw.as_str()) {
+                    let operator = kw.clone();
+                    self.advance();
+                    let right = self.parse_addition()?;
+                    left = Expression::BinaryOp { left: Box::new(left), operator, right: Box::new(right) };
+                    continue;
+                }
             }
+            break;
         }
         Ok(left)
     }
@@ -392,11 +414,12 @@ impl Parser {
                 expr = Expression::IndexAccess { target: Box::new(expr), index: Box::new(index) };
             } else if self.match_token(&TokenType::Op(".".to_string())) {
                 let prop_tok = self.advance().clone();
-                if let TokenType::Identifier(prop) = prop_tok.token_type {
-                    expr = Expression::PropertyAccess { target: Box::new(expr), property: prop };
-                } else {
-                    return self.error("Expected identifier after '.'");
-                }
+                let prop = match prop_tok.token_type {
+                    TokenType::Identifier(p) => p,
+                    TokenType::Keyword(p) => p,
+                    _ => return self.error("Expected identifier after '.'"),
+                };
+                expr = Expression::PropertyAccess { target: Box::new(expr), property: prop };
             } else if self.match_token(&TokenType::Keyword("together".to_string())) {
                 expr = Expression::Concurrent(Box::new(expr));
             } else if self.match_token(&TokenType::Keyword("as".to_string())) {
@@ -430,6 +453,12 @@ impl Parser {
         if self.match_token(&TokenType::Keyword("get".to_string())) {
             let expr = self.parse_atom()?;
             return Ok(Expression::Get(Box::new(expr)));
+        }
+
+        if self.match_token(&TokenType::Punct("(".to_string())) {
+            let expr = self.parse_expression()?;
+            self.expect(&TokenType::Punct(")".to_string()))?;
+            return Ok(expr);
         }
 
         if self.match_token(&TokenType::Punct("{".to_string())) {

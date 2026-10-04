@@ -151,7 +151,7 @@ impl Lexer {
         let token_type = match val.as_str() {
             "show" | "if" | "otherwise" | "repeat" | "times" | "for" | "in" | "while" | 
             "function" | "return" | "true" | "false" | "record" | "object" | "where" | 
-            "select" | "task" | "run" | "parallel" | "use" | "python" | "as" | "and" | "or" | "not" |
+            "select" | "average" | "sum" | "min" | "max" | "task" | "run" | "parallel" | "use" | "python" | "as" | "and" | "or" | "not" | "starts_with" | "ends_with" |
             "together" | "read" | "json" | "get" => {
                 TokenType::Keyword(val)
             },

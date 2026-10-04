@@ -79,6 +79,13 @@ fn value_to_py(py: Python, val: &Value) -> Result<PyObject, String> {
         Value::Float(f) => Ok(f.into_py(py)),
         Value::String(s) => Ok(s.into_py(py)),
         Value::Boolean(b) => Ok(b.into_py(py)),
+        Value::List(list) => {
+            let mut py_list = Vec::new();
+            for item in list {
+                py_list.push(value_to_py(py, item)?);
+            }
+            Ok(py_list.into_py(py))
+        }
         Value::PythonObject(obj) => Ok(obj.clone_ref(py)),
         Value::Null => Ok(py.None()),
         _ => Err(format!("Cannot convert {} to Python", type_name(val))),
@@ -87,6 +94,9 @@ fn value_to_py(py: Python, val: &Value) -> Result<PyObject, String> {
 
 fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
     // Attempt basic extraction
+    if let Ok(b) = obj.extract::<bool>(py) {
+        return Ok(Value::Boolean(b));
+    }
     if let Ok(i) = obj.extract::<i64>(py) {
         return Ok(Value::Integer(i));
     }
@@ -96,11 +106,36 @@ fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
     if let Ok(s) = obj.extract::<String>(py) {
         return Ok(Value::String(s));
     }
-    if let Ok(b) = obj.extract::<bool>(py) {
-        return Ok(Value::Boolean(b));
-    }
     if obj.is_none(py) {
         return Ok(Value::Null);
+    }
+    
+    if obj.downcast::<pyo3::types::PyBytes>(py).is_ok() {
+        return Ok(Value::PythonObject(obj));
+    }
+    
+    if let Ok(dict) = obj.extract::<std::collections::HashMap<String, PyObject>>(py) {
+        let mut map = std::collections::HashMap::new();
+        for (k, v) in dict {
+            map.insert(k, py_to_value(py, v)?);
+        }
+        return Ok(Value::Map(map));
+    }
+    
+    if let Ok(list) = obj.downcast::<pyo3::types::PyList>(py) {
+        let mut vec = Vec::new();
+        for item in list {
+            vec.push(py_to_value(py, item.into())?);
+        }
+        return Ok(Value::List(vec));
+    }
+
+    if let Ok(tuple) = obj.downcast::<pyo3::types::PyTuple>(py) {
+        let mut vec = Vec::new();
+        for item in tuple {
+            vec.push(py_to_value(py, item.into())?);
+        }
+        return Ok(Value::List(vec));
     }
     
     // Otherwise, keep it as a Python object
@@ -289,8 +324,22 @@ impl Interpreter {
                                 py_to_value(py, py_result.into_py(py))
                             })
                         }
+                        (Value::String(s), "csv") => {
+                            Python::with_gil(|py| -> Result<Value, String> {
+                                let csv = PyModule::import(py, "csv").map_err(|e| e.to_string())?;
+                                let io = PyModule::import(py, "io").map_err(|e| e.to_string())?;
+                                let string_io = io.getattr("StringIO").map_err(|e| e.to_string())?.call1((s,)).map_err(|e| e.to_string())?;
+                                let dict_reader = csv.getattr("DictReader").map_err(|e| e.to_string())?.call1((string_io,)).map_err(|e| e.to_string())?;
+                                let list_func = py.eval("list", None, None).map_err(|e| e.to_string())?;
+                                let py_result = list_func.call1((dict_reader,)).map_err(|e| e.to_string())?;
+                                py_to_value(py, py_result.into_py(py))
+                            })
+                        }
                         (Value::String(s), "int") => {
                             s.parse::<i64>().map(Value::Integer).map_err(|_| "Failed to cast to int".to_string())
+                        }
+                        (Value::String(s), "float") => {
+                            s.parse::<f64>().map(Value::Float).map_err(|_| "Failed to cast to float".to_string())
                         }
                         _ => Err(format!("Cannot cast to {}", t)),
                     }
@@ -511,8 +560,8 @@ impl Interpreter {
                 };
                 
                 let mut result = Vec::new();
+                let mut local_env = env.clone();
                 for item in items {
-                    let mut local_env = env.clone();
                     local_env.context_item = Some(item.clone());
                     let cond_val = self.evaluate(condition, &local_env)?;
                     if let Value::Boolean(true) = cond_val {
@@ -543,13 +592,97 @@ impl Interpreter {
                 };
                 
                 let mut result = Vec::new();
+                let mut local_env = env.clone();
                 for item in items {
-                    let mut local_env = env.clone();
                     local_env.context_item = Some(item.clone());
                     let map_val = self.evaluate(mapping, &local_env)?;
                     result.push(map_val);
                 }
                 Ok(Value::List(result))
+            }
+            Expression::Aggregate { target, mapping, op } => {
+                let list_val = self.evaluate(target, env)?;
+                let items = match list_val {
+                    Value::List(l) => l,
+                    Value::PythonObject(py_obj) => {
+                        Python::with_gil(|py| -> Result<Vec<Value>, String> {
+                            if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
+                                let mut res = Vec::new();
+                                for item in list {
+                                    res.push(py_to_value(py, item)?);
+                                }
+                                Ok(res)
+                            } else {
+                                Err(format!("'{}' can only be used on an iterable Python object", op))
+                            }
+                        })?
+                    }
+                    _ => return Err(format!("'{}' can only be used on a list", op))
+                };
+                
+                if items.is_empty() { return Ok(Value::Null); }
+
+                let mut mapped = Vec::new();
+                let mut local_env = env.clone();
+                for item in items {
+                    local_env.context_item = Some(item.clone());
+                    mapped.push(self.evaluate(mapping, &local_env)?);
+                }
+
+                if op == "sum" || op == "average" {
+                    let mut running_int = 0;
+                    let mut running_float = 0.0;
+                    let mut is_float = false;
+                    for val in &mapped {
+                        match val {
+                            Value::Integer(i) => if is_float { running_float += *i as f64; } else { running_int += *i; },
+                            Value::Float(f) => {
+                                if !is_float { is_float = true; running_float = running_int as f64; }
+                                running_float += *f;
+                            },
+                            _ => return Err(format!("'{}' requires numeric values", op))
+                        }
+                    }
+                    if op == "sum" {
+                        if is_float { Ok(Value::Float(running_float)) } else { Ok(Value::Integer(running_int)) }
+                    } else {
+                        let count = mapped.len() as f64;
+                        if is_float { Ok(Value::Float(running_float / count)) } else { Ok(Value::Float(running_int as f64 / count)) }
+                    }
+                } else if op == "max" || op == "min" {
+                    let mut current_max_int = None;
+                    let mut current_min_int = None;
+                    let mut current_max_float = None;
+                    let mut current_min_float = None;
+                    let mut is_float = false;
+
+                    for val in &mapped {
+                        match val {
+                            Value::Integer(i) => {
+                                let f = *i as f64;
+                                if !is_float {
+                                    if current_max_int.map_or(true, |m| *i > m) { current_max_int = Some(*i); }
+                                    if current_min_int.map_or(true, |m| *i < m) { current_min_int = Some(*i); }
+                                }
+                                if current_max_float.map_or(true, |m| f > m) { current_max_float = Some(f); }
+                                if current_min_float.map_or(true, |m| f < m) { current_min_float = Some(f); }
+                            }
+                            Value::Float(f) => {
+                                is_float = true;
+                                if current_max_float.map_or(true, |m| *f > m) { current_max_float = Some(*f); }
+                                if current_min_float.map_or(true, |m| *f < m) { current_min_float = Some(*f); }
+                            }
+                            _ => return Err(format!("'{}' requires numeric values", op))
+                        }
+                    }
+                    if op == "max" {
+                        if is_float { Ok(Value::Float(current_max_float.unwrap())) } else { Ok(Value::Integer(current_max_int.unwrap())) }
+                    } else {
+                        if is_float { Ok(Value::Float(current_min_float.unwrap())) } else { Ok(Value::Integer(current_min_int.unwrap())) }
+                    }
+                } else {
+                    return Err(format!("Unknown aggregate op: {}", op));
+                }
             }
             Expression::Call { callee, arguments } => {
                 let func = self.evaluate(callee, env)?;
@@ -688,6 +821,38 @@ impl Interpreter {
                     }
                     "==" => Ok(Value::Boolean(l == r)),
                     "!=" => Ok(Value::Boolean(l != r)),
+                    "starts_with" => {
+                        match (l, r) {
+                            (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a.starts_with(&b))),
+                            (Value::PythonObject(py_obj), Value::String(b)) => {
+                                Python::with_gil(|py| -> Result<Value, String> {
+                                    if let Ok(method) = py_obj.getattr(py, "startswith") {
+                                        let result = method.call1(py, (b,)).map_err(|e| e.to_string())?;
+                                        py_to_value(py, result.into_py(py))
+                                    } else {
+                                        Err("startswith method not found on object".to_string())
+                                    }
+                                })
+                            }
+                            _ => Err("starts_with requires strings or a python string".to_string()),
+                        }
+                    }
+                    "ends_with" => {
+                        match (l, r) {
+                            (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a.ends_with(&b))),
+                            (Value::PythonObject(py_obj), Value::String(b)) => {
+                                Python::with_gil(|py| -> Result<Value, String> {
+                                    if let Ok(method) = py_obj.getattr(py, "endswith") {
+                                        let result = method.call1(py, (b,)).map_err(|e| e.to_string())?;
+                                        py_to_value(py, result.into_py(py))
+                                    } else {
+                                        Err("endswith method not found on object".to_string())
+                                    }
+                                })
+                            }
+                            _ => Err("ends_with requires strings or a python string".to_string()),
+                        }
+                    }
                     _ => Err(format!("Unknown operator {}", operator)),
                 }
             }

@@ -1,0 +1,10 @@
+use python time
+start_time = time.time()
+
+data = read "data.json" as json
+active = data where item.active == true
+total = active sum item.stats.score
+
+end_time = time.time()
+show total
+show end_time - start_time

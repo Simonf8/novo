@@ -27,6 +27,11 @@ pub enum Expression {
         target: Box<Expression>,
         mapping: Box<Expression>,
     },
+    Aggregate {
+        target: Box<Expression>,
+        mapping: Box<Expression>,
+        op: String,
+    },
     Call {
         callee: Box<Expression>,
         arguments: Vec<Expression>,
