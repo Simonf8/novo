@@ -1,8 +1,14 @@
-# Novo — Fast, Intent-Driven Programming Language
+<p align="center">
+  <img src="../assets/logo.png" alt="Novo Logo" width="220" />
+</p>
 
-Novo is a production-grade, high-performance general-purpose programming language designed to combine Python-level approachability, Go-level practicality, and native execution speed.
+<h1 align="center">Novo — Fast, Intent-Driven Programming Language</h1>
 
-Novo lets developers express intent directly with zero boilerplate while executing orders of magnitude faster than CPython.
+<p align="center">
+  <em>Production-grade, high-performance general-purpose programming language combining Python-level approachability, Go-level practicality, and native execution speed.</em>
+</p>
+
+---
 
 ---
 
