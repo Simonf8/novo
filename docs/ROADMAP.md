@@ -547,3 +547,45 @@ and Novo should handle the machinery.
 > **Novo should make programming effortless.**
 
 Build toward that standard.
+
+---
+
+# Implementation Status & Completed Milestones
+
+### Completed Horizons:
+
+1. **Horizon 1 — First-Class Concurrency Engine**
+   - Implemented native OS worker thread pool (`TaskPool`) with configurable worker thread sizing.
+   - Zero-polling, condvar-synchronized `TaskHandle` promises for both VM and AST interpreter engines.
+   - Built-in `run [ ... ] in parallel` and `together [ ... ]` constructs for structured concurrency.
+   - Verified with comprehensive multi-worker parallel task tests.
+
+2. **Horizon 2 — Native SSA Intermediate Representation & Optimization**
+   - SSA construction with basic blocks, value numbering, and phi-node generation (`ir_ssa.rs`).
+   - Loop-Invariant Code Motion (LICM), Dead Code Elimination (DCE), Constant Folding, and Constant Propagation (`ir_opt.rs`).
+   - Specialized integer bytecode instructions (`IAdd`, `ISub`, `IMul`, `ILt`, etc.) and jump threading.
+
+3. **Horizon 3 — Standard Library Primitives & Data Ecosystem**
+   - Created unified `stdlib.rs` standard library module.
+   - Native modules:
+     - `math`: `sqrt`, `pow`, `abs`, `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `log`, `log10`, `log2`, `pi`, `e`.
+     - `time`: `now`, `now_ms`, `sleep`.
+     - `fs`: `read_file`, `write_file`, `append_file`, `exists`, `list_dir`, `delete_file`, `create_dir`.
+     - `json`: 100% native zero-dependency recursive-descent parser and serializer (`json.parse`, `json.stringify`).
+     - `env`: `get`, `set`, `args`.
+   - Comprehensive collection methods for strings, lists, and maps.
+   - Global built-in utilities: `len`, `range`, `int`, `float`, `str`, `bool`, `abs`, `min`, `max`, `assert`, `assert_eq`.
+
+4. **Horizon 4 — Native x86_64 JIT Compilation Engine**
+   - Implemented `ExecutableBuffer` using OS page allocation (`VirtualAlloc` on Windows / `mmap` on Unix).
+   - Dynamic x86_64 machine code generation supporting arithmetic, comparisons, conditional jumps, stack frame alignment (Windows x64 ABI), and recursive function calls.
+   - Unit-tested with Fibonacci and arithmetic expressions.
+   - Integrated `--engine=jit` CLI flag.
+
+5. **Horizon 5 — Developer Toolchain & Quality Assurance**
+   - Canonical code formatter (`novo fmt [-w]`).
+   - Static linter and code health checker (`novo lint`).
+   - Project scaffolder (`novo new <name>`).
+   - Statistical microbenchmark engine (`novo bench <file> -n <N>`).
+   - Differential execution verifier (`novo test [dir] --engine=diff`) ensuring 100% parity across VM and AST interpreter pipelines across all 13 test suites.
+

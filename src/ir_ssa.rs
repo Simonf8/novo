@@ -407,6 +407,7 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
         | Instruction::Get(obj)
         | Instruction::Where(obj, _)
         | Instruction::Select(obj, _)
+        | Instruction::ParallelSelect(obj, _)
         | Instruction::Aggregate(obj, _, _)
         | Instruction::Print(obj) => {
             rep(obj);
@@ -443,6 +444,7 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
         }
         Instruction::Constant(_)
         | Instruction::Spawn(_)
+        | Instruction::RunParallel(_)
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)

@@ -1,0 +1,92 @@
+# Novo Standard Library Comprehensive Verification
+
+# 1. Math Module
+use math
+
+assert_eq(math.sqrt(49), 7.0, "math.sqrt failed")
+assert_eq(math.pow(2, 10), 1024, "math.pow failed")
+assert_eq(math.abs(-42), 42, "math.abs failed")
+assert_eq(math.floor(3.9), 3, "math.floor failed")
+assert_eq(math.ceil(3.1), 4, "math.ceil failed")
+assert_eq(math.round(3.5), 4, "math.round failed")
+assert(math.pi > 3.14, "math.pi failed")
+
+# 2. String Methods
+greeting = "  hello world  "
+trimmed = greeting.trim()
+assert_eq(trimmed, "hello world", "trim failed")
+assert_eq(trimmed.to_upper(), "HELLO WORLD", "to_upper failed")
+assert_eq(trimmed.to_lower(), "hello world", "to_lower failed")
+assert_eq(trimmed.replace("world", "novo"), "hello novo", "replace failed")
+assert(trimmed.starts_with("hello"), "starts_with failed")
+assert(trimmed.ends_with("world"), "ends_with failed")
+assert(trimmed.contains("lo wo"), "contains failed")
+assert_eq(trimmed.index_of("world"), 6, "index_of failed")
+assert_eq(trimmed.length(), 11, "string length failed")
+assert_eq(trimmed.slice(0, 5), "hello", "string slice failed")
+assert_eq("abc".repeat(3), "abcabcabc", "repeat failed")
+assert_eq("42".pad_start(5, "0"), "00042", "pad_start failed")
+
+# 3. List Methods
+items = [3, 1, 4]
+items.push(2)
+assert_eq(items.length(), 4, "list push/length failed")
+assert(items.contains(4), "list contains failed")
+assert_eq(items.index_of(4), 2, "list index_of failed")
+
+items.sort()
+assert_eq(items.join("-"), "1-2-3-4", "list sort/join failed")
+
+popped = items.pop()
+assert_eq(popped, 4, "list pop failed")
+assert_eq(items.length(), 3, "list length after pop failed")
+
+sub = items.slice(0, 2)
+assert_eq(sub.join(","), "1,2", "list slice failed")
+
+items.reverse()
+assert_eq(items.join(","), "3,2,1", "list reverse failed")
+
+# 4. Map Methods
+person = {"name": "Alice", "city": "Paris"}
+assert(person.has("name"), "map has failed")
+assert_eq(person.length(), 2, "map length failed")
+assert_eq(person.keys().length(), 2, "map keys failed")
+assert_eq(person.values().length(), 2, "map values failed")
+
+# 5. Global Builtin Functions
+assert_eq(len("novo"), 4, "len(string) failed")
+assert_eq(len([1, 2, 3, 4, 5]), 5, "len(list) failed")
+assert_eq(len({"a": 1, "b": 2}), 2, "len(map) failed")
+
+r = range(1, 6)
+assert_eq(r.length(), 5, "range length failed")
+assert_eq(r.join(" "), "1 2 3 4 5", "range values failed")
+
+assert_eq(int("100"), 100, "int() cast failed")
+assert_eq(float("3.5"), 3.5, "float() cast failed")
+assert_eq(str(999), "999", "str() cast failed")
+assert_eq(bool(1), true, "bool() cast failed")
+assert_eq(bool(0), false, "bool() cast failed")
+assert_eq(abs(-15), 15, "abs() failed")
+assert_eq(min(10, 20), 10, "min() failed")
+assert_eq(max(10, 20), 20, "max() failed")
+
+# 6. JSON Module
+use json
+raw_json = "{\"title\": \"Novo\", \"version\": 1}"
+parsed = json.parse(raw_json)
+assert_eq(parsed.title, "Novo", "json.parse failed")
+assert_eq(parsed.version, 1, "json.parse failed")
+
+serialized = json.stringify(parsed)
+assert(serialized.contains("title"), "json.stringify failed")
+
+# 7. Time Module
+use time
+now = time.now()
+assert(now > 0.0, "time.now failed")
+now_ms = time.now_ms()
+assert(now_ms > 0, "time.now_ms failed")
+
+show "All standard library tests passed successfully!"

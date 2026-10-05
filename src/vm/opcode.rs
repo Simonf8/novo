@@ -68,4 +68,6 @@ pub enum OpCode {
     TryEnd,
     SpawnConcurrent(usize),
     Await,
+    ParallelSelect(usize),
+    RunParallel(usize),
 }

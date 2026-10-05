@@ -55,6 +55,12 @@ pub enum Instruction {
     /// Await a promise
     Await(ValueId),
     
+    /// Run multiple task functions in parallel and gather results: func_indices
+    RunParallel(Vec<usize>),
+    
+    /// Parallel select/map: target list, mapper func_idx
+    ParallelSelect(ValueId, usize),
+    
     /// Variable access (before full SSA conversion)
     LoadLocal(String),
     StoreLocal(String, ValueId),
@@ -199,6 +205,8 @@ impl std::fmt::Display for Instruction {
             Instruction::GetProperty(obj, prop) => write!(f, "getprop {}, \"{}\"", obj, prop),
             Instruction::Spawn(idx) => write!(f, "spawn func{}", idx),
             Instruction::Await(val) => write!(f, "await {}", val),
+            Instruction::RunParallel(funcs) => write!(f, "run_parallel {:?}", funcs),
+            Instruction::ParallelSelect(t, func) => write!(f, "par_select {}, func{}", t, func),
             Instruction::LoadLocal(name) => write!(f, "loadlocal \"{}\"", name),
             Instruction::StoreLocal(name, val) => write!(f, "storelocal \"{}\", {}", name, val),
             Instruction::LoadGlobal(name) => write!(f, "loadglobal \"{}\"", name),

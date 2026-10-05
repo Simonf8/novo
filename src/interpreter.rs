@@ -34,7 +34,42 @@ pub enum Value {
         properties: std::sync::Arc<parking_lot::RwLock<HashMap<String, Value>>>,
     },
     Null,
-    Promise(std::sync::Arc<parking_lot::RwLock<Option<Result<Value, String>>>>),
+    Promise(std::sync::Arc<PromiseHandle>),
+}
+
+#[derive(Clone)]
+pub struct PromiseHandle {
+    pub result: std::sync::Arc<parking_lot::Mutex<Option<Result<Value, String>>>>,
+    pub condvar: std::sync::Arc<parking_lot::Condvar>,
+}
+
+impl std::fmt::Debug for PromiseHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PromiseHandle")
+    }
+}
+
+impl PromiseHandle {
+    pub fn new() -> Self {
+        Self {
+            result: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            condvar: std::sync::Arc::new(parking_lot::Condvar::new()),
+        }
+    }
+
+    pub fn complete(&self, res: Result<Value, String>) {
+        let mut lock = self.result.lock();
+        *lock = Some(res);
+        self.condvar.notify_all();
+    }
+
+    pub fn wait(&self) -> Result<Value, String> {
+        let mut lock = self.result.lock();
+        while lock.is_none() {
+            self.condvar.wait(&mut lock);
+        }
+        lock.as_ref().unwrap().clone()
+    }
 }
 
 impl PartialEq for Value {
@@ -262,11 +297,7 @@ impl Interpreter {
         pyo3::prepare_freethreaded_python();
         
         let mut global_env = Environment::new();
-        
-        global_env.define("str".to_string(), Value::NativeFunction { 
-            name: "str".to_string(),
-            bound_target: None,
-        });
+        crate::stdlib::register_globals(&mut global_env.scopes[0]);
         
         for stmt in &program.statements {
             if let ExecResult::Return(_) = self.execute(stmt, &mut global_env)? {
@@ -292,8 +323,63 @@ impl Interpreter {
                 let val = self.evaluate(value, env)?;
                 env.define(name.clone(), val);
             }
-            StatementNode::IndexAssignment { .. } | StatementNode::PropertyAssignment { .. } => {
-                return Err("Index and Property assignment are only supported in VM mode.".to_string());
+            StatementNode::IndexAssignment { target, index, value } => {
+                let target_val = self.evaluate(target, env)?;
+                let index_val = self.evaluate(index, env)?;
+                let val = self.evaluate(value, env)?;
+                match target_val {
+                    Value::List(items_arc) => {
+                        let mut items = items_arc.write();
+                        if let Value::Integer(i) = index_val {
+                            if i >= 0 && (i as usize) < items.len() {
+                                items[i as usize] = val;
+                            } else {
+                                return Err(format!("Index {} out of bounds", i));
+                            }
+                        } else {
+                            return Err("List index must be an integer".to_string());
+                        }
+                    }
+                    Value::Map(map_arc) => {
+                        let mut map = map_arc.write();
+                        let key = match index_val {
+                            Value::String(s) => s,
+                            other => format!("{}", other),
+                        };
+                        map.insert(key, val);
+                    }
+                    Value::PythonObject(py_obj) => {
+                        pyo3::Python::with_gil(|py| -> Result<(), String> {
+                            let py_val = value_to_py(py, &val)?;
+                            let py_idx = value_to_py(py, &index_val)?;
+                            py_obj.call_method1(py, "__setitem__", (py_idx, py_val))
+                                .map_err(|e| e.to_string())?;
+                            Ok(())
+                        })?;
+                    }
+                    _ => return Err("Index assignment only supported on lists, maps, or Python objects".to_string()),
+                }
+            }
+            StatementNode::PropertyAssignment { target, property, value } => {
+                let target_val = self.evaluate(target, env)?;
+                let val = self.evaluate(value, env)?;
+                match target_val {
+                    Value::Map(map_arc) => {
+                        map_arc.write().insert(property.clone(), val);
+                    }
+                    Value::Instance { properties, .. } => {
+                        properties.write().insert(property.clone(), val);
+                    }
+                    Value::PythonObject(py_obj) => {
+                        pyo3::Python::with_gil(|py| -> Result<(), String> {
+                            let py_val = value_to_py(py, &val)?;
+                            py_obj.setattr(py, property.as_str(), py_val)
+                                .map_err(|e| e.to_string())?;
+                            Ok(())
+                        })?;
+                    }
+                    _ => return Err("Property assignment only supported on maps, instances, or Python objects".to_string()),
+                }
             }
             StatementNode::Show { value } => {
                 let val = self.evaluate(value, env)?;
@@ -384,10 +470,6 @@ impl Interpreter {
                 }
             }
             StatementNode::ClassDef { name, methods } => {
-                // A very simple class implementation: we define a function that returns a Map
-                // containing closures for methods, binding `this` manually (or just capturing env).
-                // Actually, let's just make it return an empty map for now or a map of methods.
-                // We'll leave it as a dummy class or construct it as a function that returns a Map.
                 let mut method_map = std::collections::HashMap::new();
                 for m in methods {
                     if let StatementNode::FunctionDeclaration { name: method_name, params, body, .. } = &m.node {
@@ -398,14 +480,7 @@ impl Interpreter {
                         });
                     }
                 }
-                // Construct a constructor function
-                let constructor = Value::Function {
-                    params: vec![],
-                    body: Block { statements: vec![
-                        StatementNode::Return { value: Some(ExpressionNode::Map(vec![]).into()) }.into()
-                    ]} // Ideally we'd return method_map, but returning empty map for basic class
-                };
-                env.define(name.clone(), constructor);
+                env.define(name.clone(), Value::Class { name: name.clone(), methods: method_map });
             }
             StatementNode::FunctionDeclaration { name, params, body, .. } => {
                 let param_names = params.iter().map(|(n, _)| n.clone()).collect();
@@ -425,31 +500,32 @@ impl Interpreter {
                 env.define(name, Value::PythonObject(py_module));
             }
             StatementNode::UseModule { path, alias } => {
-                let code = std::fs::read_to_string(&path)
-                    .map_err(|e| format!("Failed to read module '{}': {}", path, e))?;
-                
-                let mut lexer = crate::lexer::Lexer::new(&code);
-                let tokens = lexer.tokenize()?;
-                let mut parser = crate::parser::Parser::new(tokens);
-                let program = parser.parse()?;
-                
-                let mut module_env = Environment::new();
-                for stmt in &program.statements {
-                    self.execute(stmt, &mut module_env)?;
-                }
-                
-                let module_map = module_env.scopes.last().unwrap().clone();
-                // If path is "math.nv", alias or path is used. If path has ".nv", strip it?
-                // Let's just use alias, or the path string itself. 
-                // We'll strip ".nv" or path segments for default name.
                 let default_name = std::path::Path::new(&path)
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or(&path)
                     .to_string();
-                
                 let name = alias.as_ref().unwrap_or(&default_name).clone();
-                env.define(name, Value::Map(std::sync::Arc::new(parking_lot::RwLock::new(module_map))));
+
+                if let Some(std_mod) = crate::stdlib::get_standard_module(&path) {
+                    env.define(name, std_mod);
+                } else {
+                    let code = std::fs::read_to_string(&path)
+                        .map_err(|e| format!("Failed to read module '{}': {}", path, e))?;
+                    
+                    let mut lexer = crate::lexer::Lexer::new(&code);
+                    let tokens = lexer.tokenize()?;
+                    let mut parser = crate::parser::Parser::new(tokens);
+                    let program = parser.parse()?;
+                    
+                    let mut module_env = Environment::new();
+                    for stmt in &program.statements {
+                        self.execute(stmt, &mut module_env)?;
+                    }
+                    
+                    let module_map = module_env.scopes.last().unwrap().clone();
+                    env.define(name, Value::Map(std::sync::Arc::new(parking_lot::RwLock::new(module_map))));
+                }
             }
             StatementNode::Return { value } => {
                 let ret_val = match value {
@@ -526,11 +602,46 @@ impl Interpreter {
             ExpressionNode::Boolean(b) => Ok(Value::Boolean(*b)),
             ExpressionNode::Identifier(id) => env.get(id),
             ExpressionNode::Concurrent(inner) => {
+                match &inner.node {
+                    ExpressionNode::Call { .. } => {
+                        let env_clone = env.clone();
+                        let inner_clone = inner.clone();
+                        let handle = std::sync::Arc::new(PromiseHandle::new());
+                        let handle_clone = handle.clone();
+                        std::thread::spawn(move || {
+                            let mut interp = Interpreter::new();
+                            let res = interp.evaluate(&inner_clone, &env_clone);
+                            handle_clone.complete(res);
+                        });
+                        Ok(Value::Promise(handle))
+                    }
+                    _ => {
+                        let prev = self.concurrent_mode;
+                        self.concurrent_mode = true;
+                        let result = self.evaluate(inner, env);
+                        self.concurrent_mode = prev;
+                        result
+                    }
+                }
+            }
+            ExpressionNode::RunInParallel(inner) => {
                 let prev = self.concurrent_mode;
                 self.concurrent_mode = true;
-                let result = self.evaluate(inner, env);
+                let val = self.evaluate(inner, env)?;
                 self.concurrent_mode = prev;
-                result
+                if let Value::List(items) = val {
+                    let list = items.read().clone();
+                    let mut results = Vec::with_capacity(list.len());
+                    for item in list {
+                        match item {
+                            Value::Promise(handle) => results.push(handle.wait()?),
+                            other => results.push(other),
+                        }
+                    }
+                    Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(results))))
+                } else {
+                    Ok(val)
+                }
             }
             ExpressionNode::Cast(expr, target_type) => {
                 let val = self.evaluate(expr, env)?;
@@ -581,20 +692,19 @@ impl Interpreter {
                     for item in items {
                         let env_clone = env.clone();
                         let item_clone = item.clone();
-                        let is_concurrent = self.concurrent_mode;
-                        handles.push(std::thread::spawn(move || {
-                            let mut interp = Interpreter { concurrent_mode: is_concurrent };
-                            interp.evaluate(&item_clone, &env_clone)
-                        }));
+                        let handle = std::sync::Arc::new(PromiseHandle::new());
+                        let handle_clone = handle.clone();
+                        std::thread::spawn(move || {
+                            let mut interp = Interpreter::new();
+                            let res = interp.evaluate(&item_clone, &env_clone);
+                            handle_clone.complete(res);
+                        });
+                        handles.push(handle);
                     }
                     
                     let mut list = Vec::new();
                     for handle in handles {
-                        match handle.join() {
-                            Ok(Ok(val)) => list.push(val),
-                            Ok(Err(e)) => return Err(e),
-                            Err(_) => return Err("Thread panicked during parallel execution".to_string()),
-                        }
+                        list.push(handle.wait()?);
                     }
                     Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(list))))
                 } else {
@@ -717,18 +827,46 @@ impl Interpreter {
                         let map = map_arc.read();
                         if let Some(val) = map.get(property) {
                             Ok(val.clone())
+                        } else if crate::stdlib::is_map_method(property) {
+                            Ok(Value::NativeFunction {
+                                name: property.clone(),
+                                bound_target: Some(Box::new(Value::Map(map_arc.clone()))),
+                            })
                         } else {
                             Err(format!("Property '{}' not found", property))
                         }
                     }
                     Value::String(s) => {
-                        if property == "split" || property == "contains" {
+                        if crate::stdlib::is_string_method(property) {
                             Ok(Value::NativeFunction {
                                 name: property.clone(),
-                                bound_target: Some(Box::new(Value::String(s.clone())))
+                                bound_target: Some(Box::new(Value::String(s.clone()))),
                             })
                         } else {
                             Err(format!("String has no property '{}'", property))
+                        }
+                    }
+                    Value::List(l) => {
+                        if crate::stdlib::is_list_method(property) {
+                            Ok(Value::NativeFunction {
+                                name: property.clone(),
+                                bound_target: Some(Box::new(Value::List(l.clone()))),
+                            })
+                        } else {
+                            Err(format!("List has no property '{}'", property))
+                        }
+                    }
+                    Value::Instance { class_name, properties } => {
+                        if let Some(val) = properties.read().get(property) {
+                            Ok(val.clone())
+                        } else if let Ok(Value::Class { methods, .. }) = env.get(&class_name) {
+                            if let Some(m) = methods.get(property) {
+                                Ok(m.clone())
+                            } else {
+                                Err(format!("Property '{}' not found on instance of {}", property, class_name))
+                            }
+                        } else {
+                            Err(format!("Property '{}' not found", property))
                         }
                     }
                     Value::PythonObject(py_obj) => {
@@ -742,7 +880,7 @@ impl Interpreter {
                             }
                         })
                     }
-                    _ => Err("Property access only allowed on objects/maps, strings, or Python objects".to_string()),
+                    _ => Err("Property access only allowed on objects/maps, strings, lists, or Python objects".to_string()),
                 }
             }
             ExpressionNode::IndexAccess { target, index } => {
@@ -761,6 +899,14 @@ impl Interpreter {
                             Err("List index must be an integer".to_string())
                         }
                     }
+                    Value::Map(map_arc) => {
+                        let map = map_arc.read();
+                        let key = match idx_val {
+                            Value::String(s) => s,
+                            other => format!("{}", other),
+                        };
+                        Ok(map.get(&key).cloned().unwrap_or(Value::Null))
+                    }
                     Value::PythonObject(py_obj) => {
                         Python::with_gil(|py| -> Result<Value, String> {
                             let py_idx = value_to_py(py, &idx_val)?;
@@ -769,7 +915,7 @@ impl Interpreter {
                             py_to_value(py, result)
                         })
                     }
-                    _ => Err("Can only index into a list or Python object".to_string())
+                    _ => Err("Can only index into a list, map, or Python object".to_string())
                 }
             }
             ExpressionNode::Where { target, condition } => {
@@ -941,54 +1087,24 @@ impl Interpreter {
                 
                 // Handle native functions
                 if let Value::NativeFunction { name, bound_target } = &func {
-                    if name == "str" {
-                        if arguments.len() != 1 {
-                            return Err("str() takes exactly 1 argument".to_string());
-                        }
-                        let arg_val = self.evaluate(&arguments[0], env)?;
-                        return Ok(Value::String(format!("{}", arg_val)));
-                    } else if name == "split" {
-                        if let Some(target) = bound_target {
-                            if let Value::String(s) = &**target {
-                                let sep = if arguments.len() == 1 {
-                                    if let Value::String(sep_str) = self.evaluate(&arguments[0], env)? {
-                                        sep_str
-                                    } else {
-                                        return Err("split() argument must be a string".to_string());
-                                    }
-                                } else if arguments.len() == 0 {
-                                    " ".to_string()
-                                } else {
-                                    return Err("split() takes 0 or 1 arguments".to_string());
-                                };
-                                
-                                let parts: Vec<Value> = if arguments.len() == 0 {
-                                    s.split_whitespace().map(|p| Value::String(p.to_string())).collect()
-                                } else {
-                                    s.split(&sep).map(|p| Value::String(p.to_string())).collect()
-                                };
-                                
-                                return Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(parts))));
-                            }
-                        }
-                        return Err("split() can only be called on strings".to_string());
-                    } else if name == "contains" {
-                        if let Some(target) = bound_target {
-                            if let Value::String(s) = &**target {
-                                if arguments.len() != 1 {
-                                    return Err("contains() takes exactly 1 argument".to_string());
-                                }
-                                if let Value::String(sub) = self.evaluate(&arguments[0], env)? {
-                                    return Ok(Value::Boolean(s.contains(&sub)));
-                                } else {
-                                    return Err("contains() argument must be a string".to_string());
-                                }
-                            }
-                        }
-                        return Err("contains() can only be called on strings".to_string());
+                    let mut eval_args = Vec::new();
+                    for arg in arguments {
+                        eval_args.push(self.evaluate(arg, env)?);
                     }
+                    return crate::stdlib::call_native_function(
+                        name,
+                        bound_target.as_ref().map(|b| &**b),
+                        &eval_args,
+                    );
                 }
                 
+                if let Value::Class { name, .. } = func {
+                    return Ok(Value::Instance {
+                        class_name: name,
+                        properties: std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+                    });
+                }
+
                 let (params, body) = match func {
                     Value::Function { params, body } => (params, body),
                     _ => return Err(format!("Can only call functions, got {:?}", func)),
@@ -1172,14 +1288,8 @@ impl Interpreter {
             }
             ExpressionNode::Await(expr) => {
                 let promise_val = self.evaluate(expr, env)?;
-                if let Value::Promise(arc) = promise_val {
-                    loop {
-                        let val_opt = arc.read().clone();
-                        if let Some(res) = val_opt {
-                            return res;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
+                if let Value::Promise(handle) = promise_val {
+                    handle.wait()
                 } else {
                     Err("Await requires a Promise".to_string())
                 }

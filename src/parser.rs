@@ -87,7 +87,7 @@ impl Parser {
             TokenType::Keyword(k) if k == "show" => self.parse_show_statement()?,
             TokenType::Keyword(k) if k == "if" => self.parse_if_statement()?,
             TokenType::Keyword(k) if k == "repeat" => self.parse_repeat_statement()?,
-            TokenType::Keyword(k) if k == "function" => self.parse_function_declaration()?,
+            TokenType::Keyword(k) if k == "function" || k == "task" => self.parse_function_declaration(k == "task")?,
             TokenType::Keyword(k) if k == "return" => self.parse_return_statement()?,
             TokenType::Keyword(k) if k == "save" => self.parse_save_statement()?,
             TokenType::Keyword(k) if k == "class" => self.parse_class_def()?,
@@ -145,8 +145,24 @@ impl Parser {
                 }
             }
             Ok(StatementNode::UseModule { path, alias }.into())
+        } else if matches!(self.peek().token_type, TokenType::Identifier(_) | TokenType::Keyword(_)) {
+            let mod_name = match self.advance().token_type.clone() {
+                TokenType::Identifier(n) => n,
+                TokenType::Keyword(k) => k,
+                _ => unreachable!(),
+            };
+            let mut alias = None;
+            if self.match_token(&TokenType::Keyword("as".to_string())) {
+                let alias_tok = self.advance().clone();
+                if let TokenType::Identifier(n) = alias_tok.token_type {
+                    alias = Some(n);
+                } else {
+                    return self.error("Expected alias after 'as'");
+                }
+            }
+            Ok(StatementNode::UseModule { path: mod_name, alias }.into())
         } else {
-            self.error("Expected 'python' or string literal after 'use'")
+            self.error("Expected 'python', module identifier, or file path string after 'use'")
         }
     }
 
@@ -328,12 +344,16 @@ impl Parser {
         Ok(StatementNode::Assignment { name, value, type_annotation }.into())
     }
 
-    fn parse_function_declaration(&mut self) -> Result<Statement, String> {
-        self.expect(&TokenType::Keyword("function".to_string()))?;
+    fn parse_function_declaration(&mut self, is_task: bool) -> Result<Statement, String> {
+        if is_task {
+            self.expect(&TokenType::Keyword("task".to_string()))?;
+        } else {
+            self.expect(&TokenType::Keyword("function".to_string()))?;
+        }
         let name_tok = self.advance().clone();
         let name = match name_tok.token_type {
             TokenType::Identifier(n) => n,
-            _ => return self.error("Expected function name"),
+            _ => return self.error(if is_task { "Expected task name" } else { "Expected function name" }),
         };
         
         self.expect(&TokenType::Punct("(".to_string()))?;
@@ -377,7 +397,7 @@ impl Parser {
             body = self.parse_block()?;
         }
         
-        Ok(StatementNode::FunctionDeclaration { name, params, return_type, body }.into())
+        Ok(StatementNode::FunctionDeclaration { name, params, return_type, body, is_task }.into())
     }
 
     fn parse_type_annotation(&mut self) -> Result<String, String> {
@@ -425,7 +445,7 @@ impl Parser {
             if self.match_token(&TokenType::Keyword("where".to_string())) {
                 let condition = self.parse_logical_or()?;
                 left = ExpressionNode::Where { target: Box::new(left), condition: Box::new(condition) }.into();
-            } else if self.match_token(&TokenType::Keyword("select".to_string())) {
+            } else if self.match_token(&TokenType::Keyword("select".to_string())) || self.match_token(&TokenType::Keyword("map".to_string())) {
                 let mapping = self.parse_logical_or()?;
                 left = ExpressionNode::Select { target: Box::new(left), mapping: Box::new(mapping) }.into();
             } else if self.match_token(&TokenType::Keyword("average".to_string())) {
@@ -440,6 +460,8 @@ impl Parser {
             } else if self.match_token(&TokenType::Keyword("max".to_string())) {
                 let mapping = self.parse_logical_or()?;
                 left = ExpressionNode::Aggregate { target: Box::new(left), mapping: Box::new(mapping), op: "max".to_string() }.into();
+            } else if self.match_token(&TokenType::Keyword("together".to_string())) {
+                left = ExpressionNode::Concurrent(Box::new(left)).into();
             } else {
                 break;
             }
@@ -528,6 +550,22 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expression, String> {
+        if self.match_token(&TokenType::Op("-".to_string())) {
+            let expr = self.parse_unary()?;
+            return Ok(ExpressionNode::BinaryOp {
+                left: Box::new(ExpressionNode::Integer(0).into()),
+                operator: "-".to_string(),
+                right: Box::new(expr),
+            }.into());
+        }
+        if self.match_token(&TokenType::Op("!".to_string())) || self.match_token(&TokenType::Keyword("not".to_string())) {
+            let expr = self.parse_unary()?;
+            return Ok(ExpressionNode::BinaryOp {
+                left: Box::new(expr),
+                operator: "==".to_string(),
+                right: Box::new(ExpressionNode::Boolean(false).into()),
+            }.into());
+        }
         if self.match_token(&TokenType::Keyword("together".to_string())) {
             let expr = self.parse_unary()?;
             return Ok(ExpressionNode::Concurrent(Box::new(expr)).into());
@@ -597,6 +635,13 @@ impl Parser {
             }
         }
         
+        if self.match_token(&TokenType::Keyword("run".to_string())) {
+            let expr = self.parse_expression()?;
+            self.expect(&TokenType::Keyword("in".to_string()))?;
+            self.expect(&TokenType::Keyword("parallel".to_string()))?;
+            return Ok(ExpressionNode::RunInParallel(Box::new(expr)).into());
+        }
+
         if self.match_token(&TokenType::Keyword("get".to_string())) {
             let expr = self.parse_atom()?;
             return Ok(ExpressionNode::Get(Box::new(expr)).into());
@@ -695,7 +740,9 @@ impl Parser {
             TokenType::Identifier(id) => Ok(Expression::from(ExpressionNode::Identifier(id)).with_span(span)),
             TokenType::Keyword(k) if k == "true" => Ok(Expression::from(ExpressionNode::Boolean(true)).with_span(span)),
             TokenType::Keyword(k) if k == "false" => Ok(Expression::from(ExpressionNode::Boolean(false)).with_span(span)),
-            TokenType::Keyword(k) if k == "json" => Ok(Expression::from(ExpressionNode::Identifier(k)).with_span(span)),
+            TokenType::Keyword(k) if matches!(k.as_str(), "json" | "min" | "max" | "sum" | "average" | "map" | "int" | "float" | "str" | "bool") => {
+                Ok(Expression::from(ExpressionNode::Identifier(k)).with_span(span))
+            }
             _ => self.error(&format!("Unexpected token in expression: {:?}", token.token_type)),
         }
     }

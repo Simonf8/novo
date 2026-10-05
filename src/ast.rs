@@ -109,6 +109,7 @@ pub enum ExpressionNode {
     },
 
     Await(Box<Expression>),
+    RunInParallel(Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +146,7 @@ pub enum StatementNode {
         params: Vec<(String, Option<String>)>,
         return_type: Option<String>,
         body: Block,
+        is_task: bool,
     },
     UsePython {
         module: String,

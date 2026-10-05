@@ -1,0 +1,6 @@
+# Main entry point for the Novo application
+
+function main():
+    show "Hello, Novo!"
+
+main()

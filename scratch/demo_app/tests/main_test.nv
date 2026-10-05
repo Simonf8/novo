@@ -1,0 +1,7 @@
+# Starter test suite
+
+function test_example():
+    val = 21 * 2
+    show val
+
+test_example()

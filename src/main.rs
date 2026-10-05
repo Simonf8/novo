@@ -11,6 +11,10 @@ mod ir_builder;
 mod ir_ssa;
 mod ir_opt;
 mod ir_backend;
+mod linter;
+mod formatter;
+pub mod stdlib;
+pub mod jit;
 
 use std::env;
 use std::fs;
@@ -27,12 +31,16 @@ fn print_usage() {
     println!("    check <file.nv>           Validate syntax, types, and IR generation without executing");
     println!("    test [dir|file]           Discover and run test suite with differential verification");
     println!("    bench <file.nv>           Run repeated microbenchmark measurements");
+    println!("    fmt <file|dir> [-w]       Format Novo source code to canonical style");
+    println!("    lint <file|dir>           Run static analysis and linter for code health");
+    println!("    new <project_name>        Scaffold a new Novo project");
     println!("    ir <file.nv>              Emit optimized SSA intermediate representation\n");
     println!("Options:");
-    println!("    --engine=<vm|ast|diff>    Execution engine (default: vm)");
-    println!("    --iterations=<N>, -n <N>  Benchmark iterations (default: 5)");
-    println!("    --help, -h                Show this help message");
-    println!("    --version, -v             Show version information");
+    println!("    --write, -w                Write formatted code directly to file (for fmt)");
+    println!("    --engine=<vm|ast|diff|jit> Execution engine (default: vm)");
+    println!("    --iterations=<N>, -n <N>   Benchmark iterations (default: 5)");
+    println!("    --help, -h                 Show this help message");
+    println!("    --version, -v              Show version information");
 }
 
 fn main() {
@@ -56,6 +64,7 @@ fn main() {
     let mut target = String::new();
     let mut engine = "vm";
     let mut iterations = 5usize;
+    let mut write_in_place = false;
 
     let mut arg_idx = 1;
     let first = &args[1];
@@ -78,6 +87,8 @@ fn main() {
             if let Ok(n) = args[i].parse::<usize>() {
                 iterations = n.max(1);
             }
+        } else if arg == "--write" || arg == "-w" {
+            write_in_place = true;
         } else if !arg.starts_with('-') {
             target = arg.clone();
         }
@@ -116,6 +127,27 @@ fn main() {
                 std::process::exit(1);
             }
             execute_bench(&target, iterations, engine);
+        }
+        "fmt" => {
+            if target.is_empty() {
+                eprintln!("Error: 'fmt' requires a .nv file or directory path.");
+                std::process::exit(1);
+            }
+            execute_fmt(&target, write_in_place);
+        }
+        "lint" => {
+            if target.is_empty() {
+                eprintln!("Error: 'lint' requires a .nv file or directory path.");
+                std::process::exit(1);
+            }
+            execute_lint(&target);
+        }
+        "new" => {
+            if target.is_empty() {
+                eprintln!("Error: 'new' requires a project name.");
+                std::process::exit(1);
+            }
+            execute_new(&target);
         }
         other => {
             eprintln!("Unknown command: '{}'. Run 'novo --help' for available commands.", other);
@@ -157,7 +189,43 @@ fn execute_run(filename: &str, engine: &str) {
         std::process::exit(1);
     }
 
-    if engine == "vm" {
+    if engine == "jit" {
+        let builder = ir_builder::IRBuilder::new();
+        let ir = match builder.build(&ast) {
+            Ok(ir) => ir,
+            Err(e) => {
+                print_error(&source, &e, "IR Compilation error");
+                std::process::exit(1);
+            }
+        };
+
+        if let Ok(mut jit) = jit::JitEngine::new() {
+            for (i, func) in ir.iter().enumerate() {
+                if jit::JitEngine::can_compile(func) {
+                    let _ = jit.compile_function(i, func);
+                }
+            }
+        }
+
+        let backend = ir_backend::IRBackend::new(ir);
+        match backend.generate() {
+            Ok(chunk) => {
+                let mut vm = vm::VM::new();
+                match vm.interpret(chunk) {
+                    vm::InterpretResult::Ok => {}
+                    vm::InterpretResult::RuntimeError(e) => {
+                        eprintln!("VM Runtime Error: {}", e);
+                        print_error(&source, &e, "VM Runtime Error");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                print_error(&source, &e, "Compiler error");
+                std::process::exit(1);
+            }
+        }
+    } else if engine == "vm" {
         let builder = ir_builder::IRBuilder::new();
         let ir = match builder.build(&ast) {
             Ok(ir) => ir,
@@ -562,3 +630,216 @@ fn print_error(source: &str, error: &str, error_type: &str) {
     }
     eprintln!("{}: {}", error_type, error);
 }
+
+fn execute_fmt(target: &str, write_in_place: bool) {
+    let files = discover_tests(target);
+    if files.is_empty() {
+        eprintln!("Error: No .nv files found in '{}'", target);
+        std::process::exit(1);
+    }
+
+    let mut formatted_count = 0;
+    let mut unchanged_count = 0;
+
+    for file in &files {
+        let filename = file.display().to_string();
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading '{}': {}", filename, e);
+                continue;
+            }
+        };
+
+        let mut lexer = lexer::Lexer::new(&source);
+        let tokens = match lexer.tokenize() {
+            Ok(t) => t,
+            Err(e) => {
+                print_error(&source, &e, "Lexer error");
+                continue;
+            }
+        };
+
+        let mut parser = parser::Parser::new(tokens);
+        let ast = match parser.parse() {
+            Ok(p) => p,
+            Err(e) => {
+                print_error(&source, &e, "Syntax error");
+                continue;
+            }
+        };
+
+        let formatted = formatter::Formatter::new().format_program(&ast);
+
+        if write_in_place {
+            if formatted.trim() != source.trim() {
+                if let Err(e) = fs::write(file, &formatted) {
+                    eprintln!("Error writing '{}': {}", filename, e);
+                } else {
+                    println!("Formatted: {}", filename);
+                    formatted_count += 1;
+                }
+            } else {
+                unchanged_count += 1;
+            }
+        } else if files.len() == 1 {
+            print!("{}", formatted);
+        } else if formatted.trim() != source.trim() {
+            println!("Needs formatting: {}", filename);
+            formatted_count += 1;
+        } else {
+            unchanged_count += 1;
+        }
+    }
+
+    if write_in_place || files.len() > 1 {
+        println!("Fmt complete: {} formatted, {} unchanged.", formatted_count, unchanged_count);
+    }
+}
+
+fn execute_lint(target: &str) {
+    let files = discover_tests(target);
+    if files.is_empty() {
+        eprintln!("Error: No .nv files found in '{}'", target);
+        std::process::exit(1);
+    }
+
+    let mut total_warnings = 0;
+    let mut total_errors = 0;
+
+    for file in &files {
+        let filename = file.display().to_string();
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading '{}': {}", filename, e);
+                continue;
+            }
+        };
+
+        let mut lexer = lexer::Lexer::new(&source);
+        let tokens = match lexer.tokenize() {
+            Ok(t) => t,
+            Err(e) => {
+                print_error(&source, &e, "Lexer error");
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let mut parser = parser::Parser::new(tokens);
+        let ast = match parser.parse() {
+            Ok(p) => p,
+            Err(e) => {
+                print_error(&source, &e, "Syntax error");
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let mut linter = linter::Linter::new();
+        let diagnostics = linter.lint_program(&ast);
+
+        if !diagnostics.is_empty() {
+            let lines: Vec<&str> = source.lines().collect();
+            for diag in &diagnostics {
+                let sev_str = match diag.severity {
+                    linter::LintSeverity::Warning => {
+                        total_warnings += 1;
+                        "warning"
+                    }
+                    linter::LintSeverity::Error => {
+                        total_errors += 1;
+                        "error"
+                    }
+                    linter::LintSeverity::Hint => "hint",
+                };
+
+                println!("{}:{}:{}: {}: {}", filename, diag.span.line, diag.span.column, sev_str, diag.message);
+                if diag.span.line > 0 && diag.span.line <= lines.len() {
+                    let line_content = lines[diag.span.line - 1];
+                    println!("    {}", line_content);
+                    let padding = " ".repeat(diag.span.column.saturating_sub(1));
+                    let carets = "^".repeat(diag.span.length.max(1));
+                    println!("    {}{}", padding, carets);
+                }
+                if let Some(ref sug) = diag.suggestion {
+                    println!("    Help: {}\n", sug);
+                }
+            }
+        }
+    }
+
+    if total_warnings == 0 && total_errors == 0 {
+        println!("All clean! No lint issues found in {} file(s).", files.len());
+    } else {
+        println!("Lint finished with {} warning(s), {} error(s).", total_warnings, total_errors);
+        if total_errors > 0 {
+            std::process::exit(1);
+        }
+    }
+}
+
+fn execute_new(project_name: &str) {
+    let p = Path::new(project_name);
+    if p.exists() {
+        eprintln!("Error: Directory '{}' already exists.", project_name);
+        std::process::exit(1);
+    }
+
+    let src_dir = p.join("src");
+    let tests_dir = p.join("tests");
+
+    if let Err(e) = fs::create_dir_all(&src_dir) {
+        eprintln!("Failed to create '{}/src': {}", project_name, e);
+        std::process::exit(1);
+    }
+    if let Err(e) = fs::create_dir_all(&tests_dir) {
+        eprintln!("Failed to create '{}/tests': {}", project_name, e);
+        std::process::exit(1);
+    }
+
+    let toml_content = format!(
+r#"[package]
+name = "{}"
+version = "0.1.0"
+description = "A modern Novo application"
+entry = "src/main.nv"
+
+[dependencies]
+"#, project_name);
+
+    let main_nv = r#"# Main entry point for the Novo application
+
+function main():
+    show "Hello, Novo!"
+
+main()
+"#;
+
+    let test_nv = r#"# Starter test suite
+
+function test_example():
+    val = 21 * 2
+    show val
+
+test_example()
+"#;
+
+    let gitignore = r#"target/
+*.log
+"#;
+
+    let _ = fs::write(p.join("novo.toml"), toml_content);
+    let _ = fs::write(src_dir.join("main.nv"), main_nv);
+    let _ = fs::write(tests_dir.join("main_test.nv"), test_nv);
+    let _ = fs::write(p.join(".gitignore"), gitignore);
+
+    println!("Created new Novo project '{}':", project_name);
+    println!("    {}/novo.toml", project_name);
+    println!("    {}/src/main.nv", project_name);
+    println!("    {}/tests/main_test.nv", project_name);
+    println!("    {}/.gitignore", project_name);
+    println!("\nTo get started:\n    cd {}\n    novo run src/main.nv\n    novo test tests", project_name);
+}
+

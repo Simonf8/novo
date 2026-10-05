@@ -64,6 +64,7 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
         | Instruction::Get(obj)
         | Instruction::Where(obj, _)
         | Instruction::Select(obj, _)
+        | Instruction::ParallelSelect(obj, _)
         | Instruction::Aggregate(obj, _, _)
         | Instruction::Print(obj) => {
             rep(obj);
@@ -100,6 +101,7 @@ fn substitute_instruction(inst: &mut Instruction, replacements: &HashMap<ValueId
         }
         Instruction::Constant(_)
         | Instruction::Spawn(_)
+        | Instruction::RunParallel(_)
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)
@@ -952,6 +954,7 @@ fn dead_code_elimination(func: &mut FunctionIR) -> bool {
                     | Instruction::Get(obj)
                     | Instruction::Where(obj, _)
                     | Instruction::Select(obj, _)
+                    | Instruction::ParallelSelect(obj, _)
                     | Instruction::Aggregate(obj, _, _)
                     | Instruction::Print(obj) => {
                         used.insert(*obj);
@@ -988,6 +991,7 @@ fn dead_code_elimination(func: &mut FunctionIR) -> bool {
                     }
                     Instruction::Constant(_)
                     | Instruction::Spawn(_)
+                    | Instruction::RunParallel(_)
                     | Instruction::LoadLocal(_)
                     | Instruction::LoadGlobal(_)
                     | Instruction::MakeFunction(_, _)
@@ -1017,10 +1021,12 @@ fn dead_code_elimination(func: &mut FunctionIR) -> bool {
                     inst,
                     Instruction::Call(_, _)
                         | Instruction::Spawn(_)
+                        | Instruction::RunParallel(_)
                         | Instruction::Read(_)
                         | Instruction::Get(_)
                         | Instruction::Where(_, _)
                         | Instruction::Select(_, _)
+                        | Instruction::ParallelSelect(_, _)
                         | Instruction::Aggregate(_, _, _)
                         | Instruction::Print(_)
                         | Instruction::StoreGlobal(_, _)

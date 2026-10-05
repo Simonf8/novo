@@ -17,20 +17,23 @@ pub enum Type {
 
 impl Type {
     pub fn from_string(name: &str) -> Type {
-        match name {
-            "Int" => Type::Int,
-            "Float" => Type::Float,
-            "String" => Type::String,
-            "Bool" => Type::Bool,
-            "List" => Type::List(Box::new(Type::Any)),
-            "Map" => Type::Map(Box::new(Type::String), Box::new(Type::Any)),
-            "Any" => Type::Any,
+        let trimmed = name.trim();
+        match trimmed.to_lowercase().as_str() {
+            "int" | "integer" => Type::Int,
+            "float" => Type::Float,
+            "string" | "str" => Type::String,
+            "bool" | "boolean" => Type::Bool,
+            "list" => Type::List(Box::new(Type::Any)),
+            "map" => Type::Map(Box::new(Type::String), Box::new(Type::Any)),
+            "any" => Type::Any,
+            "none" | "void" => Type::None,
             _ => {
-                if name.starts_with("List[") && name.ends_with("]") {
-                    let inner = &name[5..name.len()-1];
+                let lower = trimmed.to_lowercase();
+                if lower.starts_with("list[") && lower.ends_with(']') {
+                    let inner = &trimmed[5..trimmed.len() - 1];
                     Type::List(Box::new(Type::from_string(inner)))
-                } else if name.starts_with("Map[") && name.ends_with("]") {
-                    let inner = &name[4..name.len()-1];
+                } else if lower.starts_with("map[") && lower.ends_with(']') {
+                    let inner = &trimmed[4..trimmed.len() - 1];
                     let parts: Vec<&str> = inner.split(',').collect();
                     if parts.len() == 2 {
                         Type::Map(Box::new(Type::from_string(parts[0].trim())), Box::new(Type::from_string(parts[1].trim())))
@@ -38,7 +41,7 @@ impl Type {
                         Type::Map(Box::new(Type::String), Box::new(Type::Any))
                     }
                 } else {
-                    Type::Any // Custom classes etc. fall back to Any for now
+                    Type::Any
                 }
             },
         }
@@ -194,7 +197,7 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
-            StatementNode::FunctionDeclaration { name, params, return_type, body } => {
+            StatementNode::FunctionDeclaration { name, params, return_type, body, .. } => {
                 let ret_ty = return_type.as_ref().map(|t| Type::from_string(t)).unwrap_or(Type::Any);
                 let mut p_types = Vec::new();
                 for (_, p_ty) in params.iter() {
@@ -277,6 +280,10 @@ impl TypeChecker {
             ExpressionNode::Concurrent(inner) => {
                 let inner_ty = self.check_expression(inner)?;
                 Ok(Type::Promise(Box::new(inner_ty)))
+            }
+            ExpressionNode::RunInParallel(inner) => {
+                let inner_ty = self.check_expression(inner)?;
+                Ok(inner_ty)
             }
             ExpressionNode::Map(items) => {
                 let mut key_ty = Type::Any;
@@ -373,24 +380,23 @@ impl TypeChecker {
             ExpressionNode::PropertyAccess { target, property } => {
                 let target_ty = self.check_expression(target)?;
                 match target_ty {
-                    Type::List(inner) => {
-                        if property == "length" {
-                            Ok(Type::Int)
-                        } else if property == "push" {
-                            Ok(Type::Function(vec![*inner.clone()], Box::new(Type::None)))
-                        } else if property == "pop" {
-                            Ok(Type::Function(vec![], inner))
+                    Type::List(_inner) => {
+                        if crate::stdlib::is_list_method(property) {
+                            Ok(Type::Any)
                         } else {
                             Ok(Type::Any)
                         }
                     }
                     Type::String => {
-                        if property == "length" {
-                            Ok(Type::Int)
-                        } else if property == "split" {
-                            Ok(Type::Function(vec![Type::String], Box::new(Type::List(Box::new(Type::String)))))
-                        } else if property == "contains" {
-                            Ok(Type::Function(vec![Type::String], Box::new(Type::Bool)))
+                        if crate::stdlib::is_string_method(property) {
+                            Ok(Type::Any)
+                        } else {
+                            Ok(Type::Any)
+                        }
+                    }
+                    Type::Map(_, _) => {
+                        if crate::stdlib::is_map_method(property) {
+                            Ok(Type::Any)
                         } else {
                             Ok(Type::Any)
                         }

@@ -392,6 +392,30 @@ impl IRBackend {
                         chunk.write(OpCode::SpawnConcurrent(const_idx), 0);
                         self.emit_store(&mut chunk, *val_id, &val_to_slot);
                     }
+                    Instruction::ParallelSelect(target, func_idx) => {
+                        self.emit_load(&mut chunk, *target, &val_to_slot);
+                        let compiled = compiled_funcs.get(func_idx).expect("ParallelSelect mapper chunk not found").clone();
+                        let val = Value::CompiledFunction {
+                            chunk: compiled,
+                            arity: 0,
+                        };
+                        let const_idx = chunk.add_constant(val);
+                        chunk.write(OpCode::ParallelSelect(const_idx), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
+                    Instruction::RunParallel(funcs) => {
+                        for func_idx in funcs {
+                            let compiled = compiled_funcs.get(func_idx).expect("RunParallel task chunk not found").clone();
+                            let val = Value::CompiledFunction {
+                                chunk: compiled,
+                                arity: 0,
+                            };
+                            let const_idx = chunk.add_constant(val);
+                            chunk.write(OpCode::Constant(const_idx), 0);
+                        }
+                        chunk.write(OpCode::RunParallel(funcs.len()), 0);
+                        self.emit_store(&mut chunk, *val_id, &val_to_slot);
+                    }
                     Instruction::Await(target) => {
                         self.emit_load(&mut chunk, *target, &val_to_slot);
                         chunk.write(OpCode::Await, 0);
@@ -562,6 +586,7 @@ fn get_instruction_uses(inst: &Instruction) -> Vec<ValueId> {
         | Instruction::Get(o)
         | Instruction::Where(o, _)
         | Instruction::Select(o, _)
+        | Instruction::ParallelSelect(o, _)
         | Instruction::Aggregate(o, _, _)
         | Instruction::Print(o) => vec![*o],
         Instruction::StringInterpolate(args) => args.clone(),
@@ -579,6 +604,7 @@ fn get_instruction_uses(inst: &Instruction) -> Vec<ValueId> {
         Instruction::Phi(operands) => operands.iter().map(|(_, v)| *v).collect(),
         Instruction::Constant(_)
         | Instruction::Spawn(_)
+        | Instruction::RunParallel(_)
         | Instruction::LoadLocal(_)
         | Instruction::LoadGlobal(_)
         | Instruction::MakeFunction(_, _)
@@ -833,9 +859,11 @@ fn infer_integer_values(func: &FunctionIR) -> HashSet<ValueId> {
                 | Instruction::Get(_)
                 | Instruction::Where(_, _)
                 | Instruction::Select(_, _)
+                | Instruction::ParallelSelect(_, _)
                 | Instruction::Aggregate(_, _, _)
                 | Instruction::StringInterpolate(_)
                 | Instruction::Spawn(_)
+                | Instruction::RunParallel(_)
                 | Instruction::Await(_) => {
                     types.insert(*val_id, InferredType::NonInteger);
                 }

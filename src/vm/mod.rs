@@ -2,9 +2,69 @@ pub mod opcode;
 pub mod chunk;
 
 use std::collections::HashMap;
-use crate::interpreter::Value;
+use std::sync::{mpsc, Arc, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::interpreter::{Value, PromiseHandle};
 use opcode::OpCode;
 use chunk::Chunk;
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+pub struct ThreadPool {
+    sender: Option<mpsc::Sender<Job>>,
+    _workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl ThreadPool {
+    pub fn new(size: usize) -> Self {
+        let (sender, receiver) = mpsc::channel::<Job>();
+        let receiver = Arc::new(parking_lot::Mutex::new(receiver));
+        let mut workers = Vec::with_capacity(size);
+
+        for _ in 0..size {
+            let receiver = Arc::clone(&receiver);
+            let handle = std::thread::spawn(move || {
+                loop {
+                    let job = {
+                        let lock = receiver.lock();
+                        lock.recv()
+                    };
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => break,
+                    }
+                }
+            });
+            workers.push(handle);
+        }
+
+        ThreadPool {
+            sender: Some(sender),
+            _workers: workers,
+        }
+    }
+
+    pub fn execute<F>(&self, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        if let Some(ref sender) = self.sender {
+            let _ = sender.send(Box::new(f));
+        }
+    }
+}
+
+static THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
+
+pub fn get_thread_pool() -> &'static ThreadPool {
+    THREAD_POOL.get_or_init(|| {
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .max(2);
+        ThreadPool::new(num_threads)
+    })
+}
 
 pub struct CallFrame {
     pub chunk: std::sync::Arc<Chunk>,
@@ -35,7 +95,7 @@ pub enum InterpretResult {
 impl VM {
     pub fn new() -> Self {
         let mut globals = HashMap::new();
-        globals.insert("parse_json".to_string(), Value::NativeFunction { name: "parse_json".to_string(), bound_target: None });
+        crate::stdlib::register_globals(&mut globals);
         VM {
             frames: Vec::new(),
             stack: Vec::new(),
@@ -395,95 +455,17 @@ impl VM {
                             continue 'vm_loop;
                         }
                         Value::NativeFunction { name, bound_target } => {
-                            let target_val = bound_target.clone().map(|b| *b);
-                            let mut args = Vec::new();
+                            let mut args = Vec::with_capacity(arg_count);
                             let start = self.stack.len() - arg_count;
                             for i in 0..arg_count {
                                 args.push(self.stack[start + i].clone());
                             }
                             
-                            let result = match name.as_str() {
-                                "split" => {
-                                    if let Some(Value::String(s)) = target_val {
-                                        if args.len() == 1 {
-                                            if let Value::String(sep) = &args[0] {
-                                                let parts: Vec<Value> = s.split(sep).map(|part| Value::String(part.to_string())).collect();
-                                                Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(parts))))
-                                            } else {
-                                                Err("split() requires a string argument".to_string())
-                                            }
-                                        } else {
-                                            Err("split() requires exactly 1 argument".to_string())
-                                        }
-                                    } else {
-                                        Err("split() requires a string target".to_string())
-                                    }
-                                }
-                                "contains" => {
-                                    if let Some(Value::String(s)) = target_val {
-                                        if args.len() == 1 {
-                                            if let Value::String(search) = &args[0] {
-                                                Ok(Value::Boolean(s.contains(search)))
-                                            } else {
-                                                Err("contains() requires a string argument".to_string())
-                                            }
-                                        } else {
-                                            Err("contains() requires exactly 1 argument".to_string())
-                                        }
-                                    } else {
-                                        Err("contains() requires a string target".to_string())
-                                    }
-                                }
-                                "length" => {
-                                    if let Some(Value::String(s)) = target_val {
-                                        Ok(Value::Integer(s.len() as i64))
-                                    } else if let Some(Value::List(l)) = target_val {
-                                        Ok(Value::Integer(l.read().len() as i64))
-                                    } else {
-                                        Err("length() requires a string or list target".to_string())
-                                    }
-                                }
-                                "push" => {
-                                    if let Some(Value::List(l)) = target_val {
-                                        if args.len() == 1 {
-                                            l.write().push(args[0].clone());
-                                            Ok(Value::Null)
-                                        } else {
-                                            Err("push() requires exactly 1 argument".to_string())
-                                        }
-                                    } else {
-                                        Err("push() requires a list target".to_string())
-                                    }
-                                }
-                                "pop" => {
-                                    if let Some(Value::List(l)) = target_val {
-                                        if args.is_empty() {
-                                            Ok(l.write().pop().unwrap_or(Value::Null))
-                                        } else {
-                                            Err("pop() requires exactly 0 arguments".to_string())
-                                        }
-                                    } else {
-                                        Err("pop() requires a list target".to_string())
-                                    }
-                                }
-                                "parse_json" => {
-                                    if args.len() == 1 {
-                                        if let Value::String(s) = &args[0] {
-                                            pyo3::Python::with_gil(|py| -> Result<Value, String> {
-                                                let json = pyo3::types::PyModule::import(py, "json").map_err(|e| e.to_string())?;
-                                                let loads = json.getattr("loads").map_err(|e| e.to_string())?;
-                                                let py_result = loads.call1((s.as_str(),)).map_err(|e| e.to_string())?;
-                                                crate::interpreter::py_to_value(py, py_result.into())
-                                            })
-                                        } else {
-                                            Err("parse_json() requires a string argument".to_string())
-                                        }
-                                    } else {
-                                        Err("parse_json() requires exactly 1 argument".to_string())
-                                    }
-                                }
-                                _ => Err(format!("Unknown native function: {}", name)),
-                            };
+                            let result = crate::stdlib::call_native_function(
+                                &name,
+                                bound_target.as_ref().map(|b| &**b),
+                                &args,
+                            );
                             
                             match result {
                                 Ok(v) => {
@@ -661,6 +643,11 @@ impl VM {
                         Value::Map(m) => {
                             if let Some(v) = m.read().get(&name) {
                                 self.stack.push(v.clone());
+                            } else if crate::stdlib::is_map_method(&name) {
+                                self.stack.push(Value::NativeFunction {
+                                    name,
+                                    bound_target: Some(Box::new(Value::Map(m))),
+                                });
                             } else {
                                 self.stack.push(Value::Null);
                             }
@@ -673,7 +660,7 @@ impl VM {
                             }
                         }
                         Value::List(l) => {
-                            if name == "length" || name == "push" || name == "pop" {
+                            if crate::stdlib::is_list_method(&name) {
                                 self.stack.push(Value::NativeFunction {
                                     name,
                                     bound_target: Some(Box::new(Value::List(l))),
@@ -693,7 +680,7 @@ impl VM {
                             }
                         }
                         Value::String(s) => {
-                            if name == "split" || name == "contains" || name == "length" {
+                            if crate::stdlib::is_string_method(&name) {
                                 self.stack.push(Value::NativeFunction {
                                     name,
                                     bound_target: Some(Box::new(Value::String(s))),
@@ -979,13 +966,13 @@ impl VM {
                 OpCode::SpawnConcurrent(idx) => {
                     let func = frame.chunk.constants[idx].clone();
                     if let Value::CompiledFunction { chunk, arity: _ } = func {
-                        let mut new_vm = VM::new();
-                        new_vm.globals = self.globals.clone();
+                        let handle = Arc::new(PromiseHandle::new());
+                        let handle_clone = Arc::clone(&handle);
+                        let globals = self.globals.clone();
                         
-                        let result_arc = std::sync::Arc::new(parking_lot::RwLock::new(None));
-                        let ret_arc = result_arc.clone();
-                        
-                        std::thread::spawn(move || {
+                        get_thread_pool().execute(move || {
+                            let mut new_vm = VM::new();
+                            new_vm.globals = globals;
                             let call_frame = CallFrame {
                                 chunk,
                                 ip: 0,
@@ -995,41 +982,142 @@ impl VM {
                             match new_vm.run() {
                                 InterpretResult::Ok => {
                                     let ret = new_vm.stack.pop().unwrap_or(Value::Null);
-                                    *result_arc.write() = Some(Ok(ret));
+                                    handle_clone.complete(Ok(ret));
                                 }
                                 InterpretResult::RuntimeError(e) => {
-                                    *result_arc.write() = Some(Err(e));
+                                    handle_clone.complete(Err(e));
                                 }
                             }
                         });
                         
-                        self.stack.push(Value::Promise(ret_arc));
+                        self.stack.push(Value::Promise(handle));
                     } else {
                         throw!(frame, 'vm_loop, "SpawnConcurrent requires a CompiledFunction".to_string());
                     }
                 }
                 OpCode::Await => {
                     let promise_val = self.stack.pop().unwrap();
-                    if let Value::Promise(arc) = promise_val {
-                        // Busy-wait for simplicity, or we can use a condvar.
-                        // For a simple implementation, loop and sleep until it's Some.
-                        loop {
-                            let val_opt = arc.read().clone();
-                            if let Some(res) = val_opt {
-                                match res {
-                                    Ok(v) => {
-                                        self.stack.push(v);
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        throw!(frame, 'vm_loop, e);
-                                    }
-                                }
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(1));
+                    if let Value::Promise(handle) = promise_val {
+                        match handle.wait() {
+                            Ok(v) => self.stack.push(v),
+                            Err(e) => throw!(frame, 'vm_loop, e),
                         }
                     } else {
                         throw!(frame, 'vm_loop, "Await requires a Promise".to_string());
+                    }
+                }
+                OpCode::ParallelSelect(closure_idx) => {
+                    let target = self.stack.pop().unwrap();
+                    let closure = match &frame.chunk.constants[closure_idx] {
+                        Value::CompiledFunction { chunk, .. } => chunk.clone(),
+                        _ => throw!(frame, 'vm_loop, "Expected CompiledFunction".to_string()),
+                    };
+                    if let Value::List(l) = target {
+                        let items = l.read().clone();
+                        if items.is_empty() {
+                            self.stack.push(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(Vec::new()))));
+                        } else {
+                            let n = items.len();
+                            let results = Arc::new(parking_lot::Mutex::new(vec![Value::Null; n]));
+                            let remaining = Arc::new(AtomicUsize::new(n));
+                            let condvar = Arc::new(parking_lot::Condvar::new());
+                            let mutex = Arc::new(parking_lot::Mutex::new(false));
+                            let pool = get_thread_pool();
+
+                            for (i, item) in items.into_iter().enumerate() {
+                                let results = Arc::clone(&results);
+                                let remaining = Arc::clone(&remaining);
+                                let condvar = Arc::clone(&condvar);
+                                let mutex = Arc::clone(&mutex);
+                                let globals = self.globals.clone();
+                                let closure = closure.clone();
+
+                                pool.execute(move || {
+                                    let mut vm = VM::new();
+                                    vm.globals = globals;
+                                    vm.context_item_stack.push(item);
+                                    let res = match vm.execute_closure(closure) {
+                                        Ok(v) => v,
+                                        Err(_) => Value::Null,
+                                    };
+                                    results.lock()[i] = res;
+                                    if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                                        let mut lock = mutex.lock();
+                                        *lock = true;
+                                        condvar.notify_all();
+                                    }
+                                });
+                            }
+
+                            {
+                                let mut lock = mutex.lock();
+                                while !*lock {
+                                    condvar.wait(&mut lock);
+                                }
+                            }
+
+                            let final_items = results.lock().clone();
+                            self.stack.push(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(final_items))));
+                        }
+                    } else {
+                        throw!(frame, 'vm_loop, "'select together' requires a list".to_string());
+                    }
+                }
+                OpCode::RunParallel(count) => {
+                    let mut funcs = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        funcs.push(self.stack.pop().unwrap());
+                    }
+                    funcs.reverse();
+
+                    if funcs.is_empty() {
+                        self.stack.push(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(Vec::new()))));
+                    } else {
+                        let n = funcs.len();
+                        let results = Arc::new(parking_lot::Mutex::new(vec![Value::Null; n]));
+                        let remaining = Arc::new(AtomicUsize::new(n));
+                        let condvar = Arc::new(parking_lot::Condvar::new());
+                        let mutex = Arc::new(parking_lot::Mutex::new(false));
+                        let pool = get_thread_pool();
+
+                        for (i, func_val) in funcs.into_iter().enumerate() {
+                            let results = Arc::clone(&results);
+                            let remaining = Arc::clone(&remaining);
+                            let condvar = Arc::clone(&condvar);
+                            let mutex = Arc::clone(&mutex);
+                            let globals = self.globals.clone();
+
+                            pool.execute(move || {
+                                let res = match func_val {
+                                    Value::CompiledFunction { chunk, .. } => {
+                                        let mut vm = VM::new();
+                                        vm.globals = globals;
+                                        vm.frames.push(CallFrame { chunk, ip: 0, base_pointer: 0 });
+                                        match vm.run() {
+                                            InterpretResult::Ok => vm.stack.pop().unwrap_or(Value::Null),
+                                            InterpretResult::RuntimeError(_) => Value::Null,
+                                        }
+                                    }
+                                    _ => Value::Null,
+                                };
+                                results.lock()[i] = res;
+                                if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                                    let mut lock = mutex.lock();
+                                    *lock = true;
+                                    condvar.notify_all();
+                                }
+                            });
+                        }
+
+                        {
+                            let mut lock = mutex.lock();
+                            while !*lock {
+                                condvar.wait(&mut lock);
+                            }
+                        }
+
+                        let final_items = results.lock().clone();
+                        self.stack.push(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(final_items))));
                     }
                 }
             }

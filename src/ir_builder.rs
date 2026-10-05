@@ -208,6 +208,16 @@ impl IRBuilder {
                 let name = alias.as_ref().unwrap_or(module).clone();
                 self.emit(Instruction::StoreGlobal(name, val_id));
             }
+            StatementNode::UseModule { path, alias } => {
+                let default_name = std::path::Path::new(path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(path)
+                    .to_string();
+                let name = alias.as_ref().unwrap_or(&default_name).clone();
+                let val_id = self.emit(Instruction::LoadGlobal(path.clone()));
+                self.emit(Instruction::StoreGlobal(name, val_id));
+            }
             StatementNode::IndexAssignment { target, index, value } => {
                 let t_id = self.build_expression(target)?;
                 let i_id = self.build_expression(index)?;
@@ -573,31 +583,131 @@ impl IRBuilder {
                 Ok(self.emit(Instruction::StringInterpolate(part_ids)))
             }
             ExpressionNode::Concurrent(expr_in) => {
-                let func_idx = self.functions.len();
-                let mut helper_func = FunctionIR::new(format!("task_{}", func_idx));
-                let entry = helper_func.new_block();
-                helper_func.entry_block = entry;
-                self.functions.push(helper_func);
-                
-                let old_func = self.current_func;
-                let old_block = self.current_block;
-                let old_locals = self.locals.clone();
-                
-                self.current_func = func_idx;
-                self.current_block = entry;
-                self.locals.clear();
-                
-                let task_id = self.build_expression(expr_in)?;
-                
-                let cur_func = &mut self.functions[self.current_func];
-                let cur_block = cur_func.blocks.get_mut(&self.current_block).unwrap();
-                cur_block.terminator = Terminator::Return(Some(task_id));
-                
-                self.current_func = old_func;
-                self.current_block = old_block;
-                self.locals = old_locals;
-                
-                Ok(self.emit(Instruction::Spawn(func_idx)))
+                match &expr_in.node {
+                    ExpressionNode::Select { target, mapping } => {
+                        let target_id = self.build_expression(target)?;
+                        
+                        let func_idx = self.functions.len();
+                        let mut helper_func = FunctionIR::new(format!("par_select_{}", func_idx));
+                        let entry = helper_func.new_block();
+                        helper_func.entry_block = entry;
+                        self.functions.push(helper_func);
+                        
+                        let old_func = self.current_func;
+                        let old_block = self.current_block;
+                        let old_locals = self.locals.clone();
+                        
+                        self.current_func = func_idx;
+                        self.current_block = entry;
+                        self.locals.clear();
+                        
+                        let map_id = self.build_expression(mapping)?;
+                        
+                        let cur_func = &mut self.functions[self.current_func];
+                        let cur_block = cur_func.blocks.get_mut(&self.current_block).unwrap();
+                        cur_block.terminator = Terminator::Return(Some(map_id));
+                        
+                        self.current_func = old_func;
+                        self.current_block = old_block;
+                        self.locals = old_locals;
+                        
+                        Ok(self.emit(Instruction::ParallelSelect(target_id, func_idx)))
+                    }
+                    ExpressionNode::List(items) => {
+                        let mut func_indices = Vec::new();
+                        for item in items {
+                            let func_idx = self.functions.len();
+                            let mut helper_func = FunctionIR::new(format!("par_item_{}", func_idx));
+                            let entry = helper_func.new_block();
+                            helper_func.entry_block = entry;
+                            self.functions.push(helper_func);
+                            
+                            let old_func = self.current_func;
+                            let old_block = self.current_block;
+                            let old_locals = self.locals.clone();
+                            
+                            self.current_func = func_idx;
+                            self.current_block = entry;
+                            self.locals.clear();
+                            
+                            let task_id = self.build_expression(item)?;
+                            
+                            let cur_func = &mut self.functions[self.current_func];
+                            let cur_block = cur_func.blocks.get_mut(&self.current_block).unwrap();
+                            cur_block.terminator = Terminator::Return(Some(task_id));
+                            
+                            self.current_func = old_func;
+                            self.current_block = old_block;
+                            self.locals = old_locals;
+                            
+                            func_indices.push(func_idx);
+                        }
+                        Ok(self.emit(Instruction::RunParallel(func_indices)))
+                    }
+                    _ => {
+                        let func_idx = self.functions.len();
+                        let mut helper_func = FunctionIR::new(format!("task_{}", func_idx));
+                        let entry = helper_func.new_block();
+                        helper_func.entry_block = entry;
+                        self.functions.push(helper_func);
+                        
+                        let old_func = self.current_func;
+                        let old_block = self.current_block;
+                        let old_locals = self.locals.clone();
+                        
+                        self.current_func = func_idx;
+                        self.current_block = entry;
+                        self.locals.clear();
+                        
+                        let task_id = self.build_expression(expr_in)?;
+                        
+                        let cur_func = &mut self.functions[self.current_func];
+                        let cur_block = cur_func.blocks.get_mut(&self.current_block).unwrap();
+                        cur_block.terminator = Terminator::Return(Some(task_id));
+                        
+                        self.current_func = old_func;
+                        self.current_block = old_block;
+                        self.locals = old_locals;
+                        
+                        Ok(self.emit(Instruction::Spawn(func_idx)))
+                    }
+                }
+            }
+            ExpressionNode::RunInParallel(inner) => {
+                if let ExpressionNode::List(ref items) = inner.node {
+                    let mut func_indices = Vec::new();
+                    for item in items {
+                        let func_idx = self.functions.len();
+                        let mut helper_func = FunctionIR::new(format!("par_task_{}", func_idx));
+                        let entry = helper_func.new_block();
+                        helper_func.entry_block = entry;
+                        self.functions.push(helper_func);
+                        
+                        let old_func = self.current_func;
+                        let old_block = self.current_block;
+                        let old_locals = self.locals.clone();
+                        
+                        self.current_func = func_idx;
+                        self.current_block = entry;
+                        self.locals.clear();
+                        
+                        let task_id = self.build_expression(item)?;
+                        
+                        let cur_func = &mut self.functions[self.current_func];
+                        let cur_block = cur_func.blocks.get_mut(&self.current_block).unwrap();
+                        cur_block.terminator = Terminator::Return(Some(task_id));
+                        
+                        self.current_func = old_func;
+                        self.current_block = old_block;
+                        self.locals = old_locals;
+                        
+                        func_indices.push(func_idx);
+                    }
+                    Ok(self.emit(Instruction::RunParallel(func_indices)))
+                } else {
+                    let target_id = self.build_expression(inner)?;
+                    Ok(self.emit(Instruction::Await(target_id)))
+                }
             }
             ExpressionNode::Await(expr) => {
                 let promise_id = self.build_expression(expr)?;

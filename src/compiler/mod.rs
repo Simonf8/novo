@@ -193,8 +193,18 @@ impl Compiler {
                 self.chunk.write(OpCode::SetGlobal(name_idx), stmt.span.line);
                 self.chunk.write(OpCode::Pop, stmt.span.line);
             }
-            StatementNode::UseModule { path: _path, alias: _alias } => {
-                return Err(format!("Statement type not fully implemented in compiler yet: {:?}", stmt.node));
+            StatementNode::UseModule { path, alias } => {
+                let default_name = std::path::Path::new(path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(path)
+                    .to_string();
+                let name = alias.as_ref().unwrap_or(&default_name).clone();
+                let mod_idx = self.chunk.add_constant(Value::String(path.clone()));
+                self.chunk.write(OpCode::GetGlobal(mod_idx), stmt.span.line);
+                let name_idx = self.chunk.add_constant(Value::String(name));
+                self.chunk.write(OpCode::SetGlobal(name_idx), stmt.span.line);
+                self.chunk.write(OpCode::Pop, stmt.span.line);
             }
             StatementNode::Save { data: _data, destination: _destination } => {
                 return Err(format!("Statement type not fully implemented in compiler yet: {:?}", stmt.node));
@@ -371,6 +381,25 @@ impl Compiler {
                 };
                 let constant_idx = self.chunk.add_constant(func_val);
                 self.chunk.write(OpCode::SpawnConcurrent(constant_idx), expr.span.line);
+            }
+            ExpressionNode::RunInParallel(expr_in) => {
+                if let ExpressionNode::List(items) = &expr_in.node {
+                    for item in items {
+                        let mut child_compiler = Compiler::new();
+                        child_compiler.compile_expression(item)?;
+                        child_compiler.chunk.write(OpCode::Return, expr.span.line);
+                        let func_val = Value::CompiledFunction {
+                            chunk: std::sync::Arc::new(child_compiler.chunk),
+                            arity: 0,
+                        };
+                        let constant_idx = self.chunk.add_constant(func_val);
+                        self.chunk.write(OpCode::Constant(constant_idx), expr.span.line);
+                    }
+                    self.chunk.write(OpCode::RunParallel(items.len()), expr.span.line);
+                } else {
+                    self.compile_expression(expr_in)?;
+                    self.chunk.write(OpCode::Await, expr.span.line);
+                }
             }
             ExpressionNode::StringInterpolation(parts) => {
                 for part in parts {
