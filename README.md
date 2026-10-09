@@ -25,19 +25,19 @@ Novo is statically typed with full type inference: no annotations are
 required, every program is checked before it runs, and errors point at the
 exact source with a suggested fix. Functions are generic by default.
 
-Functions that work on numbers compile to machine code with
-[Cranelift](https://cranelift.dev) the first time they are called;
-everything else runs on the interpreter.
+Every function compiles to machine code with [Cranelift](https://cranelift.dev)
+the first time it is called. Numbers stay in registers; strings, lists, maps
+and objects are handled by a runtime shared with the reference interpreter,
+so both behave identically.
 
 | Benchmark (`benches/`) | Rust `-O` | Novo | CPython 3.13 |
 |------------------------|----------:|-----:|-------------:|
 | `fib(32)`              | 0.013 s   | 0.026 s | 0.322 s |
 | nested integer loops   | 0.100 s   | 0.123 s | 1.585 s |
 | Mandelbrot 600×600     | 0.090 s   | 0.101 s | 3.445 s |
+| map and list updates   |           | 0.30 s  | 0.45 s  |
 
-> **Status:** early development. Native code currently covers functions
-> whose values are all `Int`, `Float`, `Bool` or `None`; lists, strings and
-> classes are next. See the [roadmap](#roadmap).
+> **Status:** early development. See the [roadmap](#roadmap).
 
 ## Building
 
@@ -180,10 +180,13 @@ source ──► lexer/parser ──► type checker ──► typed HIR ──�
   `together` and parallel queries run on OS threads.
 - **`src/native`**: a JIT built on Cranelift. Each call site records the
   concrete types it instantiates a generic function with, so `fib(n)` called
-  with an `Int` compiles to an `Int`-only function. Compiled code checks
-  overflow, division by zero and recursion depth, and reports errors exactly
-  as the interpreter does. Set `NOVO_NATIVE_LOG=1` to see what compiles and
-  why anything does not.
+  with an `Int` compiles to an `Int`-only function. `Int`, `Float` and `Bool`
+  live in registers; other values live in slots of the native frame and are
+  operated on by runtime helpers that reuse the interpreter's code. Top-level
+  variables that no function touches are kept in registers too. Compiled code
+  checks overflow, division by zero and recursion depth, and reports errors
+  exactly as the interpreter does. Set `NOVO_NATIVE_LOG=1` to see what
+  compiles.
 - **`src/diagnostic.rs`**: error rendering with source snippets, labels and
   help text, plus JSON output.
 
@@ -202,8 +205,8 @@ errors (`# expect-error: ...`) and required features
 
 ## Roadmap
 
-1. **More native code.** Lists, strings, classes and closures in compiled
-   functions, cheaper calls, and ahead-of-time executables.
+1. **Faster native code.** Closures and parallel blocks in compiled code,
+   unboxed lists of numbers, inlining, and ahead-of-time executables.
 2. **Shapes in types.** Catch tensor dimension mismatches at check time.
 3. **Data and models.** Data loading, batching, reusable layers, and
    running pretrained models such as GPT-2 from their published weights.
