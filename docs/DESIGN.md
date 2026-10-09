@@ -41,6 +41,7 @@ before it runs.
 - Mixing `Int` and `Float` in an operator produces a `Float`.
 - Dividing by zero, with `/`, `//` or `%`, is a run-time error.
 - `Int ** Int` is an `Int`; a negative exponent is a run-time error.
+- `round` rounds halves to even, like Python: `round(2.5)` is `2`.
 
 ## Conditions and operators
 

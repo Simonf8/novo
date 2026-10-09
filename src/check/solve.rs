@@ -325,7 +325,7 @@ impl<'s> Checker<'s> {
                 if let Some((_, fid)) = class.methods.iter().find(|(m, _)| m == name) {
                     let fid = *fid;
                     let scheme = self.func_scheme(fid);
-                    let fty = self.instantiate(&scheme);
+                    let (fty, _) = self.instantiate(&scheme);
                     let Ty::Func(params, ret) = fty else { unreachable!("methods have function types") };
                     let required = 1 + self.funcs[fid.0 as usize].params.iter().filter(|p| p.default.is_none()).count();
                     if args.len() + 1 < required || args.len() + 1 > params.len() {

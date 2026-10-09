@@ -359,6 +359,7 @@ impl<'s> Checker<'s> {
         self.deferred.extend(ctx.pending);
         self.funcs[init.0 as usize].hir = Some(hir::Func {
             name: "<module>".into(),
+            generics: Vec::new(),
             params: 0,
             defaults: Vec::new(),
             captures: Vec::new(),
@@ -442,6 +443,7 @@ impl<'s> Checker<'s> {
         let defaults = self.funcs[id.0 as usize].params.iter().map(|p| p.default.clone()).collect();
         self.funcs[id.0 as usize].hir = Some(hir::Func {
             name: self.funcs[id.0 as usize].name.clone(),
+            generics: scheme.vars.clone(),
             params: nparams,
             defaults,
             captures: Vec::new(),
@@ -545,16 +547,19 @@ impl<'s> Checker<'s> {
         Scheme { vars, ty: self.infer.zonk(ty), constraints: kept }
     }
 
-    fn instantiate(&mut self, scheme: &Scheme) -> Ty {
+    /// Instantiates a scheme with fresh variables, returning its type and the types
+    /// chosen for its quantified variables.
+    fn instantiate(&mut self, scheme: &Scheme) -> (Ty, Vec<Ty>) {
         if scheme.vars.is_empty() {
-            return scheme.ty.clone();
+            return (scheme.ty.clone(), Vec::new());
         }
         let map: Vec<(u32, Ty)> = scheme.vars.iter().map(|v| (*v, self.infer.fresh())).collect();
         for c in &scheme.constraints {
             let c = c.substitute(&self.infer, &map);
             self.add_constraint(c);
         }
-        self.infer.substitute(&scheme.ty, &map)
+        let inst = map.iter().map(|(_, t)| t.clone()).collect();
+        (self.infer.substitute(&scheme.ty, &map), inst)
     }
 
     // ---- names ---------------------------------------------------------------------------
@@ -681,6 +686,8 @@ impl<'s> Checker<'s> {
         }
 
         let infer = &self.infer;
+        let generics: Vec<Vec<u32>> = self.funcs.iter().map(|f| f.hir.as_ref().map(|h| h.generics.clone()).unwrap_or_default()).collect();
+        let z = Zonk { infer, generics: &generics };
         let mut funcs = Vec::with_capacity(self.funcs.len());
         for slot in self.funcs {
             let mut f = slot.hir.expect("every function is checked");
@@ -688,7 +695,7 @@ impl<'s> Checker<'s> {
             for l in &mut f.locals {
                 l.ty = infer.zonk(&l.ty);
             }
-            zonk_block(infer, &mut f.body);
+            z.block(&mut f.body);
             funcs.push(f);
         }
         let classes = self
@@ -710,115 +717,138 @@ impl<'s> Checker<'s> {
     }
 }
 
-fn zonk_block(infer: &Infer, block: &mut hir::Block) {
-    for stmt in block {
-        zonk_stmt(infer, stmt);
-    }
+/// Resolves the types left in the HIR once checking is complete. A call that
+/// recorded no instantiation of a generic function is a recursive call made
+/// before the function was generalized, so it uses the function's own variables.
+struct Zonk<'a> {
+    infer: &'a Infer,
+    generics: &'a [Vec<u32>],
 }
 
-fn zonk_place(infer: &Infer, place: &mut hir::Place) {
-    match place {
-        hir::Place::Field { target, .. } => zonk_expr(infer, target),
-        hir::Place::Index { target, index } => {
-            zonk_expr(infer, target);
-            zonk_expr(infer, index);
+impl Zonk<'_> {
+    fn block(&self, block: &mut hir::Block) {
+        for stmt in block {
+            self.stmt(stmt);
         }
-        hir::Place::Local(_) | hir::Place::Global(_) => {}
     }
-}
 
-fn zonk_stmt(infer: &Infer, stmt: &mut hir::Stmt) {
-    use hir::StmtKind::*;
-    match &mut stmt.kind {
-        Expr(e) => zonk_expr(infer, e),
-        Assign { place, value, .. } => {
-            zonk_place(infer, place);
-            zonk_expr(infer, value);
+    fn inst(&self, func: FuncId, inst: &mut Vec<Ty>) {
+        let generics = &self.generics[func.0 as usize];
+        if inst.is_empty() && !generics.is_empty() {
+            *inst = generics.iter().map(|v| Ty::Var(*v)).collect();
         }
-        Show(es) => es.iter_mut().for_each(|e| zonk_expr(infer, e)),
-        If { branches, otherwise } => {
-            for (c, b) in branches {
-                zonk_expr(infer, c);
-                zonk_block(infer, b);
+        for t in inst {
+            *t = self.infer.zonk(t);
+        }
+    }
+
+    fn place(&self, place: &mut hir::Place) {
+        match place {
+            hir::Place::Field { target, .. } => self.expr(target),
+            hir::Place::Index { target, index } => {
+                self.expr(target);
+                self.expr(index);
             }
-            zonk_block(infer, otherwise);
+            hir::Place::Local(_) | hir::Place::Global(_) => {}
         }
-        While { cond, body } => {
-            zonk_expr(infer, cond);
-            zonk_block(infer, body);
-        }
-        For { var, iter, body } => {
-            zonk_place(infer, var);
-            zonk_expr(infer, iter);
-            zonk_block(infer, body);
-        }
-        Repeat { count, body, .. } => {
-            zonk_expr(infer, count);
-            zonk_block(infer, body);
-        }
-        Return(Some(e)) => zonk_expr(infer, e),
-        Try { body, var, handler } => {
-            zonk_block(infer, body);
-            zonk_place(infer, var);
-            zonk_block(infer, handler);
-        }
-        Return(None) | Break | Continue | InitModule(_) => {}
     }
-}
 
-fn zonk_expr(infer: &Infer, expr: &mut hir::Expr) {
-    use hir::ExprKind::*;
-    expr.ty = infer.zonk(&expr.ty);
-    match &mut expr.kind {
-        FStr(parts) => {
-            for p in parts {
-                if let hir::FStrPart::Expr { expr, .. } = p {
-                    zonk_expr(infer, expr);
+    fn stmt(&self, stmt: &mut hir::Stmt) {
+        use hir::StmtKind::*;
+        match &mut stmt.kind {
+            Expr(e) => self.expr(e),
+            Assign { place, value, .. } => {
+                self.place(place);
+                self.expr(value);
+            }
+            Show(es) => es.iter_mut().for_each(|e| self.expr(e)),
+            If { branches, otherwise } => {
+                for (c, b) in branches {
+                    self.expr(c);
+                    self.block(b);
+                }
+                self.block(otherwise);
+            }
+            While { cond, body } => {
+                self.expr(cond);
+                self.block(body);
+            }
+            For { var, iter, body } => {
+                self.place(var);
+                self.expr(iter);
+                self.block(body);
+            }
+            Repeat { count, body, .. } => {
+                self.expr(count);
+                self.block(body);
+            }
+            Return(Some(e)) => self.expr(e),
+            Try { body, var, handler } => {
+                self.block(body);
+                self.place(var);
+                self.block(handler);
+            }
+            Return(None) | Break | Continue | InitModule(_) => {}
+        }
+    }
+
+    fn expr(&self, expr: &mut hir::Expr) {
+        use hir::ExprKind::*;
+        expr.ty = self.infer.zonk(&expr.ty);
+        match &mut expr.kind {
+            FStr(parts) => {
+                for p in parts {
+                    if let hir::FStrPart::Expr { expr, .. } = p {
+                        self.expr(expr);
+                    }
                 }
             }
-        }
-        List(es) | RunParallel(es) => es.iter_mut().for_each(|e| zonk_expr(infer, e)),
-        Map(entries) => {
-            for (k, v) in entries {
-                zonk_expr(infer, k);
-                zonk_expr(infer, v);
+            List(es) | RunParallel(es) => es.iter_mut().for_each(|e| self.expr(e)),
+            Map(entries) => {
+                for (k, v) in entries {
+                    self.expr(k);
+                    self.expr(v);
+                }
             }
-        }
-        Closure { captures: args, .. } | CallFunc { args, .. } | CallBuiltin { args, .. } | New { args, .. } => {
-            args.iter_mut().for_each(|e| zonk_expr(infer, e))
-        }
-        Unary { operand: e, .. } | Field { target: e, .. } | Together(e) | Await(e) | IntToFloat(e) => zonk_expr(infer, e),
-        Binary { lhs, rhs, .. } => {
-            zonk_expr(infer, lhs);
-            zonk_expr(infer, rhs);
-        }
-        Call { callee, args } => {
-            zonk_expr(infer, callee);
-            args.iter_mut().for_each(|e| zonk_expr(infer, e));
-        }
-        MethodCall { recv, args, .. } => {
-            zonk_expr(infer, recv);
-            args.iter_mut().for_each(|e| zonk_expr(infer, e));
-        }
-        Index { target, index } => {
-            zonk_expr(infer, target);
-            zonk_expr(infer, index);
-        }
-        Slice { target, start, end } => {
-            zonk_expr(infer, target);
-            if let Some(s) = start {
-                zonk_expr(infer, s);
+            CallFunc { func, args, inst, .. } => {
+                self.inst(*func, inst);
+                args.iter_mut().for_each(|e| self.expr(e));
             }
-            if let Some(e) = end {
-                zonk_expr(infer, e);
+            Func { func, inst } => self.inst(*func, inst),
+            Closure { captures: args, .. } | CallBuiltin { args, .. } | New { args, .. } => args.iter_mut().for_each(|e| self.expr(e)),
+            Unary { operand: e, .. } | Field { target: e, .. } | Together(e) | Await(e) | IntToFloat(e) => self.expr(e),
+            Binary { lhs, rhs, .. } => {
+                self.expr(lhs);
+                self.expr(rhs);
             }
-        }
-        Query { target, body, .. } => {
-            zonk_expr(infer, target);
-            if let Some(b) = body {
-                zonk_expr(infer, b);
+            Call { callee, args } => {
+                self.expr(callee);
+                args.iter_mut().for_each(|e| self.expr(e));
             }
+            MethodCall { recv, args, .. } => {
+                self.expr(recv);
+                args.iter_mut().for_each(|e| self.expr(e));
+            }
+            Index { target, index } => {
+                self.expr(target);
+                self.expr(index);
+            }
+            Slice { target, start, end } => {
+                self.expr(target);
+                if let Some(s) = start {
+                    self.expr(s);
+                }
+                if let Some(e) = end {
+                    self.expr(e);
+                }
+            }
+            Query { target, body, .. } => {
+                self.expr(target);
+                if let Some(b) = body {
+                    self.expr(b);
+                }
+            }
+            Int(_) | Float(_) | Bool(_) | Str(_) | None | Local(_) | Global(_) | Recurse | PyImport(_) => {}
         }
-        Int(_) | Float(_) | Bool(_) | Str(_) | None | Local(_) | Global(_) | Func(_) | Recurse | PyImport(_) => {}
     }
 }

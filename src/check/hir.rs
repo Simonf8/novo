@@ -48,6 +48,8 @@ pub struct Local {
 #[derive(Debug)]
 pub struct Func {
     pub name: String,
+    /// Type variables the function is generic over; calls record a type for each.
+    pub generics: Vec<u32>,
     /// The first `params` locals hold the arguments.
     pub params: usize,
     /// Default values for trailing parameters, used when a call leaves them out.
@@ -138,8 +140,8 @@ pub enum ExprKind {
     Map(Vec<(Expr, Expr)>),
     Local(LocalId),
     Global(GlobalId),
-    /// A named function used as a value.
-    Func(FuncId),
+    /// A named function used as a value, with the types chosen for its generics.
+    Func { func: FuncId, inst: Vec<Ty> },
     /// A closure over the current values of `captures`.
     Closure { func: FuncId, captures: Vec<Expr> },
     /// The closure currently executing, used by nested functions to recurse.
@@ -149,7 +151,7 @@ pub enum ExprKind {
     /// Calls a function value.
     Call { callee: Box<Expr>, args: Vec<Expr> },
     /// Calls a known function directly; for methods the receiver is the first argument.
-    CallFunc { func: FuncId, args: Vec<Expr> },
+    CallFunc { func: FuncId, args: Vec<Expr>, inst: Vec<Ty>, native: NativeSlot },
     CallBuiltin { builtin: Builtin, args: Vec<Expr> },
     /// A method resolved from the receiver's run-time value.
     MethodCall { recv: Box<Expr>, name: String, args: Vec<Expr> },
@@ -165,3 +167,7 @@ pub enum ExprKind {
     IntToFloat(Box<Expr>),
     PyImport(String),
 }
+
+/// Per-call-site cache of the native code compiled for the callee, filled on first use.
+#[derive(Debug, Clone, Default)]
+pub struct NativeSlot(pub std::sync::Arc<std::sync::OnceLock<Option<crate::native::Entry>>>);

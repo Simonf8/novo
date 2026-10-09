@@ -1,6 +1,7 @@
 mod check;
 mod diagnostic;
 mod eval;
+mod native;
 mod python;
 mod source;
 mod syntax;
@@ -17,6 +18,7 @@ Novo: a fast, statically typed language that reads like Python.
 
 Usage:
     novo run <file.nv> [args...]     Check and run a program
+             [--interp]              (without compiling anything to native code)
     novo check <file.nv> [--json]    Type-check without running
     novo test [path]                 Run test_*.nv and *_test.nv files
     novo bench <file.nv> [-n N]      Time repeated runs of a program
@@ -72,6 +74,7 @@ fn cmd_run(args: &[String]) -> i32 {
         Err(code) => return code,
     };
     let program_args: Vec<String> = args.iter().skip_while(|a| *a != file).cloned().collect();
+    let native = !args.iter().take_while(|a| *a != file).any(|a| a == "--interp");
     let mut sources = SourceMap::default();
     let program = match check::check(&mut sources, Path::new(file)) {
         Ok(p) => p,
@@ -80,7 +83,7 @@ fn cmd_run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    match eval::run(program, program_args) {
+    match eval::run(program, program_args, native) {
         Ok(()) => 0,
         Err(e) => {
             render(&sources, &[Diagnostic::error(e.span, e.message)]);

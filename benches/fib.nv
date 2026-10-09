@@ -1,6 +1,6 @@
-function fib(n):
+function fib(n: Int) -> Int:
     if n < 2:
         return n
     return fib(n - 1) + fib(n - 2)
 
-show fib(30)
+show fib(32)

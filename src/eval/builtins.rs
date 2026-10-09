@@ -73,7 +73,10 @@ impl Interp {
                 let mut i = start;
                 while (step > 0 && i < end) || (step < 0 && i > end) {
                     items.push(Value::Int(i));
-                    i += step;
+                    match i.checked_add(step) {
+                        Some(next) => i = next,
+                        None => break,
+                    }
                 }
                 Value::list(items)
             }
@@ -118,10 +121,10 @@ impl Interp {
                 extreme(&items, b == Builtin::Max)?
             }
             Builtin::Round => match args.len() {
-                1 => Value::Int(f64::round(float(&args[0])?) as i64),
+                1 => Value::Int(float(&args[0])?.round_ties_even() as i64),
                 _ => {
                     let scale = 10f64.powi(int(&args[1])? as i32);
-                    Value::Float(f64::round(float(&args[0])? * scale) / scale)
+                    Value::Float((float(&args[0])? * scale).round_ties_even() / scale)
                 }
             },
             Builtin::Assert => {

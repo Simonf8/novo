@@ -216,8 +216,8 @@ impl<'s> Checker<'s> {
             }
             Item::Func(f) => {
                 let scheme = self.func_scheme(f);
-                let ty = self.instantiate(&scheme);
-                expr(ExprKind::Func(f), ty, span)
+                let (ty, inst) = self.instantiate(&scheme);
+                expr(ExprKind::Func { func: f, inst }, ty, span)
             }
             Item::Class(_) => {
                 self.error(Diagnostic::error(span, format!("class `{name}` cannot be used as a value")).with_help(format!("create an instance with `{name}(...)`")));
@@ -409,7 +409,7 @@ impl<'s> Checker<'s> {
 
     pub(super) fn call_func(&mut self, f: FuncId, args: Vec<Arg>, recv: Option<hir::Expr>, span: Span) -> hir::Expr {
         let scheme = self.func_scheme(f);
-        let fty = self.instantiate(&scheme);
+        let (fty, inst) = self.instantiate(&scheme);
         let Ty::Func(param_tys, ret) = fty else { unreachable!("functions have function types") };
         let params: Vec<(String, bool)> = self.funcs[f.0 as usize].params.iter().map(|p| (p.name.clone(), p.default.is_some())).collect();
         let name = self.funcs[f.0 as usize].name.clone();
@@ -427,7 +427,7 @@ impl<'s> Checker<'s> {
             };
             out.push(arg);
         }
-        expr(ExprKind::CallFunc { func: f, args: out }, *ret, span)
+        expr(ExprKind::CallFunc { func: f, args: out, inst, native: Default::default() }, *ret, span)
     }
 
     fn construct(&mut self, c: ClassId, args: Vec<Arg>, span: Span) -> hir::Expr {
@@ -623,6 +623,7 @@ impl<'s> Checker<'s> {
         slot.state = FnState::Done(Scheme { vars: vec![], ty: ty.clone(), constraints: vec![] });
         slot.hir = Some(hir::Func {
             name: name.to_string(),
+            generics: Vec::new(),
             params,
             defaults: Vec::new(),
             captures: ctx.captures.iter().map(|(inner, _)| *inner).collect(),

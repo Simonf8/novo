@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Engines and the extra `novo run` flags that select them.
-const ENGINES: &[(&str, &[&str])] = &[("interp", &[])];
+const ENGINES: &[(&str, &[&str])] = &[("native", &[]), ("interp", &["--interp"])];
 
 #[derive(Default)]
 struct Directives {

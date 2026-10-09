@@ -2,10 +2,16 @@
 name = "novo"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
 
 [features]
 python = ["dep:pyo3"]
 
 [dependencies]
+cranelift-codegen = "0.136.2"
+cranelift-frontend = "0.136.2"
+cranelift-jit = "0.136.2"
+cranelift-module = "0.136.2"
+cranelift-native = "0.136.2"
 parking_lot = "0.12.5"
 pyo3 = { version = "=0.20.0", features = ["auto-initialize"], optional = true }

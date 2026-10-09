@@ -51,19 +51,24 @@ pub struct Interp {
     initialized: Arc<Mutex<Vec<bool>>>,
     out: Arc<Mutex<BufWriter<Stdout>>>,
     args: Arc<Vec<String>>,
+    native: Option<Arc<crate::native::Native>>,
 }
 
-/// Runs a checked program on a thread with a large stack.
-pub fn run(prog: Program, args: Vec<String>) -> Result<(), RtError> {
+/// Runs a checked program on a thread with a large stack, compiling eligible
+/// functions to native code when `native` is set.
+pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError> {
     let globals = (0..prog.globals.len()).map(|_| RwLock::new(Value::None)).collect();
     let initialized = vec![false; prog.modules.len()];
     let entry = prog.entry;
+    let prog = Arc::new(prog);
+    let native = if native { crate::native::Native::new(prog.clone()).map(Arc::new) } else { None };
     let interp = Interp {
-        prog: Arc::new(prog),
+        prog,
         globals: Arc::new(globals),
         initialized: Arc::new(Mutex::new(initialized)),
         out: Arc::new(Mutex::new(BufWriter::new(std::io::stdout()))),
         args: Arc::new(args),
+        native,
     };
     let handle = std::thread::Builder::new()
         .stack_size(MAIN_STACK)
@@ -153,6 +158,28 @@ impl Interp {
             Flow::Return(v) => Ok(v),
             _ => Ok(Value::None),
         }
+    }
+
+    fn call_native(&self, entry: &crate::native::Entry, args: Vec<Value>, func: FuncId, span: Span) -> Eval {
+        use crate::native::Scalar;
+        let mut words = Vec::with_capacity(args.len());
+        for (v, p) in args.iter().zip(&entry.params) {
+            words.push(match (v, p) {
+                (Value::Int(i), Scalar::Int) => *i as u64,
+                (Value::Float(f), Scalar::Float) => f.to_bits(),
+                (Value::Bool(b), Scalar::Bool) => u64::from(*b),
+                (Value::None, Scalar::None) => 0,
+                _ => return self.call_func(func, args, None, span),
+            });
+        }
+        let depth = DEPTH.with(Cell::get);
+        let word = entry.call(&words, depth, &self.out).map_err(|(message, span)| RtError { message, span })?;
+        Ok(match entry.ret {
+            Scalar::Int => Value::Int(word as i64),
+            Scalar::Float => Value::Float(f64::from_bits(word)),
+            Scalar::Bool => Value::Bool(word != 0),
+            Scalar::None => Value::None,
+        })
     }
 
     fn call_value(&self, callee: &Value, args: Vec<Value>, span: Span) -> Eval {
@@ -446,7 +473,7 @@ impl Interp {
             }
             ExprKind::Local(l) => frame.locals[l.0 as usize].clone(),
             ExprKind::Global(g) => self.globals[g.0 as usize].read().clone(),
-            ExprKind::Func(f) => Value::Func(Arc::new(Closure { func: *f, captures: Vec::new() })),
+            ExprKind::Func { func, .. } => Value::Func(Arc::new(Closure { func: *func, captures: Vec::new() })),
             ExprKind::Closure { func, captures } => Value::Func(Arc::new(Closure { func: *func, captures: self.eval_all(captures, frame)? })),
             ExprKind::Recurse => match &frame.closure {
                 Some(c) => Value::Func(c.clone()),
@@ -474,9 +501,13 @@ impl Interp {
                 let args = self.eval_all(args, frame)?;
                 self.call_value(&f, args, span)?
             }
-            ExprKind::CallFunc { func, args } => {
+            ExprKind::CallFunc { func, args, inst, native } => {
                 let args = self.eval_all(args, frame)?;
-                self.call_func(*func, args, None, span)?
+                let entry = self.native.as_ref().and_then(|n| native.0.get_or_init(|| n.entry(*func, inst)).as_ref());
+                match entry {
+                    Some(entry) => self.call_native(entry, args, *func, span)?,
+                    None => self.call_func(*func, args, None, span)?,
+                }
             }
             ExprKind::CallBuiltin { builtin, args } => {
                 let args = self.eval_all(args, frame)?;
