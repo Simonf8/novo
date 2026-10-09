@@ -111,6 +111,30 @@ pub enum BinOp {
 }
 
 impl BinOp {
+    pub const ALL: &[BinOp] = &[
+        BinOp::Add,
+        BinOp::Sub,
+        BinOp::Mul,
+        BinOp::Div,
+        BinOp::FloorDiv,
+        BinOp::Mod,
+        BinOp::Pow,
+        BinOp::MatMul,
+        BinOp::Eq,
+        BinOp::Ne,
+        BinOp::Lt,
+        BinOp::Le,
+        BinOp::Gt,
+        BinOp::Ge,
+        BinOp::And,
+        BinOp::Or,
+        BinOp::In,
+    ];
+
+    pub fn index(self) -> u32 {
+        BinOp::ALL.iter().position(|b| *b == self).expect("listed in ALL") as u32
+    }
+
     pub fn symbol(self) -> &'static str {
         match self {
             BinOp::Add => "+",

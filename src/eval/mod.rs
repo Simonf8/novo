@@ -53,9 +53,15 @@ enum Flow {
 }
 
 #[derive(Clone)]
-struct Frame {
+pub(crate) struct Frame {
     locals: Vec<Value>,
     closure: Option<Arc<Closure>>,
+}
+
+impl Frame {
+    pub(crate) fn empty() -> Frame {
+        Frame { locals: Vec::new(), closure: None }
+    }
 }
 
 #[derive(Clone)]
@@ -112,6 +118,27 @@ impl<T> At<T> for Result<T, String> {
 }
 
 impl Interp {
+    pub(crate) fn global(&self, g: hir::GlobalId) -> Value {
+        self.globals[g.0 as usize].read().clone()
+    }
+
+    pub(crate) fn set_global(&self, g: hir::GlobalId, v: Value) {
+        *self.globals[g.0 as usize].write() = v;
+    }
+
+    pub(crate) fn output(&self) -> &Mutex<BufWriter<Stdout>> {
+        &self.out
+    }
+
+    /// Runs `f` with the interpreter's recursion depth set to `depth`, as when
+    /// compiled code calls back into the interpreter.
+    pub(crate) fn at_depth<T>(depth: usize, f: impl FnOnce() -> T) -> T {
+        let saved = DEPTH.with(|d| d.replace(depth));
+        let out = f();
+        DEPTH.with(|d| d.set(saved));
+        out
+    }
+
     pub(crate) fn display(&self, v: &Value) -> String {
         v.display(&self.prog)
     }
@@ -124,7 +151,7 @@ impl Interp {
         let _ = self.out.lock().flush();
     }
 
-    fn init_module(&self, m: ModuleId, span: Span) -> Result<(), RtError> {
+    pub(crate) fn init_module(&self, m: ModuleId, span: Span) -> Result<(), RtError> {
         {
             let mut done = self.initialized.lock();
             if done[m.0 as usize] {
@@ -133,12 +160,15 @@ impl Interp {
             done[m.0 as usize] = true;
         }
         let init = self.prog.modules[m.0 as usize].init;
-        self.call_func(init, Vec::new(), None, span).map(|_| ())
+        match self.native.as_ref().and_then(|n| n.entry(init, &[])) {
+            Some(entry) => entry.call(self, &[], DEPTH.with(Cell::get), span).map(|_| ()),
+            None => self.call_func(init, Vec::new(), None, span).map(|_| ()),
+        }
     }
 
     /// Calls a function; `args` becomes its locals, so callers may pass a vector
     /// with spare capacity to avoid reallocating.
-    fn call_func(&self, fid: FuncId, args: Vec<Value>, closure: Option<Arc<Closure>>, span: Span) -> Eval {
+    pub(crate) fn call_func(&self, fid: FuncId, args: Vec<Value>, closure: Option<Arc<Closure>>, span: Span) -> Eval {
         let f = &self.prog.funcs[fid.0 as usize];
         let depth = DEPTH.with(|d| {
             d.set(d.get() + 1);
@@ -179,26 +209,9 @@ impl Interp {
     }
 
     fn call_native(&self, entry: &crate::native::Entry, args: Vec<Value>, func: FuncId, span: Span) -> Eval {
-        use crate::native::Scalar;
-        let mut words = Vec::with_capacity(args.len());
-        for (v, p) in args.iter().zip(&entry.params) {
-            words.push(match (v, p) {
-                (Value::Int(i), Scalar::Int) => *i as u64,
-                (Value::Float(f), Scalar::Float) => f.to_bits(),
-                (Value::Bool(b), Scalar::Bool) => u64::from(*b),
-                (Value::None, Scalar::None) => 0,
-                _ => return self.call_func(func, args, None, span),
-            });
-        }
         let depth = DEPTH.with(Cell::get);
         let name = &self.prog.funcs[func.0 as usize].name;
-        let word = entry.call(&words, depth, &self.out).map_err(|(message, inner)| RtError { message, span: inner, trace: Vec::new() }.through(name, span))?;
-        Ok(match entry.ret {
-            Scalar::Int => Value::Int(word as i64),
-            Scalar::Float => Value::Float(f64::from_bits(word)),
-            Scalar::Bool => Value::Bool(word != 0),
-            Scalar::None => Value::None,
-        })
+        entry.call(self, &args, depth, span).map_err(|e| e.through(name, span))
     }
 
     pub(crate) fn call_value(&self, callee: &Value, args: Vec<Value>, span: Span) -> Eval {
@@ -345,7 +358,7 @@ impl Interp {
         Ok(Flow::Next)
     }
 
-    fn items(&self, v: &Value) -> Result<Vec<Value>, String> {
+    pub(crate) fn items(&self, v: &Value) -> Result<Vec<Value>, String> {
         match v {
             Value::List(l) => Ok(l.read().clone()),
             Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string().into())).collect()),
@@ -406,7 +419,7 @@ impl Interp {
 
     // ---- element access ------------------------------------------------------------------
 
-    fn get_field(&self, obj: &Value, name: &str) -> Result<Value, String> {
+    pub(crate) fn get_field(&self, obj: &Value, name: &str) -> Result<Value, String> {
         match obj {
             Value::Instance(inst) => {
                 let class = &self.prog.classes[inst.class.0 as usize];
@@ -419,7 +432,7 @@ impl Interp {
         }
     }
 
-    fn set_field(&self, obj: &Value, name: &str, v: Value) -> Result<(), String> {
+    pub(crate) fn set_field(&self, obj: &Value, name: &str, v: Value) -> Result<(), String> {
         match obj {
             Value::Instance(inst) => {
                 let class = &self.prog.classes[inst.class.0 as usize];
@@ -436,7 +449,7 @@ impl Interp {
         }
     }
 
-    fn get_index(&self, obj: &Value, idx: &Value) -> Result<Value, String> {
+    pub(crate) fn get_index(&self, obj: &Value, idx: &Value) -> Result<Value, String> {
         match (obj, idx) {
             (Value::List(l), Value::Int(i)) => {
                 let l = l.read();
@@ -458,7 +471,7 @@ impl Interp {
         }
     }
 
-    fn set_index(&self, obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
+    pub(crate) fn set_index(&self, obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
         match (obj, idx) {
             (Value::List(l), Value::Int(i)) => {
                 let mut l = l.write();
@@ -491,7 +504,7 @@ impl Interp {
         exprs.iter().map(|e| self.eval(e, frame)).collect()
     }
 
-    fn eval(&self, e: &hir::Expr, frame: &mut Frame) -> Eval {
+    pub(crate) fn eval(&self, e: &hir::Expr, frame: &mut Frame) -> Eval {
         let span = e.span;
         Ok(match &e.kind {
             ExprKind::Int(i) => Value::Int(*i),
@@ -542,10 +555,7 @@ impl Interp {
                         Value::Bool(b) => Value::Bool(!b),
                         other => return fail(format!("`not` needs a Bool, found a {}", other.type_name()), span),
                     },
-                    UnaryOp::Neg => match &v {
-                        Value::Tensor(t) => tensor::negate(t).at(span)?,
-                        _ => ops::negate(&v).at(span)?,
-                    },
+                    UnaryOp::Neg => negate_value(&v).at(span)?,
                 }
             }
             ExprKind::Binary { op: BinOp::And, lhs, rhs } => Value::Bool(self.cond(lhs, frame)? && self.cond(rhs, frame)?),
@@ -606,38 +616,15 @@ impl Interp {
                     }
                 };
                 let (s, t) = (bound(start, frame)?, bound(end, frame)?);
-                match obj {
-                    Value::List(l) => {
-                        let l = l.read();
-                        let (a, b) = builtins::bounds(s, t, l.len());
-                        Value::list(l[a..b].to_vec())
-                    }
-                    Value::Str(text) => {
-                        let chars: Vec<char> = text.chars().collect();
-                        let (a, b) = builtins::bounds(s, t, chars.len());
-                        Value::Str(chars[a..b].iter().collect::<String>().into())
-                    }
-                    Value::Tensor(tensor) => tensor::slice(&tensor, s, t).at(span)?,
-                    other => return fail(format!("cannot slice a {}", other.type_name()), span),
-                }
+                slice_value(&obj, s, t).at(span)?
             }
             ExprKind::Query { op, target, item, body, parallel } => {
                 let items = self.items(&self.eval(target, frame)?).at(target.span)?;
                 self.query(*op, items, *item, body.as_deref(), *parallel, &e.ty, frame, span)?
             }
             ExprKind::Together(closure) => {
-                let Value::Func(c) = self.eval(closure, frame)? else { unreachable!("together wraps a closure") };
-                let handle = Arc::new(TaskHandle::default());
-                let (interp, task) = (self.clone(), handle.clone());
-                std::thread::Builder::new()
-                    .stack_size(TASK_STACK)
-                    .spawn(move || {
-                        let result = interp.call_func(c.func, Vec::new(), Some(c.clone()), span);
-                        task.complete(result.map_err(|e| e.message));
-                    })
-                    .map_err(|e| e.to_string())
-                    .at(span)?;
-                Value::Task(handle)
+                let closure = self.eval(closure, frame)?;
+                self.spawn_task(&closure, span)?
             }
             ExprKind::Await(task) => match self.eval(task, frame)? {
                 Value::Task(t) => t.wait().at(span)?,
@@ -652,7 +639,24 @@ impl Interp {
         })
     }
 
-    fn call_method(&self, obj: &Value, name: &str, args: Vec<Value>, span: Span) -> Eval {
+    /// Runs a zero-argument closure on its own thread.
+    pub(crate) fn spawn_task(&self, closure: &Value, span: Span) -> Eval {
+        let Value::Func(c) = closure else { return fail("`together` needs a function", span) };
+        let c = c.clone();
+        let handle = Arc::new(TaskHandle::default());
+        let (interp, task) = (self.clone(), handle.clone());
+        std::thread::Builder::new()
+            .stack_size(TASK_STACK)
+            .spawn(move || {
+                let result = interp.call_func(c.func, Vec::new(), Some(c.clone()), span);
+                task.complete(result.map_err(|e| e.message));
+            })
+            .map_err(|e| e.to_string())
+            .at(span)?;
+        Ok(Value::Task(handle))
+    }
+
+    pub(crate) fn call_method(&self, obj: &Value, name: &str, args: Vec<Value>, span: Span) -> Eval {
         match obj {
             Value::Instance(inst) => {
                 let class = &self.prog.classes[inst.class.0 as usize];
@@ -776,6 +780,30 @@ impl Interp {
 
 fn is_map_method(name: &str) -> bool {
     matches!(name, "length" | "len" | "has" | "contains" | "keys" | "values" | "items" | "get" | "remove" | "clear" | "copy" | "clone" | "is_empty")
+}
+
+pub(crate) fn slice_value(obj: &Value, s: Option<i64>, t: Option<i64>) -> Result<Value, String> {
+    match obj {
+        Value::List(l) => {
+            let l = l.read();
+            let (a, b) = builtins::bounds(s, t, l.len());
+            Ok(Value::list(l[a..b].to_vec()))
+        }
+        Value::Str(text) => {
+            let chars: Vec<char> = text.chars().collect();
+            let (a, b) = builtins::bounds(s, t, chars.len());
+            Ok(Value::Str(chars[a..b].iter().collect::<String>().into()))
+        }
+        Value::Tensor(tensor) => tensor::slice(tensor, s, t),
+        other => Err(format!("cannot slice a {}", other.type_name())),
+    }
+}
+
+pub(crate) fn negate_value(v: &Value) -> Result<Value, String> {
+    match v {
+        Value::Tensor(t) => tensor::negate(t),
+        _ => ops::negate(v),
+    }
 }
 
 fn is_range(e: &hir::Expr) -> bool {

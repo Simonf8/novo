@@ -167,6 +167,13 @@ impl StdModule {
 }
 
 impl Builtin {
+    /// Every builtin, so compiled code can refer to one by its position.
+    pub const ALL: &[Builtin] = &[Builtin::Len, Builtin::Range, Builtin::ToStr, Builtin::ToInt, Builtin::ToFloat, Builtin::ToBool, Builtin::Abs, Builtin::Min, Builtin::Max, Builtin::Round, Builtin::Assert, Builtin::AssertEq, Builtin::Fail, Builtin::TypeOf, Builtin::Input, Builtin::Enumerate, Builtin::Zip, Builtin::Sorted, Builtin::Reversed, Builtin::Sum, Builtin::Any, Builtin::All, Builtin::Chr, Builtin::Ord, Builtin::FromBytes, Builtin::MathPi, Builtin::MathE, Builtin::MathSqrt, Builtin::MathPow, Builtin::MathFloor, Builtin::MathCeil, Builtin::MathSin, Builtin::MathCos, Builtin::MathTan, Builtin::MathLog, Builtin::MathExp, Builtin::TimeNow, Builtin::TimeNowMs, Builtin::TimeSleep, Builtin::JsonParse, Builtin::JsonStringify, Builtin::FsRead, Builtin::FsWrite, Builtin::FsAppend, Builtin::FsExists, Builtin::FsListDir, Builtin::FsDelete, Builtin::FsCreateDir, Builtin::EnvGet, Builtin::EnvSet, Builtin::EnvArgs, Builtin::NnTensor, Builtin::NnZeros, Builtin::NnOnes, Builtin::NnRandn, Builtin::NnRand, Builtin::NnArange, Builtin::NnEye, Builtin::NnParam, Builtin::NnSeed, Builtin::NnSgd, Builtin::NnAdam, Builtin::NnMse, Builtin::NnCrossEntropy, Builtin::NnStack, Builtin::NnCat, Builtin::NnTril, Builtin::NnSave, Builtin::NnLoad, Builtin::NnDevice, Builtin::RandomSeed, Builtin::RandomInt, Builtin::RandomFloat, Builtin::RandomChoice, Builtin::RandomShuffle];
+
+    pub fn index(self) -> u32 {
+        Builtin::ALL.iter().position(|b| *b == self).expect("listed in ALL") as u32
+    }
+
     pub fn global(name: &str) -> Option<Builtin> {
         use Builtin::*;
         Some(match name {

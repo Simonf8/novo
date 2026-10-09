@@ -1,14 +1,26 @@
 //! Functions compiled code calls back into, and the context it carries.
+//!
+//! Values that are not `Int`, `Float`, `Bool` or `None` live in slots of the
+//! native frame. Each slot owns a `Value`; helpers that write a slot drop what
+//! was there. Operations on such values reuse the interpreter's own code, so
+//! both engines behave identically.
 
-use crate::eval::value::format_float;
+use crate::check::builtins::Builtin;
+use crate::check::hir::{self, FuncId, GlobalId, ModuleId};
+use crate::check::types::ClassId;
+use crate::eval::value::{format_float, Closure, Dict, Instance, Key, Value};
+use crate::eval::{Interp, RtError};
 use crate::source::{FileId, Span};
+use crate::syntax::ast::BinOp;
 use cranelift_codegen::ir::{types, AbiParam, Signature};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, ModuleResult};
-use parking_lot::Mutex;
-use std::io::{BufWriter, Stdout, Write};
+use cranelift_module::{FuncId as ClifFunc, Linkage, Module, ModuleResult};
+use parking_lot::RwLock;
+use std::io::Write;
+use std::sync::Arc;
 
 pub const MAX_DEPTH: u64 = 10_000;
+pub const VALUE_SIZE: u32 = std::mem::size_of::<Value>() as u32;
 
 pub mod code {
     pub const OVERFLOW: u32 = 1;
@@ -31,62 +43,111 @@ fn message(code: u32) -> &'static str {
     }
 }
 
-/// State shared between compiled code and the runtime. Compiled code reads only
-/// `status` (offset 0) and, on entry, the starting `depth` (offset 8).
+/// State shared between compiled code and the runtime. Compiled code reads
+/// `status` (offset 0) and writes its current recursion `depth` (offset 8)
+/// before calls that may run interpreted code.
 #[repr(C)]
 pub struct Ctx {
     status: u8,
     depth: u64,
-    error: Option<(String, Span)>,
-    out: *const Mutex<BufWriter<Stdout>>,
+    interp: *const Interp,
+    error: Option<RtError>,
     line: String,
+    fstrings: Vec<String>,
 }
 
 pub const STATUS_OFFSET: i32 = 0;
 pub const DEPTH_OFFSET: i32 = 8;
 
 impl Ctx {
-    pub fn new(depth: u64, out: &Mutex<BufWriter<Stdout>>) -> Ctx {
-        Ctx { status: 0, depth, error: None, out, line: String::new() }
+    pub fn new(depth: u64, interp: &Interp) -> Ctx {
+        Ctx { status: 0, depth, interp, error: None, line: String::new(), fstrings: Vec::new() }
     }
 
-    pub fn take_error(&mut self) -> Option<(String, Span)> {
+    pub fn take_error(&mut self) -> Option<RtError> {
         self.error.take()
     }
+
+    fn interp(&self) -> &Interp {
+        // SAFETY: the interpreter outlives every call into compiled code.
+        unsafe { &*self.interp }
+    }
+
+    fn raise(&mut self, err: RtError) {
+        self.status = 1;
+        self.error = Some(err);
+    }
+
+    fn check<T>(&mut self, result: Result<T, String>, span: u64) -> Option<T> {
+        match result {
+            Ok(v) => Some(v),
+            Err(message) => {
+                self.raise(RtError { message, span: unpack(span), trace: Vec::new() });
+                None
+            }
+        }
+    }
+
+    fn check_rt<T>(&mut self, result: Result<T, RtError>) -> Option<T> {
+        match result {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.raise(e);
+                None
+            }
+        }
+    }
 }
 
-fn span(file: u32, lo: u32, hi: u32) -> Span {
-    Span { file: FileId(file), lo, hi }
+/// Packs a span into one word: 16 bits of file and 24 bits each of offsets.
+pub fn pack(span: Span) -> i64 {
+    let clamp = |x: u32| u64::from(x.min((1 << 24) - 1));
+    ((u64::from(span.file.0.min(0xFFFF)) << 48) | (clamp(span.lo) << 24) | clamp(span.hi)) as i64
 }
 
-/// # Safety
-/// `ctx` must point to the live context passed into compiled code.
-unsafe extern "C" fn novo_fail(ctx: *mut Ctx, code: u32, file: u32, lo: u32, hi: u32) {
-    let ctx = unsafe { &mut *ctx };
-    ctx.status = 1;
-    ctx.error = Some((message(code).to_string(), span(file, lo, hi)));
+fn unpack(word: u64) -> Span {
+    Span { file: FileId((word >> 48) as u32), lo: ((word >> 24) & 0xFF_FFFF) as u32, hi: (word & 0xFF_FFFF) as u32 }
 }
 
-/// # Safety
-/// `ctx` must be live and `ptr..ptr+len` must be valid UTF-8 owned by the program.
-unsafe extern "C" fn novo_fail_msg(ctx: *mut Ctx, ptr: *const u8, len: usize, file: u32, lo: u32, hi: u32) {
-    let ctx = unsafe { &mut *ctx };
-    let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
-    ctx.status = 1;
-    ctx.error = Some((text.to_string(), span(file, lo, hi)));
+// The helpers below are called only by generated code, which passes a live
+// context, valid slot pointers and in-range counts.
+
+unsafe fn ctx<'a>(c: *mut Ctx) -> &'a mut Ctx {
+    unsafe { &mut *c }
 }
 
-/// # Safety
-/// `ctx` must point to the live context passed into compiled code.
-unsafe extern "C" fn novo_ipow(ctx: *mut Ctx, base: i64, exp: i64, file: u32, lo: u32, hi: u32) -> i64 {
+unsafe fn slot<'a>(p: *mut Value) -> &'a mut Value {
+    unsafe { &mut *p }
+}
+
+unsafe fn values(args: *const *const Value, n: usize) -> Vec<Value> {
+    (0..n).map(|i| unsafe { (**args.add(i)).clone() }).collect()
+}
+
+unsafe fn text<'a>(ptr: *const u8, len: usize) -> &'a str {
+    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) }
+}
+
+unsafe extern "C" fn novo_fail(c: *mut Ctx, code: u32, span: u64) {
+    let c = unsafe { ctx(c) };
+    c.raise(RtError { message: message(code).to_string(), span: unpack(span), trace: Vec::new() });
+}
+
+unsafe extern "C" fn novo_fail_msg(c: *mut Ctx, ptr: *const u8, len: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let message = unsafe { text(ptr, len) }.to_string();
+    c.raise(RtError { message, span: unpack(span), trace: Vec::new() });
+}
+
+unsafe extern "C" fn novo_ipow(c: *mut Ctx, base: i64, exp: i64, span: u64) -> i64 {
     if exp < 0 {
-        unsafe { novo_fail(ctx, code::NEG_EXP, file, lo, hi) };
+        unsafe { novo_fail(c, code::NEG_EXP, span) };
         return 0;
     }
     match u32::try_from(exp).ok().and_then(|e| base.checked_pow(e)) {
         Some(v) => v,
         None => {
-            unsafe { novo_fail(ctx, code::OVERFLOW, file, lo, hi) };
+            unsafe { novo_fail(c, code::OVERFLOW, span) };
             0
         }
     }
@@ -132,46 +193,397 @@ extern "C" fn novo_time_now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// # Safety
-/// `ctx` must point to the live context passed into compiled code.
-unsafe extern "C" fn novo_show_int(ctx: *mut Ctx, v: i64) {
-    let ctx = unsafe { &mut *ctx };
-    let _ = std::fmt::Write::write_fmt(&mut ctx.line, format_args!("{v}"));
+// ---- output ------------------------------------------------------------------------------
+
+unsafe extern "C" fn novo_show_int(c: *mut Ctx, v: i64) {
+    let _ = std::fmt::Write::write_fmt(&mut unsafe { ctx(c) }.line, format_args!("{v}"));
 }
 
-/// # Safety
-/// `ctx` must point to the live context passed into compiled code.
-unsafe extern "C" fn novo_show_float(ctx: *mut Ctx, v: f64) {
-    unsafe { &mut *ctx }.line.push_str(&format_float(v));
+unsafe extern "C" fn novo_show_float(c: *mut Ctx, v: f64) {
+    unsafe { ctx(c) }.line.push_str(&format_float(v));
 }
 
-/// # Safety
-/// `ctx` must point to the live context passed into compiled code.
-unsafe extern "C" fn novo_show_bool(ctx: *mut Ctx, v: u8) {
-    unsafe { &mut *ctx }.line.push_str(if v != 0 { "true" } else { "false" });
+unsafe extern "C" fn novo_show_bool(c: *mut Ctx, v: u8) {
+    unsafe { ctx(c) }.line.push_str(if v != 0 { "true" } else { "false" });
 }
 
-/// # Safety
-/// `ctx` must be live and `ptr..ptr+len` must be valid UTF-8 owned by the program.
-unsafe extern "C" fn novo_show_str(ctx: *mut Ctx, ptr: *const u8, len: usize) {
-    let text = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) };
-    unsafe { &mut *ctx }.line.push_str(text);
+unsafe extern "C" fn novo_show_str(c: *mut Ctx, ptr: *const u8, len: usize) {
+    let s = unsafe { text(ptr, len) };
+    unsafe { ctx(c) }.line.push_str(s);
 }
 
-/// # Safety
-/// `ctx` must point to the live context, whose output lock outlives the call.
-unsafe extern "C" fn novo_show_end(ctx: *mut Ctx) {
-    let ctx = unsafe { &mut *ctx };
-    ctx.line.push('\n');
-    let out = unsafe { &*ctx.out };
-    let _ = out.lock().write_all(ctx.line.as_bytes());
-    ctx.line.clear();
+unsafe extern "C" fn novo_show_value(c: *mut Ctx, v: *mut Value) {
+    let c = unsafe { ctx(c) };
+    let shown = c.interp().display(unsafe { slot(v) });
+    c.line.push_str(&shown);
+}
+
+unsafe extern "C" fn novo_show_end(c: *mut Ctx) {
+    let c = unsafe { ctx(c) };
+    c.line.push('\n');
+    let _ = c.interp().output().lock().write_all(c.line.as_bytes());
+    c.line.clear();
+}
+
+// ---- slots -------------------------------------------------------------------------------
+
+unsafe extern "C" fn novo_slots_init(base: *mut Value, n: usize) {
+    for i in 0..n {
+        unsafe { base.add(i).write(Value::None) };
+    }
+}
+
+unsafe extern "C" fn novo_slots_drop(base: *mut Value, n: usize) {
+    for i in 0..n {
+        unsafe { base.add(i).drop_in_place() };
+    }
+}
+
+unsafe extern "C" fn novo_clone(dst: *mut Value, src: *mut Value) {
+    if dst != src {
+        let v = unsafe { slot(src) }.clone();
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_take(dst: *mut Value, src: *mut Value) {
+    if dst != src {
+        let v = std::mem::replace(unsafe { slot(src) }, Value::None);
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_set_int(dst: *mut Value, v: i64) {
+    *unsafe { slot(dst) } = Value::Int(v);
+}
+
+unsafe extern "C" fn novo_set_float(dst: *mut Value, v: f64) {
+    *unsafe { slot(dst) } = Value::Float(v);
+}
+
+unsafe extern "C" fn novo_set_bool(dst: *mut Value, v: u8) {
+    *unsafe { slot(dst) } = Value::Bool(v != 0);
+}
+
+unsafe extern "C" fn novo_set_none(dst: *mut Value) {
+    *unsafe { slot(dst) } = Value::None;
+}
+
+unsafe extern "C" fn novo_set_str(dst: *mut Value, s: *const Arc<str>) {
+    *unsafe { slot(dst) } = Value::Str(unsafe { (*s).clone() });
+}
+
+unsafe extern "C" fn novo_get_int(src: *mut Value) -> i64 {
+    match unsafe { slot(src) } {
+        Value::Int(i) => *i,
+        _ => 0,
+    }
+}
+
+unsafe extern "C" fn novo_get_float(src: *mut Value) -> f64 {
+    match unsafe { slot(src) } {
+        Value::Float(f) => *f,
+        Value::Int(i) => *i as f64,
+        _ => 0.0,
+    }
+}
+
+unsafe extern "C" fn novo_get_bool(src: *mut Value) -> u8 {
+    u8::from(matches!(unsafe { slot(src) }, Value::Bool(true)))
+}
+
+// ---- operations --------------------------------------------------------------------------
+
+unsafe extern "C" fn novo_binary(c: *mut Ctx, dst: *mut Value, op: u32, a: *mut Value, b: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = c.interp().binary_values(BinOp::ALL[op as usize], unsafe { slot(a) }, unsafe { slot(b) });
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_negate(c: *mut Ctx, dst: *mut Value, a: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = crate::eval::negate_value(unsafe { slot(a) });
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_index(c: *mut Ctx, dst: *mut Value, obj: *mut Value, idx: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = c.interp().get_index(unsafe { slot(obj) }, unsafe { slot(idx) });
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_set_index(c: *mut Ctx, obj: *mut Value, idx: *mut Value, v: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let value = unsafe { slot(v) }.clone();
+    let result = c.interp().set_index(unsafe { slot(obj) }, unsafe { slot(idx) }, value);
+    c.check(result, span);
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn novo_slice(c: *mut Ctx, dst: *mut Value, obj: *mut Value, has_start: u8, start: i64, has_end: u8, end: i64, span: u64) {
+    let c = unsafe { ctx(c) };
+    let start = (has_start != 0).then_some(start);
+    let end = (has_end != 0).then_some(end);
+    let result = crate::eval::slice_value(unsafe { slot(obj) }, start, end);
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_field(c: *mut Ctx, dst: *mut Value, obj: *mut Value, name: *const u8, len: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = c.interp().get_field(unsafe { slot(obj) }, unsafe { text(name, len) });
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_set_field(c: *mut Ctx, obj: *mut Value, name: *const u8, len: usize, v: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let value = unsafe { slot(v) }.clone();
+    let result = c.interp().set_field(unsafe { slot(obj) }, unsafe { text(name, len) }, value);
+    c.check(result, span);
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn novo_method(c: *mut Ctx, dst: *mut Value, recv: *mut Value, name: *const u8, len: usize, args: *const *const Value, n: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let args = unsafe { values(args, n) };
+    let interp = c.interp();
+    let result = Interp::at_depth(c.depth as usize, || interp.call_method(unsafe { slot(recv) }, unsafe { text(name, len) }, args, unpack(span)));
+    if let Some(v) = c.check_rt(result) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_builtin(c: *mut Ctx, dst: *mut Value, id: u32, args: *const *const Value, n: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let args = unsafe { values(args, n) };
+    let interp = c.interp();
+    let result = Interp::at_depth(c.depth as usize, || interp.call_builtin(Builtin::ALL[id as usize], args));
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_call_value(c: *mut Ctx, dst: *mut Value, callee: *mut Value, args: *const *const Value, n: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let args = unsafe { values(args, n) };
+    let interp = c.interp();
+    let result = Interp::at_depth(c.depth as usize, || interp.call_value(unsafe { slot(callee) }, args, unpack(span)));
+    if let Some(v) = c.check_rt(result) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_call_interp(c: *mut Ctx, dst: *mut Value, func: u32, args: *const *const Value, n: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let args = unsafe { values(args, n) };
+    let interp = c.interp();
+    let result = Interp::at_depth(c.depth as usize, || interp.call_func(FuncId(func), args, None, unpack(span)));
+    if let Some(v) = c.check_rt(result) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_new(dst: *mut Value, class: u32, args: *const *const Value, n: usize) {
+    let fields = unsafe { values(args, n) };
+    *unsafe { slot(dst) } = Value::Instance(Arc::new(Instance { class: ClassId(class), fields: RwLock::new(fields) }));
+}
+
+unsafe extern "C" fn novo_make_list(dst: *mut Value, args: *const *const Value, n: usize) {
+    *unsafe { slot(dst) } = Value::list(unsafe { values(args, n) });
+}
+
+unsafe extern "C" fn novo_make_tuple(dst: *mut Value, args: *const *const Value, n: usize) {
+    *unsafe { slot(dst) } = Value::Tuple(unsafe { values(args, n) }.into());
+}
+
+unsafe extern "C" fn novo_make_map(c: *mut Ctx, dst: *mut Value, keys: *const *const Value, vals: *const *const Value, n: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let (keys, vals) = unsafe { (values(keys, n), values(vals, n)) };
+    let mut dict = Dict::default();
+    for (k, v) in keys.iter().zip(vals) {
+        match c.check(Key::from_value(k), span) {
+            Some(key) => dict.insert(key, v),
+            None => return,
+        }
+    }
+    *unsafe { slot(dst) } = Value::map(dict);
+}
+
+unsafe extern "C" fn novo_make_closure(dst: *mut Value, func: u32, args: *const *const Value, n: usize) {
+    let captures = unsafe { values(args, n) };
+    *unsafe { slot(dst) } = Value::Func(Arc::new(Closure { func: FuncId(func), captures }));
+}
+
+unsafe extern "C" fn novo_global_get(c: *mut Ctx, dst: *mut Value, g: u32) {
+    let v = unsafe { ctx(c) }.interp().global(GlobalId(g));
+    *unsafe { slot(dst) } = v;
+}
+
+unsafe extern "C" fn novo_global_set(c: *mut Ctx, g: u32, src: *mut Value) {
+    let v = unsafe { slot(src) }.clone();
+    unsafe { ctx(c) }.interp().set_global(GlobalId(g), v);
+}
+
+unsafe extern "C" fn novo_items(c: *mut Ctx, dst: *mut Value, iterable: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = c.interp().items(unsafe { slot(iterable) });
+    if let Some(items) = c.check(result, span) {
+        *unsafe { slot(dst) } = Value::list(items);
+    }
+}
+
+unsafe extern "C" fn novo_list_len(list: *mut Value) -> i64 {
+    match unsafe { slot(list) } {
+        Value::List(items) => items.read().len() as i64,
+        _ => 0,
+    }
+}
+
+unsafe extern "C" fn novo_list_get(dst: *mut Value, list: *mut Value, i: i64) {
+    let v = match unsafe { slot(list) } {
+        Value::List(items) => items.read().get(i as usize).cloned().unwrap_or(Value::None),
+        _ => Value::None,
+    };
+    *unsafe { slot(dst) } = v;
+}
+
+unsafe extern "C" fn novo_list_push(list: *mut Value, item: *mut Value) {
+    if let Value::List(items) = unsafe { slot(list) } {
+        items.write().push(unsafe { slot(item) }.clone());
+    }
+}
+
+unsafe extern "C" fn novo_len(c: *mut Ctx, v: *mut Value, span: u64) -> i64 {
+    let n = match unsafe { slot(v) } {
+        Value::Str(s) => Ok(s.chars().count() as i64),
+        Value::List(items) => Ok(items.read().len() as i64),
+        Value::Map(m) => Ok(m.read().len() as i64),
+        Value::Tuple(items) => Ok(items.len() as i64),
+        other => Err(format!("`len` needs a list, string, map or tensor, found a {}", other.type_name())),
+    };
+    unsafe { ctx(c) }.check(n, span).unwrap_or(0)
+}
+
+unsafe extern "C" fn novo_map_get(c: *mut Ctx, dst: *mut Value, map: *mut Value, key: *mut Value, default: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let Value::Map(m) = (unsafe { slot(map) }) else { return };
+    let Some(key) = c.check(Key::from_value(unsafe { slot(key) }), span) else { return };
+    let found = m.read().get(&key).cloned();
+    *unsafe { slot(dst) } = found.unwrap_or_else(|| unsafe { slot(default) }.clone());
+}
+
+unsafe extern "C" fn novo_map_has(c: *mut Ctx, map: *mut Value, key: *mut Value, span: u64) -> u8 {
+    let c = unsafe { ctx(c) };
+    let Value::Map(m) = (unsafe { slot(map) }) else { return 0 };
+    let Some(key) = c.check(Key::from_value(unsafe { slot(key) }), span) else { return 0 };
+    u8::from(m.read().get(&key).is_some())
+}
+
+unsafe extern "C" fn novo_list_index(c: *mut Ctx, dst: *mut Value, list: *mut Value, i: i64, span: u64) {
+    let c = unsafe { ctx(c) };
+    let Value::List(items) = (unsafe { slot(list) }) else { return };
+    let items = items.read();
+    if let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) {
+        let v = items[at].clone();
+        drop(items);
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_list_set(c: *mut Ctx, list: *mut Value, i: i64, v: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let Value::List(items) = (unsafe { slot(list) }) else { return };
+    let mut items = items.write();
+    if let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) {
+        items[at] = unsafe { slot(v) }.clone();
+    }
+}
+
+unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value) {
+    let c = unsafe { ctx(c) };
+    c.status = 0;
+    c.line.clear();
+    c.fstrings.clear();
+    let message = c.error.take().map(|e| e.message).unwrap_or_default();
+    *unsafe { slot(dst) } = Value::Str(message.into());
+}
+
+unsafe extern "C" fn novo_init_module(c: *mut Ctx, m: u32, span: u64) {
+    let c = unsafe { ctx(c) };
+    let interp = c.interp();
+    let result = Interp::at_depth(c.depth as usize, || interp.init_module(ModuleId(m), unpack(span)));
+    c.check_rt(result);
+}
+
+unsafe extern "C" fn novo_eval_closed(c: *mut Ctx, dst: *mut Value, expr: *const hir::Expr) {
+    let c = unsafe { ctx(c) };
+    let interp = c.interp();
+    let result = Interp::at_depth(c.depth as usize, || interp.eval(unsafe { &*expr }, &mut crate::eval::Frame::empty()));
+    if let Some(v) = c.check_rt(result) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_together(c: *mut Ctx, dst: *mut Value, closure: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = c.interp().spawn_task(unsafe { slot(closure) }, unpack(span));
+    if let Some(v) = c.check_rt(result) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_await(c: *mut Ctx, dst: *mut Value, task: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = match unsafe { slot(task) } {
+        Value::Task(t) => t.wait(),
+        other => Err(format!("`await` needs a Task, found a {}", other.type_name())),
+    };
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
+}
+
+unsafe extern "C" fn novo_fstr_begin(c: *mut Ctx) {
+    unsafe { ctx(c) }.fstrings.push(String::new());
+}
+
+unsafe extern "C" fn novo_fstr_lit(c: *mut Ctx, ptr: *const u8, len: usize) {
+    let s = unsafe { text(ptr, len) };
+    if let Some(top) = unsafe { ctx(c) }.fstrings.last_mut() {
+        top.push_str(s);
+    }
+}
+
+unsafe extern "C" fn novo_fstr_value(c: *mut Ctx, v: *mut Value, spec: *const u8, spec_len: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let value = unsafe { slot(v) };
+    let shown = c.interp().display(value);
+    let piece = if spec.is_null() { Ok(shown) } else { crate::eval::builtins::format_spec(shown, value, unsafe { text(spec, spec_len) }) };
+    if let Some(piece) = c.check(piece, span) {
+        if let Some(top) = c.fstrings.last_mut() {
+            top.push_str(&piece);
+        }
+    }
+}
+
+unsafe extern "C" fn novo_fstr_end(c: *mut Ctx, dst: *mut Value) {
+    let s = unsafe { ctx(c) }.fstrings.pop().unwrap_or_default();
+    *unsafe { slot(dst) } = Value::Str(s.into());
 }
 
 macro_rules! helpers {
     ($($field:ident = $func:ident ( $($p:ident),* ) $(-> $r:ident)?;)*) => {
         pub struct Helpers {
-            $(pub $field: FuncId,)*
+            $(pub $field: ClifFunc,)*
         }
 
         impl Helpers {
@@ -194,9 +606,9 @@ macro_rules! helpers {
 }
 
 helpers! {
-    fail = novo_fail(I64, I32, I32, I32, I32);
-    fail_msg = novo_fail_msg(I64, I64, I64, I32, I32, I32);
-    ipow = novo_ipow(I64, I64, I64, I32, I32, I32) -> I64;
+    fail = novo_fail(I64, I32, I64);
+    fail_msg = novo_fail_msg(I64, I64, I64, I64);
+    ipow = novo_ipow(I64, I64, I64, I64) -> I64;
     fmod = novo_fmod(F64, F64) -> F64;
     math = novo_math(I32, F64) -> F64;
     powf = novo_powf(F64, F64) -> F64;
@@ -207,5 +619,54 @@ helpers! {
     show_float = novo_show_float(I64, F64);
     show_bool = novo_show_bool(I64, I8);
     show_str = novo_show_str(I64, I64, I64);
+    show_value = novo_show_value(I64, I64);
     show_end = novo_show_end(I64);
+    slots_init = novo_slots_init(I64, I64);
+    slots_drop = novo_slots_drop(I64, I64);
+    clone = novo_clone(I64, I64);
+    take = novo_take(I64, I64);
+    set_int = novo_set_int(I64, I64);
+    set_float = novo_set_float(I64, F64);
+    set_bool = novo_set_bool(I64, I8);
+    set_none = novo_set_none(I64);
+    set_str = novo_set_str(I64, I64);
+    get_int = novo_get_int(I64) -> I64;
+    get_float = novo_get_float(I64) -> F64;
+    get_bool = novo_get_bool(I64) -> I8;
+    binary = novo_binary(I64, I64, I32, I64, I64, I64);
+    negate = novo_negate(I64, I64, I64, I64);
+    index = novo_index(I64, I64, I64, I64, I64);
+    set_index = novo_set_index(I64, I64, I64, I64, I64);
+    slice = novo_slice(I64, I64, I64, I8, I64, I8, I64, I64);
+    field = novo_field(I64, I64, I64, I64, I64, I64);
+    set_field = novo_set_field(I64, I64, I64, I64, I64, I64);
+    method = novo_method(I64, I64, I64, I64, I64, I64, I64, I64);
+    builtin = novo_builtin(I64, I64, I32, I64, I64, I64);
+    call_value = novo_call_value(I64, I64, I64, I64, I64, I64);
+    call_interp = novo_call_interp(I64, I64, I32, I64, I64, I64);
+    new = novo_new(I64, I32, I64, I64);
+    make_list = novo_make_list(I64, I64, I64);
+    make_tuple = novo_make_tuple(I64, I64, I64);
+    make_map = novo_make_map(I64, I64, I64, I64, I64, I64);
+    make_closure = novo_make_closure(I64, I32, I64, I64);
+    global_get = novo_global_get(I64, I64, I32);
+    global_set = novo_global_set(I64, I32, I64);
+    items = novo_items(I64, I64, I64, I64);
+    list_len = novo_list_len(I64) -> I64;
+    list_get = novo_list_get(I64, I64, I64);
+    list_push = novo_list_push(I64, I64);
+    len = novo_len(I64, I64, I64) -> I64;
+    map_get = novo_map_get(I64, I64, I64, I64, I64, I64);
+    map_has = novo_map_has(I64, I64, I64, I64) -> I8;
+    list_index = novo_list_index(I64, I64, I64, I64, I64);
+    list_set = novo_list_set(I64, I64, I64, I64, I64);
+    take_error = novo_take_error(I64, I64);
+    init_module = novo_init_module(I64, I32, I64);
+    eval_closed = novo_eval_closed(I64, I64, I64);
+    together = novo_together(I64, I64, I64, I64);
+    await_task = novo_await(I64, I64, I64, I64);
+    fstr_begin = novo_fstr_begin(I64);
+    fstr_lit = novo_fstr_lit(I64, I64, I64);
+    fstr_value = novo_fstr_value(I64, I64, I64, I64, I64);
+    fstr_end = novo_fstr_end(I64, I64);
 }

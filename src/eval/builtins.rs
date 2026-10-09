@@ -58,7 +58,7 @@ fn char_slice(s: &str, start: Option<i64>, end: Option<i64>) -> String {
 }
 
 impl Interp {
-    pub(super) fn call_builtin(&self, b: Builtin, args: Vec<Value>) -> R {
+    pub(crate) fn call_builtin(&self, b: Builtin, args: Vec<Value>) -> R {
         let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::None);
         Ok(match b {
             Builtin::Len => Value::Int(match &args[0] {
