@@ -45,6 +45,11 @@ impl<'s> Checker<'s> {
             }
             ast::ExprKind::Name(name) => self.infer_name(name, span),
             ast::ExprKind::List(items) => self.infer_list(items, span),
+            ast::ExprKind::Tuple(items) => {
+                let items: Vec<hir::Expr> = items.iter().map(|i| self.infer_expr(i)).collect();
+                let ty = Ty::Tuple(items.iter().map(|i| i.ty.clone()).collect());
+                expr(ExprKind::Tuple(items), ty, span)
+            }
             ast::ExprKind::Map(entries) => {
                 let (keys, values): (Vec<_>, Vec<_>) = entries.iter().map(|(k, v)| (self.infer_expr(k), self.infer_expr(v))).unzip();
                 let (k, v) = (self.element_type(&keys), self.element_type(&values));
@@ -268,8 +273,12 @@ impl<'s> Checker<'s> {
         match &items[0] {
             ast::IndexItem::Single(i) => {
                 let index = self.infer_expr(i);
+                let literal = match index.kind {
+                    ExprKind::Int(n) => Some(n),
+                    _ => None,
+                };
                 let out = self.infer.fresh();
-                self.add_constraint(Constraint::Index { target: target.ty.clone(), index: index.ty.clone(), out: out.clone(), span });
+                self.add_constraint(Constraint::Index { target: target.ty.clone(), index: index.ty.clone(), out: out.clone(), literal, span });
                 expr(ExprKind::Index { target: Box::new(target), index: Box::new(index) }, out, span)
             }
             ast::IndexItem::Slice { start, end } => {
@@ -574,6 +583,42 @@ impl<'s> Checker<'s> {
                     self.unify_at(args[2].span, &Ty::Str, &args[2].ty);
                 }
                 Ty::None
+            }
+            Builtin::Enumerate | Builtin::Reversed | Builtin::Sum => {
+                if !arity(self, 1, 1) {
+                    return error_expr(span);
+                }
+                let item = self.infer.fresh();
+                self.unify_at(args[0].span, &Ty::list(item.clone()), &args[0].ty);
+                match b {
+                    Builtin::Enumerate => Ty::list(Ty::Tuple(vec![Ty::Int, item])),
+                    Builtin::Reversed => Ty::list(item),
+                    _ => {
+                        self.add_constraint(Constraint::Summable { ty: item.clone(), span });
+                        item
+                    }
+                }
+            }
+            Builtin::Zip => {
+                if !arity(self, 2, 2) {
+                    return error_expr(span);
+                }
+                let (a, b) = (self.infer.fresh(), self.infer.fresh());
+                self.unify_at(args[0].span, &Ty::list(a.clone()), &args[0].ty);
+                self.unify_at(args[1].span, &Ty::list(b.clone()), &args[1].ty);
+                Ty::list(Ty::Tuple(vec![a, b]))
+            }
+            Builtin::Sorted => {
+                if !arity(self, 1, 2) {
+                    return error_expr(span);
+                }
+                let item = self.infer.fresh();
+                self.unify_at(args[0].span, &Ty::list(item.clone()), &args[0].ty);
+                if let Some(key) = args.get(1) {
+                    let k = self.infer.fresh();
+                    self.unify_at(key.span, &Ty::func(vec![item.clone()], k), &key.ty);
+                }
+                Ty::list(item)
             }
             Builtin::RandomChoice | Builtin::RandomShuffle => {
                 if !arity(self, 1, 1) {

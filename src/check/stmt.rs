@@ -15,11 +15,7 @@ pub(super) fn assigned_names(block: &[ast::Stmt], out: &mut Vec<ast::Ident>) {
     };
     for stmt in block {
         match &stmt.kind {
-            ast::StmtKind::Assign { target, .. } | ast::StmtKind::AugAssign { target, .. } => {
-                if let ast::ExprKind::Name(n) = &target.kind {
-                    add(&ast::Ident { name: n.clone(), span: target.span }, out);
-                }
-            }
+            ast::StmtKind::Assign { target, .. } | ast::StmtKind::AugAssign { target, .. } => target_names(target, out),
             ast::StmtKind::If { branches, otherwise } => {
                 for (_, b) in branches {
                     assigned_names(b, out);
@@ -29,8 +25,10 @@ pub(super) fn assigned_names(block: &[ast::Stmt], out: &mut Vec<ast::Ident>) {
                 }
             }
             ast::StmtKind::While { body, .. } | ast::StmtKind::Repeat { body, .. } => assigned_names(body, out),
-            ast::StmtKind::For { var, body, .. } => {
-                add(var, out);
+            ast::StmtKind::For { vars, body, .. } => {
+                for var in vars {
+                    add(var, out);
+                }
                 assigned_names(body, out);
             }
             ast::StmtKind::Try { body, var, handler } => {
@@ -44,6 +42,14 @@ pub(super) fn assigned_names(block: &[ast::Stmt], out: &mut Vec<ast::Ident>) {
             }
             _ => {}
         }
+    }
+}
+
+fn target_names(target: &ast::Expr, out: &mut Vec<ast::Ident>) {
+    match &target.kind {
+        ast::ExprKind::Name(n) if !out.iter().any(|o| o.name == *n) => out.push(ast::Ident { name: n.clone(), span: target.span }),
+        ast::ExprKind::Tuple(items) => items.iter().for_each(|i| target_names(i, out)),
+        _ => {}
     }
 }
 
@@ -77,7 +83,7 @@ impl<'s> Checker<'s> {
         self.ctx().depth += 1;
         let mut out = Vec::with_capacity(block.len());
         for stmt in block {
-            if let Some(s) = self.check_stmt(stmt) {
+            if let Some(s) = self.check_stmt(stmt, &mut out) {
                 out.push(s);
             }
             self.solve_pending();
@@ -103,10 +109,45 @@ impl<'s> Checker<'s> {
         out
     }
 
-    fn check_stmt(&mut self, stmt: &ast::Stmt) -> Option<hir::Stmt> {
+    /// Assigns `value` to a tuple pattern by storing it in a hidden local and
+    /// assigning each element in turn.
+    fn unpack(&mut self, items: &[ast::Expr], value: hir::Expr, span: Span, out: &mut hir::Block) {
+        let elems: Vec<Ty> = items.iter().map(|_| self.infer.fresh()).collect();
+        let want = Ty::Tuple(elems.clone());
+        if !self.infer.unify(&want, &value.ty) {
+            let msg = format!("cannot unpack a `{}` into {} variables", self.show(&value.ty), items.len());
+            self.error(Diagnostic::error(value.span, msg));
+            return;
+        }
+        let tmp = self.ctx().add_local("<tuple>", value.ty.clone());
+        out.push(hir::Stmt { kind: StmtKind::Assign { place: Place::Local(tmp), op: None, value }, span });
+        for (i, (item, ty)) in items.iter().zip(elems).enumerate() {
+            let source = hir::Expr { kind: hir::ExprKind::Local(tmp), ty: want.clone(), span: item.span };
+            let index = hir::Expr { kind: hir::ExprKind::Int(i as i64), ty: Ty::Int, span: item.span };
+            let elem = hir::Expr { kind: hir::ExprKind::Index { target: Box::new(source), index: Box::new(index) }, ty, span: item.span };
+            self.assign_to(item, elem, span, out);
+        }
+    }
+
+    fn assign_to(&mut self, target: &ast::Expr, value: hir::Expr, span: Span, out: &mut hir::Block) {
+        if let ast::ExprKind::Tuple(items) = &target.kind {
+            return self.unpack(items, value, span, out);
+        }
+        let Some(place) = self.place(target) else { return };
+        let place_ty = self.place_ty(&place, target.span);
+        let value = self.coerce(value, &place_ty);
+        out.push(hir::Stmt { kind: StmtKind::Assign { place, op: None, value }, span });
+    }
+
+    fn check_stmt(&mut self, stmt: &ast::Stmt, out: &mut hir::Block) -> Option<hir::Stmt> {
         let span = stmt.span;
         let kind = match &stmt.kind {
             ast::StmtKind::Expr(e) => StmtKind::Expr(self.infer_expr(e)),
+            ast::StmtKind::Assign { target, ty: None, value } if matches!(target.kind, ast::ExprKind::Tuple(_)) => {
+                let value = self.infer_expr(value);
+                self.assign_to(target, value, span, out);
+                return None;
+            }
             ast::StmtKind::Assign { target, ty, value } => {
                 let annotated = ty.as_ref().map(|t| self.resolve_type(t));
                 let place = self.place(target)?;
@@ -155,13 +196,25 @@ impl<'s> Checker<'s> {
                 self.ctx().scopes.pop();
                 StmtKind::Repeat { count, it, body }
             }
-            ast::StmtKind::For { var, iter, body } => {
+            ast::StmtKind::For { vars, iter, body } => {
                 let iter = self.infer_expr(iter);
-                let place = self.name_place(&var.name, var.span)?;
-                let item = self.place_ty(&place, var.span);
-                self.add_constraint(Constraint::Iter { iterable: iter.ty.clone(), item, span: iter.span });
-                let body = self.in_loop(|c| c.check_block(body));
-                StmtKind::For { var: place, iter, body }
+                if let [var] = vars.as_slice() {
+                    let place = self.name_place(&var.name, var.span)?;
+                    let item = self.place_ty(&place, var.span);
+                    self.add_constraint(Constraint::Iter { iterable: iter.ty.clone(), item, span: iter.span });
+                    let body = self.in_loop(|c| c.check_block(body));
+                    StmtKind::For { var: place, iter, body }
+                } else {
+                    let item = self.infer.fresh();
+                    let tmp = self.ctx().add_local("<item>", item.clone());
+                    self.add_constraint(Constraint::Iter { iterable: iter.ty.clone(), item: item.clone(), span: iter.span });
+                    let targets: Vec<ast::Expr> = vars.iter().map(|v| ast::Expr { kind: ast::ExprKind::Name(v.name.clone()), span: v.span }).collect();
+                    let mut block = Vec::new();
+                    let current = hir::Expr { kind: hir::ExprKind::Local(tmp), ty: item, span: iter.span };
+                    self.unpack(&targets, current, span, &mut block);
+                    block.extend(self.in_loop(|c| c.check_block(body)));
+                    StmtKind::For { var: Place::Local(tmp), iter, body: block }
+                }
             }
             ast::StmtKind::Function(def) => {
                 if self.ctx().is_toplevel {
@@ -322,7 +375,7 @@ impl<'s> Checker<'s> {
                     return Ty::Any;
                 }
                 let out = self.infer.fresh();
-                self.add_constraint(Constraint::Index { target: target.ty.clone(), index: index.ty.clone(), out: out.clone(), span });
+                self.add_constraint(Constraint::Index { target: target.ty.clone(), index: index.ty.clone(), out: out.clone(), literal: None, span });
                 out
             }
         }

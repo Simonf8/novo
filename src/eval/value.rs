@@ -14,6 +14,7 @@ pub enum Value {
     Float(f64),
     Str(Arc<str>),
     List(Arc<RwLock<Vec<Value>>>),
+    Tuple(Arc<[Value]>),
     Map(Arc<RwLock<Dict>>),
     Func(Arc<Closure>),
     Instance(Arc<Instance>),
@@ -154,6 +155,7 @@ impl Value {
             Value::Float(_) => "Float",
             Value::Str(_) => "String",
             Value::List(_) => "List",
+            Value::Tuple(_) => "Tuple",
             Value::Map(_) => "Map",
             Value::Func(_) => "Function",
             Value::Instance(_) => "instance",
@@ -221,6 +223,19 @@ fn write_value(out: &mut String, v: &Value, prog: &Program, depth: usize) {
             }
             out.push(']');
         }
+        Value::Tuple(items) => {
+            out.push('(');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_value(out, item, prog, depth + 1);
+            }
+            if items.len() == 1 {
+                out.push(',');
+            }
+            out.push(')');
+        }
         Value::Map(dict) => {
             out.push('{');
             for (i, (k, val)) in dict.read().iter().enumerate() {
@@ -273,6 +288,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
             let (x, y) = (x.read().clone(), y.read().clone());
             x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| equal(p, q))
         }
+        (Value::Tuple(x), Value::Tuple(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| equal(p, q)),
         (Value::Map(x), Value::Map(y)) => {
             if Arc::ptr_eq(x, y) {
                 return true;
@@ -289,6 +305,16 @@ pub fn equal(a: &Value, b: &Value) -> bool {
     }
 }
 
+fn compare_seq(x: &[Value], y: &[Value]) -> Result<Ordering, String> {
+    for (p, q) in x.iter().zip(y) {
+        match compare(p, q)? {
+            Ordering::Equal => continue,
+            other => return Ok(other),
+        }
+    }
+    Ok(x.len().cmp(&y.len()))
+}
+
 pub fn compare(a: &Value, b: &Value) -> Result<Ordering, String> {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => Ok(x.cmp(y)),
@@ -297,16 +323,8 @@ pub fn compare(a: &Value, b: &Value) -> Result<Ordering, String> {
         }
         (Value::Str(x), Value::Str(y)) => Ok(x.cmp(y)),
         (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
-        (Value::List(x), Value::List(y)) => {
-            let (x, y) = (x.read().clone(), y.read().clone());
-            for (p, q) in x.iter().zip(&y) {
-                match compare(p, q)? {
-                    Ordering::Equal => continue,
-                    other => return Ok(other),
-                }
-            }
-            Ok(x.len().cmp(&y.len()))
-        }
+        (Value::List(x), Value::List(y)) => compare_seq(&x.read().clone(), &y.read().clone()),
+        (Value::Tuple(x), Value::Tuple(y)) => compare_seq(x, y),
         _ => Err(format!("cannot compare a {} with a {}", a.type_name(), b.type_name())),
     }
 }

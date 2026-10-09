@@ -201,7 +201,7 @@ impl Interp {
         })
     }
 
-    fn call_value(&self, callee: &Value, args: Vec<Value>, span: Span) -> Eval {
+    pub(crate) fn call_value(&self, callee: &Value, args: Vec<Value>, span: Span) -> Eval {
         match callee {
             Value::Func(c) => self.call_func(c.func, args, Some(c.clone()), span),
             Value::Py(obj) => crate::python::call(obj, &args).at(span),
@@ -423,6 +423,7 @@ impl Interp {
             }
             (Value::Py(p), k) => crate::python::get_item(p, k),
             (Value::Tensor(t), Value::Int(i)) => tensor::index(t, *i),
+            (Value::Tuple(items), Value::Int(i)) => Ok(items[builtins::index(*i, items.len())?].clone()),
             (o, i) => Err(format!("cannot index a {} with a {}", o.type_name(), i.type_name())),
         }
     }
@@ -444,7 +445,7 @@ impl Interp {
         }
     }
 
-    fn binary_values(&self, op: BinOp, a: &Value, b: &Value) -> Result<Value, String> {
+    pub(crate) fn binary_values(&self, op: BinOp, a: &Value, b: &Value) -> Result<Value, String> {
         if matches!(a, Value::Py(_)) || matches!(b, Value::Py(_)) {
             return crate::python::binary_op(a, b, op.symbol());
         }
@@ -486,6 +487,7 @@ impl Interp {
                 Value::Str(out.into())
             }
             ExprKind::List(items) => Value::list(self.eval_all(items, frame)?),
+            ExprKind::Tuple(items) => Value::Tuple(self.eval_all(items, frame)?.into()),
             ExprKind::Map(entries) => {
                 let mut dict = Dict::default();
                 for (k, v) in entries {

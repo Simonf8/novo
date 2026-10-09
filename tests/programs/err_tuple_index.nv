@@ -1,0 +1,4 @@
+# expect-error: a tuple index must be a number written in the code
+pair = (1, "a")
+i = 0
+show pair[i]

@@ -15,7 +15,8 @@ pub enum Constraint {
     Neg { operand: Ty, out: Ty, span: Span },
     Method { recv: Ty, name: String, args: Vec<Ty>, out: Ty, span: Span },
     Field { recv: Ty, name: String, out: Ty, span: Span },
-    Index { target: Ty, index: Ty, out: Ty, span: Span },
+    /// `literal` is the index when it is written as a number, which tuples require.
+    Index { target: Ty, index: Ty, out: Ty, literal: Option<i64>, span: Span },
     Slice { target: Ty, span: Span },
     Iter { iterable: Ty, item: Ty, span: Span },
     Len { ty: Ty, span: Span },
@@ -53,7 +54,9 @@ impl Constraint {
                 Constraint::Method { recv: s(recv), name: name.clone(), args: args.iter().map(s).collect(), out: s(out), span: *span }
             }
             Constraint::Field { recv, name, out, span } => Constraint::Field { recv: s(recv), name: name.clone(), out: s(out), span: *span },
-            Constraint::Index { target, index, out, span } => Constraint::Index { target: s(target), index: s(index), out: s(out), span: *span },
+            Constraint::Index { target, index, out, literal, span } => {
+                Constraint::Index { target: s(target), index: s(index), out: s(out), literal: *literal, span: *span }
+            }
             Constraint::Slice { target, span } => Constraint::Slice { target: s(target), span: *span },
             Constraint::Iter { iterable, item, span } => Constraint::Iter { iterable: s(iterable), item: s(item), span: *span },
             Constraint::Len { ty, span } => Constraint::Len { ty: s(ty), span: *span },
@@ -140,9 +143,20 @@ impl<'s> Checker<'s> {
                     Outcome::Fail(diag)
                 }
             },
-            Constraint::Index { target, index, out, span } => match self.infer.shallow(target) {
+            Constraint::Index { target, index, out, literal, span } => match self.infer.shallow(target) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::Any => self.settle(out, &Ty::Any, *span),
+                Ty::Tuple(items) => {
+                    let n = items.len() as i64;
+                    match literal {
+                        Some(i) if (-n..n).contains(i) => {
+                            let at = if *i < 0 { i + n } else { *i } as usize;
+                            self.settle(out, &items[at], *span)
+                        }
+                        Some(i) => Outcome::Fail(Diagnostic::error(*span, format!("index {i} is out of range for a tuple of {n}"))),
+                        None => Outcome::Fail(Diagnostic::error(*span, "a tuple index must be a number written in the code").with_help("write `pair[0]`, or unpack it: `a, b = pair`")),
+                    }
+                }
                 Ty::List(e) => {
                     if !self.infer.unify(index, &Ty::Int) {
                         return Outcome::Fail(Diagnostic::error(*span, format!("list index must be an `Int`, found `{}`", self.show(index))));
@@ -182,7 +196,7 @@ impl<'s> Checker<'s> {
             },
             Constraint::Len { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
-                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tensor | Ty::Any => Outcome::Done,
+                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_) | Ty::Tensor | Ty::Any => Outcome::Done,
                 t => Outcome::Fail(Diagnostic::error(*span, format!("`len` needs a list, string, map or tensor, found `{}`", self.show(&t)))),
             },
             Constraint::Numeric { ty, span } => match self.infer.shallow(ty) {
@@ -277,6 +291,9 @@ impl<'s> Checker<'s> {
                         } else {
                             bad(self)
                         }
+                    }
+                    (Ty::Tuple(_) | Ty::List(_), _) | (_, Ty::Tuple(_) | Ty::List(_)) => {
+                        if self.infer.unify(&l, &r) { Outcome::Done } else { bad(self) }
                     }
                     (a, b) if (is_var(a) || a.is_numeric()) && (is_var(b) || b.is_numeric()) => Outcome::Wait,
                     _ => bad(self),

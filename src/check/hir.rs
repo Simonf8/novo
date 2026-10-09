@@ -137,6 +137,7 @@ pub enum ExprKind {
     None,
     FStr(Vec<FStrPart>),
     List(Vec<Expr>),
+    Tuple(Vec<Expr>),
     Map(Vec<(Expr, Expr)>),
     Local(LocalId),
     Global(GlobalId),

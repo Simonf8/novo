@@ -12,6 +12,7 @@ pub enum Ty {
     None,
     List(Box<Ty>),
     Map(Box<Ty>, Box<Ty>),
+    Tuple(Vec<Ty>),
     Func(Vec<Ty>, Box<Ty>),
     Class(ClassId),
     Task(Box<Ty>),
@@ -46,6 +47,7 @@ impl Ty {
         match self {
             Ty::List(t) | Ty::Task(t) => vec![t],
             Ty::Map(k, v) => vec![k, v],
+            Ty::Tuple(ts) => ts.iter().collect(),
             Ty::Func(ps, r) => ps.iter().chain(std::iter::once(&**r)).collect(),
             _ => Vec::new(),
         }
@@ -72,6 +74,19 @@ impl<'a> fmt::Display for TyDisplay<'a> {
             Ty::None => f.write_str("None"),
             Ty::List(t) => write!(f, "List[{}]", sub(t)),
             Ty::Map(k, v) => write!(f, "Map[{}, {}]", sub(k), sub(v)),
+            Ty::Tuple(ts) => {
+                f.write_str("(")?;
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", sub(t))?;
+                }
+                if ts.len() == 1 {
+                    f.write_str(",")?;
+                }
+                f.write_str(")")
+            }
             Ty::Func(ps, r) => {
                 f.write_str("(")?;
                 for (i, p) in ps.iter().enumerate() {
@@ -120,6 +135,7 @@ impl Infer {
             Ty::List(t) => Ty::list(self.zonk(&t)),
             Ty::Task(t) => Ty::task(self.zonk(&t)),
             Ty::Map(k, v) => Ty::map(self.zonk(&k), self.zonk(&v)),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.zonk(t)).collect()),
             Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| self.zonk(p)).collect(), self.zonk(&r)),
             other => other,
         }
@@ -174,6 +190,7 @@ impl Infer {
             (Ty::Any, _) | (_, Ty::Any) => true,
             (Ty::List(x), Ty::List(y)) | (Ty::Task(x), Ty::Task(y)) => self.unify(x, y),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => self.unify(k1, k2) && self.unify(v1, v2),
+            (Ty::Tuple(x), Ty::Tuple(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| self.unify(p, q)),
             (Ty::Func(p1, r1), Ty::Func(p2, r2)) => {
                 p1.len() == p2.len() && p1.iter().zip(p2).all(|(x, y)| self.unify(x, y)) && self.unify(r1, r2)
             }
@@ -188,6 +205,7 @@ impl Infer {
             Ty::List(t) => Ty::list(self.substitute(&t, map)),
             Ty::Task(t) => Ty::task(self.substitute(&t, map)),
             Ty::Map(k, v) => Ty::map(self.substitute(&k, map), self.substitute(&v, map)),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.substitute(t, map)).collect()),
             Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| self.substitute(p, map)).collect(), self.substitute(&r, map)),
             other => other,
         }

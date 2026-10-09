@@ -42,6 +42,10 @@ mod modern {
                 let items = list.read().iter().map(|v| to_py(py, v)).collect::<Result<Vec<_>, _>>()?;
                 Ok(items.into_py(py))
             }
+            Value::Tuple(items) => {
+                let items = items.iter().map(|v| to_py(py, v)).collect::<Result<Vec<_>, _>>()?;
+                Ok(PyTuple::new(py, items).into_py(py))
+            }
             Value::Map(map) => {
                 let dict = PyDict::new(py);
                 for (k, v) in map.read().iter() {

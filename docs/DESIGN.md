@@ -16,6 +16,7 @@ Novo is statically typed with full inference. Annotations are optional.
 | `None`        | the unit value `none`                      | `None`                  |
 | `List[T]`     | growable list, shared by reference         | `List[T]`               |
 | `Map[K, V]`   | insertion-ordered map, shared by reference | `Map[K, V]`             |
+| tuples        | fixed-size immutable groups of values      | `(Int, String)`         |
 | `Task[T]`     | a computation running in the background    | `Task[T]`               |
 | `Tensor`      | an n-dimensional array of 32-bit floats    | `Tensor`                |
 | `Optimizer`   | updates parameters from a loss             | `Optimizer`             |
@@ -67,6 +68,14 @@ when they are created.
 over lists, the characters of a string, and the keys of a map. `break` and
 `continue` apply to the innermost loop.
 
+## Tuples
+
+`(1, "a")` is a tuple; `return a, b` returns one. Tuples unpack in
+assignments (`a, b = b, a`, nested patterns too) and in loops
+(`for name, age in ages.items()`). Index a tuple with a number written in the
+code (`pair[0]`) so its element type is known. Tuples compare element by
+element.
+
 ## Collections
 
 Indexing accepts negative indices counted from the end. Indexing out of range,
@@ -80,6 +89,11 @@ or an expression that uses `it` (`xs where it > 1`):
 - `select`: map each item through the body
 - `sum`, `min`, `max`, `average`: aggregates, optionally of a body;
   `average` is always a `Float`, and `min`/`max` of an empty list is an error
+
+Built-in functions: `len`, `range`, `str`, `int`, `float`, `bool`, `abs`,
+`min`, `max`, `round`, `sum`, `any`, `all`, `sorted` (with an optional key
+function), `reversed`, `enumerate`, `zip`, `type_of`, `input`, `assert`,
+`assert_eq` and `fail`.
 
 ## Classes
 

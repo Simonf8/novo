@@ -17,6 +17,13 @@ fn float(v: &Value) -> Result<f64, String> {
     v.as_f64().ok_or_else(|| format!("expected a number, found a {}", v.type_name()))
 }
 
+fn list(v: &Value) -> Result<Vec<Value>, String> {
+    match v {
+        Value::List(l) => Ok(l.read().clone()),
+        other => Err(format!("expected a List, found a {}", other.type_name())),
+    }
+}
+
 fn string(v: &Value) -> Result<Arc<str>, String> {
     match v {
         Value::Str(s) => Ok(s.clone()),
@@ -59,6 +66,7 @@ impl Interp {
                 Value::List(l) => l.read().len() as i64,
                 Value::Map(m) => m.read().len() as i64,
                 Value::Tensor(t) => super::tensor::len(t)?,
+                Value::Tuple(items) => items.len() as i64,
                 other => return Err(format!("`len` needs a list, string, map or tensor, found a {}", other.type_name())),
             }),
             Builtin::Range => {
@@ -148,6 +156,45 @@ impl Interp {
                 Value::None
             }
             Builtin::Fail => return Err(string(&args[0])?.to_string()),
+            Builtin::Enumerate => Value::list(list(&args[0])?.into_iter().enumerate().map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v].into())).collect()),
+            Builtin::Zip => {
+                let (a, b) = (list(&args[0])?, list(&args[1])?);
+                Value::list(a.into_iter().zip(b).map(|(x, y)| Value::Tuple(vec![x, y].into())).collect())
+            }
+            Builtin::Reversed => Value::list(list(&args[0])?.into_iter().rev().collect()),
+            Builtin::Sum => {
+                let mut total = Value::Int(0);
+                for (i, v) in list(&args[0])?.into_iter().enumerate() {
+                    total = if i == 0 { v } else { self.binary_values(crate::syntax::ast::BinOp::Add, &total, &v)? };
+                }
+                total
+            }
+            Builtin::Any | Builtin::All => {
+                let items = list(&args[0])?;
+                let truthy = |v: &Value| matches!(v, Value::Bool(true));
+                Value::Bool(if b == Builtin::Any { items.iter().any(truthy) } else { items.iter().all(truthy) })
+            }
+            Builtin::Sorted => {
+                let items = list(&args[0])?;
+                let mut keyed: Vec<(Value, Value)> = match args.get(1) {
+                    Some(key) => items
+                        .into_iter()
+                        .map(|v| Ok((self.call_value(key, vec![v.clone()], crate::source::Span::default()).map_err(|e| e.message)?, v)))
+                        .collect::<Result<_, String>>()?,
+                    None => items.into_iter().map(|v| (v.clone(), v)).collect(),
+                };
+                let mut failure = None;
+                keyed.sort_by(|a, b| {
+                    compare(&a.0, &b.0).unwrap_or_else(|e| {
+                        failure.get_or_insert(e);
+                        std::cmp::Ordering::Equal
+                    })
+                });
+                if let Some(e) = failure {
+                    return Err(e);
+                }
+                Value::list(keyed.into_iter().map(|(_, v)| v).collect())
+            }
             Builtin::TypeOf => Value::str(match &args[0] {
                 Value::Instance(i) => &self.prog.classes[i.class.0 as usize].name,
                 other => other.type_name(),
@@ -300,6 +347,10 @@ impl Interp {
                     Value::Str(if name == "pad_start" { format!("{pad}{s}") } else { format!("{s}{pad}") }.into())
                 }
                 "is_empty" => Value::Bool(s.is_empty()),
+                "join" => {
+                    let parts: Vec<String> = list(&args[0])?.iter().map(|v| self.display(v)).collect();
+                    Value::Str(parts.join(s).into())
+                }
                 _ => return Err(format!("String has no method `{name}`")),
             }),
             Value::List(list) => Ok(match name {
@@ -383,6 +434,7 @@ impl Interp {
                 "has" | "contains" => Value::Bool(map.read().get(&Key::from_value(&args[0])?).is_some()),
                 "keys" => Value::list(map.read().iter().map(|(k, _)| k.to_value()).collect()),
                 "values" => Value::list(map.read().iter().map(|(_, v)| v.clone()).collect()),
+                "items" => Value::list(map.read().iter().map(|(k, v)| Value::Tuple(vec![k.to_value(), v.clone()].into())).collect()),
                 "get" => map.read().get(&Key::from_value(&args[0])?).cloned().unwrap_or_else(|| arg(1)),
                 "remove" => {
                     let key = Key::from_value(&args[0])?;
@@ -690,6 +742,16 @@ pub mod json {
             Value::Int(i) => out.push_str(&i.to_string()),
             Value::Float(f) if f.is_finite() => out.push_str(&format_float(*f)),
             Value::Float(_) => return Err("NaN and infinity cannot be converted to JSON".into()),
+            Value::Tuple(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write(out, item, depth + 1)?;
+                }
+                out.push(']');
+            }
             Value::Str(s) => out.push_str(&crate::diagnostic::json_string(s)),
             Value::List(items) => {
                 out.push('[');

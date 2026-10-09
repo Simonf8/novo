@@ -148,11 +148,14 @@ impl<'a> Parser<'a> {
             }
             Tok::For => {
                 self.bump();
-                let var = self.ident("for the loop variable")?;
+                let mut vars = vec![self.ident("for the loop variable")?];
+                while self.eat(&Tok::Comma) {
+                    vars.push(self.ident("for the loop variable")?);
+                }
                 self.expect(&Tok::In, "after the loop variable")?;
                 let iter = self.expression()?;
                 let body = self.block()?;
-                Ok(Stmt { kind: StmtKind::For { var, iter, body }, span: lo.to(self.prev_span()) })
+                Ok(Stmt { kind: StmtKind::For { vars, iter, body }, span: lo.to(self.prev_span()) })
             }
             Tok::Function | Tok::Task => {
                 let def = self.function_def()?;
@@ -192,7 +195,7 @@ impl<'a> Parser<'a> {
                 if matches!(self.peek(), Tok::Newline | Tok::Dedent | Tok::Eof) {
                     StmtKind::Return(None)
                 } else {
-                    StmtKind::Return(Some(self.expression()?))
+                    StmtKind::Return(Some(self.expression_list()?))
                 }
             }
             Tok::Break => {
@@ -215,16 +218,34 @@ impl<'a> Parser<'a> {
         Ok(Stmt { kind, span })
     }
 
+    /// Parses `a` or `a, b, ...`, the latter as a tuple.
+    fn expression_list(&mut self) -> PResult<Expr> {
+        let first = self.expression()?;
+        if !self.at(&Tok::Comma) {
+            return Ok(first);
+        }
+        let mut items = vec![first];
+        while self.eat(&Tok::Comma) {
+            if !self.starts_expression() {
+                break;
+            }
+            items.push(self.expression()?);
+        }
+        let span = items[0].span.to(self.prev_span());
+        Ok(Expr { kind: ExprKind::Tuple(items), span })
+    }
+
     fn expression_statement(&mut self) -> PResult<StmtKind> {
-        let target = self.expression()?;
-        let check_target = |p: &Self, e: &Expr| -> PResult<()> {
-            match e.kind {
+        let target = self.expression_list()?;
+        fn check_target(p: &Parser, e: &Expr) -> PResult<()> {
+            match &e.kind {
                 ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => Ok(()),
+                ExprKind::Tuple(items) => items.iter().try_for_each(|i| check_target(p, i)),
                 _ => Err(Diagnostic::error(e.span, "cannot assign to this expression")
                     .with_label("not a variable, field or element")
                     .with_help(if matches!(p.peek(), Tok::Assign) { "use `==` to compare values" } else { "assign to a variable instead" })),
             }
-        };
+        }
         let aug = match self.peek() {
             Tok::PlusAssign => Some(BinOp::Add),
             Tok::MinusAssign => Some(BinOp::Sub),
@@ -233,6 +254,9 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         if let Some(op) = aug {
+            if matches!(target.kind, ExprKind::Tuple(_)) {
+                return Err(Diagnostic::error(target.span, "cannot update several variables at once").with_help("update each one on its own line"));
+            }
             check_target(self, &target)?;
             self.bump();
             let value = self.expression()?;
@@ -248,7 +272,7 @@ impl<'a> Parser<'a> {
         if self.at(&Tok::Assign) {
             check_target(self, &target)?;
             self.bump();
-            let value = self.expression()?;
+            let value = self.expression_list()?;
             return Ok(StmtKind::Assign { target, ty: None, value });
         }
         Ok(StmtKind::Expr(target))
@@ -372,6 +396,17 @@ impl<'a> Parser<'a> {
 
     fn type_expr(&mut self) -> PResult<TypeExpr> {
         let lo = self.span();
+        if self.eat(&Tok::LParen) {
+            let mut args = vec![self.type_expr()?];
+            while self.eat(&Tok::Comma) {
+                if self.at(&Tok::RParen) {
+                    break;
+                }
+                args.push(self.type_expr()?);
+            }
+            self.expect(&Tok::RParen, "to close the tuple type")?;
+            return Ok(TypeExpr { name: "Tuple".into(), args, span: lo.to(self.prev_span()) });
+        }
         let name = match self.peek().clone() {
             Tok::Ident(n) => n,
             Tok::None => "None".to_string(),
@@ -698,6 +733,17 @@ impl<'a> Parser<'a> {
             Tok::LParen => {
                 self.bump();
                 let inner = self.expression()?;
+                if self.eat(&Tok::Comma) {
+                    let mut items = vec![inner];
+                    while !self.at(&Tok::RParen) {
+                        items.push(self.expression()?);
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Tok::RParen, "to close the tuple")?;
+                    return Ok(Expr { kind: ExprKind::Tuple(items), span: lo.to(self.prev_span()) });
+                }
                 self.expect(&Tok::RParen, "to close the parenthesis")?;
                 return Ok(Expr { kind: inner.kind, span: lo.to(self.prev_span()) });
             }

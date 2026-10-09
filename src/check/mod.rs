@@ -652,6 +652,10 @@ impl<'s> Checker<'s> {
                 let e = self.resolve_type(&t.args[0]);
                 Ty::task(e)
             }
+            "Tuple" => {
+                let items = t.args.iter().map(|a| self.resolve_type(a)).collect();
+                Ty::Tuple(items)
+            }
             "Map" | "map" | "dict" => {
                 if !arity(self, 2) {
                     return Ty::Any;
@@ -805,7 +809,7 @@ impl Zonk<'_> {
                     }
                 }
             }
-            List(es) | RunParallel(es) => es.iter_mut().for_each(|e| self.expr(e)),
+            List(es) | Tuple(es) | RunParallel(es) => es.iter_mut().for_each(|e| self.expr(e)),
             Map(entries) => {
                 for (k, v) in entries {
                     self.expr(k);

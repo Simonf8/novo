@@ -22,6 +22,7 @@ pub fn substitute(ty: &Ty, subst: &[(u32, Ty)]) -> Ty {
         Ty::List(t) => Ty::list(substitute(t, subst)),
         Ty::Task(t) => Ty::task(substitute(t, subst)),
         Ty::Map(k, v) => Ty::map(substitute(k, subst), substitute(v, subst)),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| substitute(t, subst)).collect()),
         Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| substitute(p, subst)).collect(), substitute(r, subst)),
         other => other.clone(),
     }
@@ -768,7 +769,7 @@ impl Lower<'_, '_> {
 
 fn describe(kind: &ExprKind) -> &'static str {
     match kind {
-        ExprKind::List(_) => "lists",
+        ExprKind::List(_) | ExprKind::Tuple(_) => "lists and tuples",
         ExprKind::Map(_) => "maps",
         ExprKind::Global(_) => "global variables",
         ExprKind::Func { .. } | ExprKind::Closure { .. } | ExprKind::Recurse | ExprKind::Call { .. } => "function values",
