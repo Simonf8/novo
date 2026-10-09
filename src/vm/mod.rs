@@ -214,7 +214,7 @@ impl VM {
                             *a = Value::List(std::sync::Arc::new(parking_lot::RwLock::new(new_vec)));
                         }
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::interpreter::python_operator_fallback(&*a, &b, "+") {
+                            match crate::python::binary_op(&*a, &b, "+") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -231,7 +231,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) - *y),
                         (Value::Float(x), Value::Integer(y)) => *x -= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::interpreter::python_operator_fallback(&*a, &b, "-") {
+                            match crate::python::binary_op(&*a, &b, "-") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -248,7 +248,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) * *y),
                         (Value::Float(x), Value::Integer(y)) => *x *= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::interpreter::python_operator_fallback(&*a, &b, "*") {
+                            match crate::python::binary_op(&*a, &b, "*") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -265,7 +265,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) / *y),
                         (Value::Float(x), Value::Integer(y)) => *x /= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::interpreter::python_operator_fallback(&*a, &b, "/") {
+                            match crate::python::binary_op(&*a, &b, "/") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -282,7 +282,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) % *y),
                         (Value::Float(x), Value::Integer(y)) => *x %= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::interpreter::python_operator_fallback(&*a, &b, "%") {
+                            match crate::python::binary_op(&*a, &b, "%") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -514,22 +514,8 @@ impl VM {
                             self.stack.push(instance);
                         }
                         Value::PythonObject(py_obj) => {
-                            let result = pyo3::Python::with_gil(|py| -> Result<Value, String> {
-                                let mut py_args = Vec::new();
-                                // Arguments are on the stack, but they need to be popped in the right order (they were pushed left-to-right)
-                                // Let's just read them
-                                let start = self.stack.len() - arg_count;
-                                for i in 0..arg_count {
-                                    py_args.push(crate::interpreter::value_to_py(py, &self.stack[start + i])?);
-                                }
-                                
-                                let args_tuple = pyo3::types::PyTuple::new(py, py_args);
-                                
-                                let result = py_obj.call1(py, args_tuple)
-                                    .map_err(|e| format!("Python error during call: {}", e))?;
-                                    
-                                crate::interpreter::py_to_value(py, result)
-                            });
+                            let start = self.stack.len() - arg_count;
+                            let result = crate::python::call(&py_obj, &self.stack[start..]);
                             
                             match result {
                                 Ok(v) => {
@@ -551,11 +537,7 @@ impl VM {
                         Value::String(s) => s.clone(),
                         _ => throw!(frame, 'vm_loop, "Import name must be string".to_string()),
                     };
-                    let result = pyo3::Python::with_gil(|py| -> Result<Value, String> {
-                        let m = pyo3::types::PyModule::import(py, name.as_str())
-                            .map_err(|e| format!("Failed to import python module {}: {}", name, e))?;
-                        Ok(Value::PythonObject(m.into()))
-                    });
+                    let result = crate::python::import(&name);
                     match result {
                         Ok(v) => self.stack.push(v),
                         Err(e) => throw!(frame, 'vm_loop, e),
@@ -670,10 +652,7 @@ impl VM {
                             }
                         }
                         Value::PythonObject(py_obj) => {
-                            let result = pyo3::Python::with_gil(|py| -> Result<Value, String> {
-                                let attr = py_obj.getattr(py, name.as_str()).map_err(|e| e.to_string())?;
-                                crate::interpreter::py_to_value(py, attr)
-                            });
+                            let result = crate::python::get_attr(&py_obj, &name);
                             match result {
                                 Ok(v) => self.stack.push(v),
                                 Err(e) => throw!(frame, 'vm_loop, e),
@@ -883,18 +862,7 @@ impl VM {
                 OpCode::Get => {
                     let url_val = self.stack.pop().unwrap();
                     let url = if let Value::String(s) = url_val { s } else { throw!(frame, 'vm_loop, "Expected string for get url".to_string()) };
-                    let execute_get = |url: &str| -> Result<Value, String> {
-                        pyo3::Python::with_gil(|py| -> Result<Value, String> {
-                            let urllib = pyo3::types::PyModule::import(py, "urllib.request").map_err(|e| format!("Failed to import urllib: {}", e))?;
-                            let urlopen = urllib.getattr("urlopen").map_err(|e| e.to_string())?;
-                            let py_result = urlopen.call1((url,)).map_err(|e| format!("HTTP request failed: {}", e))?;
-                            let read_func = py_result.getattr("read").map_err(|e| e.to_string())?;
-                            let bytes = read_func.call0().map_err(|e| e.to_string())?;
-                            let decode_func = bytes.getattr("decode").map_err(|e| e.to_string())?;
-                            let decoded = decode_func.call1(("utf-8",)).map_err(|e| e.to_string())?;
-                            crate::interpreter::py_to_value(py, pyo3::IntoPy::into_py(decoded, py))
-                        })
-                    };
+                    let execute_get = crate::python::http_get;
                     match execute_get(&url) {
                         Ok(v) => self.stack.push(v),
                         Err(e) => throw!(frame, 'vm_loop, e),
@@ -906,25 +874,8 @@ impl VM {
                     let val = self.stack.pop().unwrap();
                     let execute_cast = |v: &Value, t: &str| -> Result<Value, String> {
                         match (v, t) {
-                            (Value::String(s), "json") => {
-                                pyo3::Python::with_gil(|py| -> Result<Value, String> {
-                                    let json = pyo3::types::PyModule::import(py, "json").map_err(|e| e.to_string())?;
-                                    let loads = json.getattr("loads").map_err(|e| e.to_string())?;
-                                    let py_result = loads.call1((s,)).map_err(|e| e.to_string())?;
-                                    crate::interpreter::py_to_value(py, pyo3::IntoPy::into_py(py_result, py))
-                                })
-                            }
-                            (Value::String(s), "csv") => {
-                                pyo3::Python::with_gil(|py| -> Result<Value, String> {
-                                    let csv = pyo3::types::PyModule::import(py, "csv").map_err(|e| e.to_string())?;
-                                    let io = pyo3::types::PyModule::import(py, "io").map_err(|e| e.to_string())?;
-                                    let string_io = io.getattr("StringIO").map_err(|e| e.to_string())?.call1((s,)).map_err(|e| e.to_string())?;
-                                    let dict_reader = csv.getattr("DictReader").map_err(|e| e.to_string())?.call1((string_io,)).map_err(|e| e.to_string())?;
-                                    let list_func = py.eval("list", None, None).map_err(|e| e.to_string())?;
-                                    let py_result = list_func.call1((dict_reader,)).map_err(|e| e.to_string())?;
-                                    crate::interpreter::py_to_value(py, pyo3::IntoPy::into_py(py_result, py))
-                                })
-                            }
+                            (Value::String(s), "json") => crate::stdlib::parse_json_str(s),
+                            (Value::String(s), "csv") => Ok(crate::stdlib::parse_csv(s)),
                             (Value::String(s), "int") => {
                                 s.parse::<i64>().map(Value::Integer).map_err(|_| "Failed to cast to int".to_string())
                             }

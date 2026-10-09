@@ -1,9 +1,13 @@
 use crate::ir::{BlockId, FunctionIR, Instruction, Terminator};
 use std::collections::HashMap;
 
+#[cfg(target_os = "windows")]
 const MEM_COMMIT: u32 = 0x00001000;
+#[cfg(target_os = "windows")]
 const MEM_RESERVE: u32 = 0x00002000;
+#[cfg(target_os = "windows")]
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+#[cfg(target_os = "windows")]
 const MEM_RELEASE: u32 = 0x00008000;
 
 #[cfg(target_os = "windows")]

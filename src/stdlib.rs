@@ -1277,6 +1277,50 @@ fn call_env_func(func: &str, args: &[Value]) -> Result<Value, String> {
     }
 }
 
+/// Parses CSV text with a header row into a list of maps from column name to field text.
+pub fn parse_csv(input: &str) -> Value {
+    let mut rows = csv_records(input).into_iter();
+    let header = rows.next().unwrap_or_default();
+    let records = rows
+        .filter(|r| !(r.len() == 1 && r[0].is_empty()))
+        .map(|r| {
+            let map = header.iter().cloned().zip(r.into_iter().map(Value::String)).collect();
+            Value::Map(Arc::new(RwLock::new(map)))
+        })
+        .collect();
+    Value::List(Arc::new(RwLock::new(records)))
+}
+
+fn csv_records(input: &str) -> Vec<Vec<String>> {
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                field.push('"');
+            }
+            '"' if quoted => quoted = false,
+            '"' if field.is_empty() => quoted = true,
+            ',' if !quoted => record.push(std::mem::take(&mut field)),
+            '\r' if !quoted => {}
+            '\n' if !quoted => {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+            }
+            c => field.push(c),
+        }
+    }
+    if !field.is_empty() || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+    records
+}
+
 pub fn parse_json_str(input: &str) -> Result<Value, String> {
     let chars: Vec<char> = input.chars().collect();
     let mut pos = 0;

@@ -3,6 +3,12 @@ name = "novo"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+python = ["dep:pyo3"]
+
 [dependencies]
 parking_lot = "0.12.5"
-pyo3 = { version = "=0.20.0", features = ["auto-initialize"] }
+pyo3 = { version = "=0.20.0", features = ["auto-initialize"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

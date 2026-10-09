@@ -1,7 +1,5 @@
 use crate::ast::*;
 use std::collections::HashMap;
-use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -23,7 +21,7 @@ pub enum Value {
         name: String,
         bound_target: Option<Box<Value>>,
     },
-    PythonObject(PyObject),
+    PythonObject(crate::python::PyHandle),
     #[allow(dead_code)]
     Class {
         name: String,
@@ -89,7 +87,7 @@ impl PartialEq for Value {
     }
 }
 
-fn type_name(val: &Value) -> &'static str {
+pub fn type_name(val: &Value) -> &'static str {
     match val {
         Value::Integer(_) => "a number",
         Value::Float(_) => "a number",
@@ -131,104 +129,6 @@ impl std::fmt::Display for Value {
             Value::Promise(_) => write!(f, "<promise>"),
         }
     }
-}
-
-pub fn value_to_py(py: Python, val: &Value) -> Result<PyObject, String> {
-    match val {
-        Value::Integer(i) => Ok(i.into_py(py)),
-        Value::Float(f) => Ok(f.into_py(py)),
-        Value::String(s) => Ok(s.into_py(py)),
-        Value::Boolean(b) => Ok(b.into_py(py)),
-        Value::List(list) => {
-            let mut py_list = Vec::new();
-            for item in list.read().iter() {
-                py_list.push(value_to_py(py, item)?);
-            }
-            Ok(py_list.into_py(py))
-        }
-        Value::PythonObject(obj) => Ok(obj.clone_ref(py)),
-        Value::Null => Ok(py.None()),
-        _ => Err(format!("Cannot convert {} to Python", type_name(val))),
-    }
-}
-
-pub fn py_to_value(py: Python, obj: PyObject) -> Result<Value, String> {
-    // Attempt basic extraction
-    if let Ok(b) = obj.extract::<bool>(py) {
-        return Ok(Value::Boolean(b));
-    }
-    if let Ok(i) = obj.extract::<i64>(py) {
-        return Ok(Value::Integer(i));
-    }
-    if let Ok(f) = obj.extract::<f64>(py) {
-        return Ok(Value::Float(f));
-    }
-    if let Ok(s) = obj.extract::<String>(py) {
-        return Ok(Value::String(s));
-    }
-    if obj.is_none(py) {
-        return Ok(Value::Null);
-    }
-    
-    if obj.downcast::<pyo3::types::PyBytes>(py).is_ok() {
-        return Ok(Value::PythonObject(obj));
-    }
-    
-    if let Ok(dict) = obj.downcast::<pyo3::types::PyDict>(py) {
-        let mut map = std::collections::HashMap::new();
-        for (k, v) in dict {
-            if let Ok(key_str) = k.extract::<String>() {
-                map.insert(key_str, py_to_value(py, v.into())?);
-            }
-        }
-        return Ok(Value::Map(std::sync::Arc::new(parking_lot::RwLock::new(map))));
-    }
-    
-    if let Ok(list) = obj.downcast::<pyo3::types::PyList>(py) {
-        let mut vec = Vec::new();
-        for item in list {
-            vec.push(py_to_value(py, item.into())?);
-        }
-        return Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(vec))));
-    }
-
-    if let Ok(tuple) = obj.downcast::<pyo3::types::PyTuple>(py) {
-        let mut vec = Vec::new();
-        for item in tuple {
-            vec.push(py_to_value(py, item.into())?);
-        }
-        return Ok(Value::List(std::sync::Arc::new(parking_lot::RwLock::new(vec))));
-    }
-    
-    // Otherwise, keep it as a Python object
-    Ok(Value::PythonObject(obj))
-}
-
-pub fn python_operator_fallback(l: &Value, r: &Value, op: &str) -> Result<Value, String> {
-    Python::with_gil(|py| -> Result<Value, String> {
-        let py_l = value_to_py(py, l)?;
-        let py_r = value_to_py(py, r)?;
-        let op_module = PyModule::import(py, "operator").map_err(|e| e.to_string())?;
-        
-        let py_func_name = match op {
-            "+" => "add",
-            "-" => "sub",
-            "*" => "mul",
-            "/" => "truediv",
-            "%" => "mod",
-            "==" => "eq",
-            "!=" => "ne",
-            ">" => "gt",
-            "<" => "lt",
-            ">=" => "ge",
-            "<=" => "le",
-            _ => return Err(format!("Unsupported operator for Python fallback: {}", op))
-        };
-        
-        let func = op_module.getattr(py_func_name).map_err(|e| e.to_string())?;
-        let py_result = func.call1((py_l, py_r)).map_err(|e| e.to_string())?;
-        py_to_value(py, py_result.into_py(py))
-    })
 }
 
 #[derive(Clone)]
@@ -293,8 +193,7 @@ impl Interpreter {
     }
 
     pub fn interpret(&mut self, program: &Program) -> Result<(), String> {
-        // Prepare python env early to catch initialization errors
-        pyo3::prepare_freethreaded_python();
+        crate::python::init();
         
         let mut global_env = Environment::new();
         crate::stdlib::register_globals(&mut global_env.scopes[0]);
@@ -348,15 +247,7 @@ impl Interpreter {
                         };
                         map.insert(key, val);
                     }
-                    Value::PythonObject(py_obj) => {
-                        pyo3::Python::with_gil(|py| -> Result<(), String> {
-                            let py_val = value_to_py(py, &val)?;
-                            let py_idx = value_to_py(py, &index_val)?;
-                            py_obj.call_method1(py, "__setitem__", (py_idx, py_val))
-                                .map_err(|e| e.to_string())?;
-                            Ok(())
-                        })?;
-                    }
+                    Value::PythonObject(py_obj) => crate::python::set_item(&py_obj, &index_val, &val)?,
                     _ => return Err("Index assignment only supported on lists, maps, or Python objects".to_string()),
                 }
             }
@@ -370,14 +261,7 @@ impl Interpreter {
                     Value::Instance { properties, .. } => {
                         properties.write().insert(property.clone(), val);
                     }
-                    Value::PythonObject(py_obj) => {
-                        pyo3::Python::with_gil(|py| -> Result<(), String> {
-                            let py_val = value_to_py(py, &val)?;
-                            py_obj.setattr(py, property.as_str(), py_val)
-                                .map_err(|e| e.to_string())?;
-                            Ok(())
-                        })?;
-                    }
+                    Value::PythonObject(py_obj) => crate::python::set_attr(&py_obj, property, &val)?,
                     _ => return Err("Property assignment only supported on maps, instances, or Python objects".to_string()),
                 }
             }
@@ -491,13 +375,9 @@ impl Interpreter {
                 env.define(name.clone(), func_val);
             }
             StatementNode::UsePython { module, alias } => {
-                let py_module = Python::with_gil(|py| -> Result<PyObject, String> {
-                    let m = PyModule::import(py, module.as_str())
-                        .map_err(|e| format!("Failed to import python module {}: {}", module, e))?;
-                    Ok(m.into_py(py))
-                })?;
+                let py_module = crate::python::import(module)?;
                 let name = alias.as_ref().unwrap_or(module).clone();
-                env.define(name, Value::PythonObject(py_module));
+                env.define(name, py_module);
             }
             StatementNode::UseModule { path, alias } => {
                 let default_name = std::path::Path::new(&path)
@@ -647,25 +527,8 @@ impl Interpreter {
                 let val = self.evaluate(expr, env)?;
                 let execute_cast = |v: &Value, t: &str| -> Result<Value, String> {
                     match (v, t) {
-                        (Value::String(s), "json") => {
-                            Python::with_gil(|py| -> Result<Value, String> {
-                                let json = PyModule::import(py, "json").map_err(|e| e.to_string())?;
-                                let loads = json.getattr("loads").map_err(|e| e.to_string())?;
-                                let py_result = loads.call1((s,)).map_err(|e| e.to_string())?;
-                                py_to_value(py, py_result.into_py(py))
-                            })
-                        }
-                        (Value::String(s), "csv") => {
-                            Python::with_gil(|py| -> Result<Value, String> {
-                                let csv = PyModule::import(py, "csv").map_err(|e| e.to_string())?;
-                                let io = PyModule::import(py, "io").map_err(|e| e.to_string())?;
-                                let string_io = io.getattr("StringIO").map_err(|e| e.to_string())?.call1((s,)).map_err(|e| e.to_string())?;
-                                let dict_reader = csv.getattr("DictReader").map_err(|e| e.to_string())?.call1((string_io,)).map_err(|e| e.to_string())?;
-                                let list_func = py.eval("list", None, None).map_err(|e| e.to_string())?;
-                                let py_result = list_func.call1((dict_reader,)).map_err(|e| e.to_string())?;
-                                py_to_value(py, py_result.into_py(py))
-                            })
-                        }
+                        (Value::String(s), "json") => crate::stdlib::parse_json_str(s),
+                        (Value::String(s), "csv") => Ok(crate::stdlib::parse_csv(s)),
                         (Value::String(s), "int") => {
                             s.parse::<i64>().map(Value::Integer).map_err(|_| "Failed to cast to int".to_string())
                         }
@@ -762,18 +625,7 @@ impl Interpreter {
             }
             ExpressionNode::Get(url_expr) => {
                 let url_val = self.evaluate(url_expr, env)?;
-                let execute_get = |url: &str| -> Result<Value, String> {
-                    Python::with_gil(|py| -> Result<Value, String> {
-                        let urllib = PyModule::import(py, "urllib.request").map_err(|e| format!("Failed to import urllib: {}", e))?;
-                        let urlopen = urllib.getattr("urlopen").map_err(|e| e.to_string())?;
-                        let py_result = urlopen.call1((url,)).map_err(|e| format!("HTTP request failed: {}", e))?;
-                        let read_func = py_result.getattr("read").map_err(|e| e.to_string())?;
-                        let bytes = read_func.call0().map_err(|e| e.to_string())?;
-                        let decode_func = bytes.getattr("decode").map_err(|e| e.to_string())?;
-                        let decoded = decode_func.call1(("utf-8",)).map_err(|e| e.to_string())?;
-                        py_to_value(py, decoded.into_py(py))
-                    })
-                };
+                let execute_get = crate::python::http_get;
                 
                 match url_val {
                     Value::String(url) => execute_get(&url),
@@ -869,17 +721,7 @@ impl Interpreter {
                             Err(format!("Property '{}' not found", property))
                         }
                     }
-                    Value::PythonObject(py_obj) => {
-                        Python::with_gil(|py| {
-                            if let Ok(attr) = py_obj.getattr(py, property.as_str()) {
-                                py_to_value(py, attr)
-                            } else if let Ok(item) = py_obj.call_method1(py, "__getitem__", (property.as_str(),)) {
-                                py_to_value(py, item)
-                            } else {
-                                Err(format!("Python object has no attribute or key '{}'", property))
-                            }
-                        })
-                    }
+                    Value::PythonObject(py_obj) => crate::python::get_attr(&py_obj, property),
                     _ => Err("Property access only allowed on objects/maps, strings, lists, or Python objects".to_string()),
                 }
             }
@@ -907,14 +749,7 @@ impl Interpreter {
                         };
                         Ok(map.get(&key).cloned().unwrap_or(Value::Null))
                     }
-                    Value::PythonObject(py_obj) => {
-                        Python::with_gil(|py| -> Result<Value, String> {
-                            let py_idx = value_to_py(py, &idx_val)?;
-                            let result = py_obj.call_method1(py, "__getitem__", (py_idx,))
-                                .map_err(|e| format!("Python index error: {}", e))?;
-                            py_to_value(py, result)
-                        })
-                    }
+                    Value::PythonObject(py_obj) => crate::python::get_item(&py_obj, &idx_val),
                     _ => Err("Can only index into a list, map, or Python object".to_string())
                 }
             }
@@ -923,19 +758,7 @@ impl Interpreter {
                 
                 let items = match list_val {
                     Value::List(l) => l.read().clone(),
-                    Value::PythonObject(py_obj) => {
-                        Python::with_gil(|py| -> Result<Vec<Value>, String> {
-                            if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
-                                let mut res = Vec::new();
-                                for item in list {
-                                    res.push(py_to_value(py, item)?);
-                                }
-                                Ok(res)
-                            } else {
-                                Err("'where' can only be used on an iterable Python object".to_string())
-                            }
-                        })?
-                    }
+                    Value::PythonObject(py_obj) => crate::python::to_list(&py_obj)?,
                     _ => return Err("'where' can only be used on a list or iterable".to_string())
                 };
                 
@@ -955,19 +778,7 @@ impl Interpreter {
                 
                 let items = match list_val {
                     Value::List(l) => l.read().clone(),
-                    Value::PythonObject(py_obj) => {
-                        Python::with_gil(|py| -> Result<Vec<Value>, String> {
-                            if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
-                                let mut res = Vec::new();
-                                for item in list {
-                                    res.push(py_to_value(py, item)?);
-                                }
-                                Ok(res)
-                            } else {
-                                Err("'select' can only be used on an iterable Python object".to_string())
-                            }
-                        })?
-                    }
+                    Value::PythonObject(py_obj) => crate::python::to_list(&py_obj)?,
                     _ => return Err("'select' can only be used on a list or iterable".to_string())
                 };
                 
@@ -984,19 +795,7 @@ impl Interpreter {
                 let list_val = self.evaluate(target, env)?;
                 let items = match list_val {
                     Value::List(l) => l.read().clone(),
-                    Value::PythonObject(py_obj) => {
-                        Python::with_gil(|py| -> Result<Vec<Value>, String> {
-                            if let Ok(list) = py_obj.extract::<Vec<PyObject>>(py) {
-                                let mut res = Vec::new();
-                                for item in list {
-                                    res.push(py_to_value(py, item)?);
-                                }
-                                Ok(res)
-                            } else {
-                                Err(format!("'{}' can only be used on an iterable Python object", op))
-                            }
-                        })?
-                    }
+                    Value::PythonObject(py_obj) => crate::python::to_list(&py_obj)?,
                     _ => return Err(format!("'{}' can only be used on a list", op))
                 };
                 
@@ -1068,21 +867,9 @@ impl Interpreter {
                 let func = self.evaluate(callee, env)?;
                 
                 // Handle Python objects being called
-                if let Value::PythonObject(py_obj) = func {
-                    return Python::with_gil(|py| -> Result<Value, String> {
-                        let mut py_args = Vec::new();
-                        for arg in arguments {
-                            let evaluated = self.evaluate(arg, env)?;
-                            py_args.push(value_to_py(py, &evaluated)?);
-                        }
-                        
-                        let args_tuple = PyTuple::new(py, py_args);
-                        
-                        let result = py_obj.call1(py, args_tuple)
-                            .map_err(|e| format!("Python error during call: {}", e))?;
-                            
-                        py_to_value(py, result)
-                    });
+                if let Value::PythonObject(py_obj) = &func {
+                    let args = arguments.iter().map(|a| self.evaluate(a, env)).collect::<Result<Vec<_>, _>>()?;
+                    return crate::python::call(py_obj, &args);
                 }
                 
                 // Handle native functions
@@ -1140,7 +927,7 @@ impl Interpreter {
                 
                 if matches!(l, Value::PythonObject(_)) || matches!(r, Value::PythonObject(_)) {
                     if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%" | "==" | "!=" | ">" | "<" | ">=" | "<=") {
-                        return python_operator_fallback(&l, &r, operator.as_str());
+                        return crate::python::binary_op(&l, &r, operator.as_str());
                     }
                 }
                 
@@ -1238,14 +1025,11 @@ impl Interpreter {
                         match (l, r) {
                             (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a.starts_with(&b))),
                             (Value::PythonObject(py_obj), Value::String(b)) => {
-                                Python::with_gil(|py| -> Result<Value, String> {
-                                    if let Ok(method) = py_obj.getattr(py, "startswith") {
-                                        let result = method.call1(py, (b,)).map_err(|e| e.to_string())?;
-                                        py_to_value(py, result.into_py(py))
-                                    } else {
-                                        Err("startswith method not found on object".to_string())
-                                    }
-                                })
+                                let method = crate::python::get_attr(&py_obj, "startswith")?;
+                                match method {
+                                    Value::PythonObject(m) => crate::python::call(&m, &[Value::String(b)]),
+                                    _ => Err("startswith method not found on object".to_string()),
+                                }
                             }
                             _ => Err("starts_with requires strings or a python string".to_string()),
                         }
@@ -1254,14 +1038,11 @@ impl Interpreter {
                         match (l, r) {
                             (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a.ends_with(&b))),
                             (Value::PythonObject(py_obj), Value::String(b)) => {
-                                Python::with_gil(|py| -> Result<Value, String> {
-                                    if let Ok(method) = py_obj.getattr(py, "endswith") {
-                                        let result = method.call1(py, (b,)).map_err(|e| e.to_string())?;
-                                        py_to_value(py, result.into_py(py))
-                                    } else {
-                                        Err("endswith method not found on object".to_string())
-                                    }
-                                })
+                                let method = crate::python::get_attr(&py_obj, "endswith")?;
+                                match method {
+                                    Value::PythonObject(m) => crate::python::call(&m, &[Value::String(b)]),
+                                    _ => Err("endswith method not found on object".to_string()),
+                                }
                             }
                             _ => Err("ends_with requires strings or a python string".to_string()),
                         }

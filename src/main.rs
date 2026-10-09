@@ -15,6 +15,7 @@ mod linter;
 mod formatter;
 pub mod stdlib;
 pub mod jit;
+mod python;
 
 use std::env;
 use std::fs;
