@@ -17,6 +17,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
       - run: cargo test --locked
+      - if: runner.os == 'macOS'
+        run: cargo build --locked --features metal
 
   python:
     runs-on: ubuntu-latest

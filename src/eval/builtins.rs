@@ -287,6 +287,7 @@ impl Interp {
             | Builtin::NnTril
             | Builtin::NnSave
             | Builtin::NnLoad
+            | Builtin::NnDevice
             | Builtin::RandomSeed
             | Builtin::RandomInt
             | Builtin::RandomFloat

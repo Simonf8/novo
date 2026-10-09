@@ -48,10 +48,12 @@ cargo build --release
 ./target/release/novo run examples/linear_regression.nv
 ```
 
-Python interop is optional, because it links against a Python installation:
+Optional features:
 
 ```bash
-cargo build --release --features python
+cargo build --release --features python   # import Python modules
+cargo build --release --features cuda     # run tensors on NVIDIA GPUs
+cargo build --release --features metal    # run tensors on Apple GPUs
 ```
 
 ## Usage
@@ -189,8 +191,8 @@ errors (`# expect-error: ...`) and required features
 1. **More native code.** Lists, strings, classes and closures in compiled
    functions, cheaper calls, and ahead-of-time executables.
 2. **Shapes in types.** Catch tensor dimension mismatches at check time.
-3. **Data and models.** Data loading, batching, layers, GPU support through
-   candle's CUDA and Metal backends, and loading pretrained weights.
+3. **Data and models.** Data loading, batching, reusable layers, and
+   running pretrained models such as GPT-2 from their published weights.
 4. **Tooling.** Language server, REPL, and a comment-preserving formatter.
 
 ## License

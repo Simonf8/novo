@@ -167,6 +167,12 @@ it requires building with `--features python`.
   updates the parameters. `nn.mse` and `nn.cross_entropy` are the losses;
   cross-entropy takes class indices as a tensor of whole numbers.
 
+- Devices and precision: tensors live on the CPU unless `nn.device("cuda")`
+  or `nn.device("metal")` selects a GPU (Novo must be built with the `cuda`
+  or `metal` feature). `t.to("cpu")` moves a tensor, `t.to_dtype("bf16")`
+  changes its precision (`f32`, `f16`, `bf16`, `f64`), and `nn.load(path,
+  "bf16")` loads weights in a given precision.
+
 Shape errors are run-time errors that name both shapes.
 
 `use random` gives `random.int(low, high)` (high excluded), `random.float()`,

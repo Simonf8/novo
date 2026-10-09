@@ -49,16 +49,18 @@ impl std::fmt::Debug for Opt {
     }
 }
 
-/// Process-wide state: the random generator and the gradients from the latest `backward`.
+/// Process-wide state: the random generator, the gradients from the latest
+/// `backward`, and the device new tensors are created on.
 pub struct State {
     rng: Mutex<Rng>,
     grads: Mutex<Option<GradStore>>,
+    device: Mutex<Device>,
 }
 
 impl Default for State {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
-        State { rng: Mutex::new(Rng::new(seed)), grads: Mutex::new(None) }
+        State { rng: Mutex::new(Rng::new(seed)), grads: Mutex::new(None), device: Mutex::new(Device::Cpu) }
     }
 }
 
@@ -140,6 +142,37 @@ fn float_arg(v: &Value) -> R<f64> {
     v.as_f64().ok_or_else(|| format!("expected a number, found a {}", v.type_name()))
 }
 
+fn parse_device(name: &str) -> R<Device> {
+    let (kind, index) = match name.split_once(':') {
+        Some((k, i)) => (k, i.parse::<usize>().map_err(|_| format!("invalid device `{name}`"))?),
+        None => (name, 0),
+    };
+    match kind {
+        "cpu" => Ok(Device::Cpu),
+        "cuda" => Device::new_cuda(index).map_err(|_| "CUDA is not available; build Novo with `--features cuda` on a machine with an NVIDIA GPU".to_string()),
+        "metal" => Device::new_metal(index).map_err(|_| "Metal is not available; build Novo with `--features metal` on a Mac".to_string()),
+        _ => Err(format!("unknown device `{name}`; use \"cpu\", \"cuda\" or \"metal\"")),
+    }
+}
+
+fn device_name(d: &Device) -> String {
+    match d.location() {
+        candle_core::DeviceLocation::Cpu => "cpu".into(),
+        candle_core::DeviceLocation::Cuda { gpu_id } => format!("cuda:{gpu_id}"),
+        candle_core::DeviceLocation::Metal { gpu_id } => format!("metal:{gpu_id}"),
+    }
+}
+
+fn parse_dtype(name: &str) -> R<DType> {
+    Ok(match name {
+        "f32" | "float32" => DType::F32,
+        "f16" | "float16" | "half" => DType::F16,
+        "bf16" | "bfloat16" => DType::BF16,
+        "f64" | "float64" => DType::F64,
+        _ => return Err(format!("unknown dtype `{name}`; use \"f32\", \"f16\", \"bf16\" or \"f64\"")),
+    })
+}
+
 /// Builds a tensor from a number or nested lists of numbers.
 fn from_value(v: &Value) -> R<Tensor> {
     let mut shape = Vec::new();
@@ -193,9 +226,16 @@ fn flatten(v: &Value, shape: &[usize], depth: usize, out: &mut Vec<f32>) -> R<()
 
 impl State {
     pub fn builtin(&self, b: Builtin, args: &[Value]) -> R<Value> {
-        let cpu = &Device::Cpu;
+        let device = self.device.lock().clone();
+        let cpu = &device;
         let t = match b {
-            Builtin::NnTensor => from_value(&args[0])?,
+            Builtin::NnTensor => from_value(&args[0])?.to_device(cpu).map_err(err)?,
+            Builtin::NnDevice => {
+                if let Some(Value::Str(name)) = args.first() {
+                    *self.device.lock() = parse_device(name)?;
+                }
+                return Ok(Value::Str(device_name(&self.device.lock()).into()));
+            }
             Builtin::NnZeros => Tensor::zeros(shape_arg(&args[0])?, DType::F32, cpu).map_err(err)?,
             Builtin::NnOnes => Tensor::ones(shape_arg(&args[0])?, DType::F32, cpu).map_err(err)?,
             Builtin::NnRandn | Builtin::NnRand => {
@@ -203,7 +243,7 @@ impl State {
                 let n: usize = shape.iter().product();
                 let mut rng = self.rng.lock();
                 let data: Vec<f32> = (0..n).map(|_| if b == Builtin::NnRandn { rng.normal() } else { rng.uniform() } as f32).collect();
-                Tensor::from_vec(data, shape, cpu).map_err(err)?
+                Tensor::from_vec(data, shape, &Device::Cpu).and_then(|t| t.to_device(cpu)).map_err(err)?
             }
             Builtin::NnArange => Tensor::arange(0f32, int_arg(&args[0])?.max(0) as f32, cpu).map_err(err)?,
             Builtin::NnEye => Tensor::eye(int_arg(&args[0])?.max(0) as usize, DType::F32, cpu).map_err(err)?,
@@ -295,11 +335,15 @@ impl State {
             }
             Builtin::NnLoad => {
                 let Value::Str(path) = &args[0] else { return Err("`nn.load` needs a file path".into()) };
+                let dtype = match args.get(1) {
+                    Some(Value::Str(name)) => parse_dtype(name)?,
+                    _ => DType::F32,
+                };
                 let mut named: Vec<(String, Tensor)> = candle_core::safetensors::load(&**path, cpu).map_err(err)?.into_iter().collect();
                 named.sort_by(|a, b| a.0.cmp(&b.0));
                 let mut dict = Dict::default();
                 for (name, t) in named {
-                    let t = if t.dtype() == DType::F32 { t } else { t.to_dtype(DType::F32).map_err(err)? };
+                    let t = if t.dtype() == dtype || !t.dtype().is_float() { t } else { t.to_dtype(dtype).map_err(err)? };
                     dict.insert(Key::Str(name.into()), wrap(t));
                 }
                 return Ok(Value::map(dict));
@@ -386,7 +430,7 @@ impl State {
             }
             "masked_fill" => {
                 let mask = tensor_arg(&args[0])?.broadcast_as(t.dims()).map_err(err)?;
-                let fill = Tensor::full(float_arg(&args[1])? as f32, t.dims(), &Device::Cpu).map_err(err)?;
+                let fill = Tensor::full(float_arg(&args[1])? as f32, t.dims(), t.device()).and_then(|f| f.to_dtype(t.dtype())).map_err(err)?;
                 mask.ne(0f32).and_then(|m| m.where_cond(&fill, &t)).map_err(err)?
             }
             "layer_norm" => {
@@ -396,6 +440,16 @@ impl State {
                     None => 1e-5,
                 };
                 layer_norm(&t, &weight, &bias, eps).map_err(err)?
+            }
+            "device" => return Ok(Value::Str(device_name(t.device()).into())),
+            "dtype" => return Ok(Value::Str(t.dtype().as_str().into())),
+            "to" => {
+                let Value::Str(name) = &args[0] else { return Err("`to` needs a device name".into()) };
+                t.to_device(&parse_device(name)?).map_err(err)?
+            }
+            "to_dtype" => {
+                let Value::Str(name) = &args[0] else { return Err("`to_dtype` needs a dtype name".into()) };
+                t.to_dtype(parse_dtype(name)?).map_err(err)?
             }
             "sample" => {
                 let probs = values(&t)?;

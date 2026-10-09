@@ -1,0 +1,6 @@
+cpu
+cpu f32
+bf16 tensor([[1.5, 2.25]]) tensor([[3.0, 4.5]])
+cpu
+CUDA is not available; build Novo with `--features cuda` on a machine with an NVIDIA GPU
+unknown dtype `int8`; use "f32", "f16", "bf16" or "f64"
