@@ -46,17 +46,9 @@ impl<'s> Checker<'s> {
             ast::ExprKind::Name(name) => self.infer_name(name, span),
             ast::ExprKind::List(items) => self.infer_list(items, span),
             ast::ExprKind::Map(entries) => {
-                let (k, v) = (self.infer.fresh(), self.infer.fresh());
-                let entries = entries
-                    .iter()
-                    .map(|(ke, ve)| {
-                        let key = self.infer_expr(ke);
-                        let key = self.coerce(key, &k);
-                        let value = self.infer_expr(ve);
-                        let value = self.coerce(value, &v);
-                        (key, value)
-                    })
-                    .collect();
+                let (keys, values): (Vec<_>, Vec<_>) = entries.iter().map(|(k, v)| (self.infer_expr(k), self.infer_expr(v))).unzip();
+                let (k, v) = (self.element_type(&keys), self.element_type(&values));
+                let entries = keys.into_iter().zip(values).map(|(key, value)| (self.coerce(key, &k), self.coerce(value, &v))).collect();
                 expr(ExprKind::Map(entries), Ty::map(k, v), span)
             }
             ast::ExprKind::Unary { op, operand } => {
@@ -96,9 +88,13 @@ impl<'s> Checker<'s> {
             ast::ExprKind::Lambda { params, body } => self.lambda(params, body, span),
             ast::ExprKind::Query { op, target, body, parallel } => self.query(*op, target, body.as_deref(), *parallel, span),
             ast::ExprKind::Together(inner) => {
+                let module = self.module_of_ctx();
+                self.stack.push(FnCtx { module: module.0, is_closure: true, ..FnCtx::default() });
                 let inner = self.infer_expr(inner);
-                let ty = Ty::task(inner.ty.clone());
-                expr(ExprKind::Together(Box::new(inner)), ty, span)
+                let ty = inner.ty.clone();
+                let block = vec![hir::Stmt { span: inner.span, kind: hir::StmtKind::Return(Some(inner)) }];
+                let closure = self.finish_closure("<task>", 0, Ty::func(vec![], ty.clone()), block, true, span);
+                expr(ExprKind::Together(Box::new(closure)), Ty::task(ty), span)
             }
             ast::ExprKind::Await(inner) => {
                 let inner = self.infer_expr(inner);
@@ -142,10 +138,24 @@ impl<'s> Checker<'s> {
         expr(ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, out, span)
     }
 
+    /// The element type for a literal's items: their common type, `Float` when
+    /// `Int`s and `Float`s mix, or `Any` when their kinds conflict.
+    fn element_type(&mut self, items: &[hir::Expr]) -> Ty {
+        let heads: Vec<Ty> = items.iter().map(|i| self.infer.shallow(&i.ty)).filter(|t| !matches!(t, Ty::Var(_))).collect();
+        let kind = |t: &Ty| std::mem::discriminant(t);
+        let numeric = heads.iter().all(Ty::is_numeric);
+        if numeric && heads.contains(&Ty::Float) {
+            return Ty::Float;
+        }
+        if heads.windows(2).any(|w| kind(&w[0]) != kind(&w[1]) || matches!((&w[0], &w[1]), (Ty::Class(a), Ty::Class(b)) if a != b)) {
+            return Ty::Any;
+        }
+        self.infer.fresh()
+    }
+
     fn infer_list(&mut self, items: &[ast::Expr], span: Span) -> hir::Expr {
         let items: Vec<hir::Expr> = items.iter().map(|i| self.infer_expr(i)).collect();
-        let has_float = items.iter().any(|i| self.infer.shallow(&i.ty) == Ty::Float);
-        let elem = if has_float { Ty::Float } else { self.infer.fresh() };
+        let elem = self.element_type(&items);
         let items = items.into_iter().map(|i| self.coerce(i, &elem)).collect();
         expr(ExprKind::List(items), Ty::list(elem), span)
     }

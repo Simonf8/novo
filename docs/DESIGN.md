@@ -91,7 +91,7 @@ class Counter:
 
 Fields are declared with a type, a default, or both. `Counter()` builds an
 instance from the defaults; fields can be set positionally, in declaration
-order, or by name: `Counter(value: 5)`. Methods see the instance as `self`.
+order, or by name: `Counter(value=5)`. Methods see the instance as `self`.
 Instances are shared by reference.
 
 ## Errors

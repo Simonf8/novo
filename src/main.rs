@@ -17,6 +17,7 @@ pub mod stdlib;
 pub mod jit;
 mod python;
 mod check;
+mod eval;
 mod diagnostic;
 mod source;
 mod syntax;
@@ -161,7 +162,36 @@ fn main() {
     }
 }
 
+fn render_diagnostics(sources: &source::SourceMap, diags: &[diagnostic::Diagnostic]) {
+    use std::io::IsTerminal;
+    let color = std::io::stderr().is_terminal();
+    for d in diags {
+        eprint!("{}", d.render(sources, color));
+    }
+}
+
+fn run_next(filename: &str, program_args: Vec<String>) {
+    let mut sources = source::SourceMap::default();
+    let program = match check::check(&mut sources, Path::new(filename)) {
+        Ok(p) => p,
+        Err(diags) => {
+            render_diagnostics(&sources, &diags);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = eval::run(program, program_args) {
+        let diag = diagnostic::Diagnostic::error(e.span, e.message);
+        render_diagnostics(&sources, &[diag]);
+        std::process::exit(1);
+    }
+}
+
 fn execute_run(filename: &str, engine: &str) {
+    if engine == "next" {
+        let args: Vec<String> = env::args().skip_while(|a| a != filename).collect();
+        run_next(filename, args);
+        return;
+    }
     let source = match fs::read_to_string(filename) {
         Ok(s) => s,
         Err(e) => {

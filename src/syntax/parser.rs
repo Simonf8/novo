@@ -592,7 +592,10 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Dot => {
                     self.bump();
-                    let name = self.ident("after `.`")?;
+                    let name = match self.peek().keyword_text() {
+                        Some(word) => Ident { name: word.to_string(), span: self.bump().span },
+                        None => self.ident("after `.`")?,
+                    };
                     let span = expr.span.to(name.span);
                     expr = Expr { kind: ExprKind::Field { target: Box::new(expr), name }, span };
                 }

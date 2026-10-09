@@ -168,6 +168,7 @@ pub enum ExprKind {
     Index { target: Box<Expr>, index: Box<Expr> },
     Slice { target: Box<Expr>, start: Option<Box<Expr>>, end: Option<Box<Expr>> },
     Query { op: QueryOp, target: Box<Expr>, item: LocalId, body: Option<Box<Expr>>, parallel: bool },
+    /// Runs a zero-argument closure on another thread.
     Together(Box<Expr>),
     Await(Box<Expr>),
     RunParallel(Vec<Expr>),

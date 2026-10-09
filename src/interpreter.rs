@@ -247,7 +247,7 @@ impl Interpreter {
                         };
                         map.insert(key, val);
                     }
-                    Value::PythonObject(py_obj) => crate::python::set_item(&py_obj, &index_val, &val)?,
+                    Value::PythonObject(py_obj) => crate::python::legacy::set_item(&py_obj, &index_val, &val)?,
                     _ => return Err("Index assignment only supported on lists, maps, or Python objects".to_string()),
                 }
             }
@@ -261,7 +261,7 @@ impl Interpreter {
                     Value::Instance { properties, .. } => {
                         properties.write().insert(property.clone(), val);
                     }
-                    Value::PythonObject(py_obj) => crate::python::set_attr(&py_obj, property, &val)?,
+                    Value::PythonObject(py_obj) => crate::python::legacy::set_attr(&py_obj, property, &val)?,
                     _ => return Err("Property assignment only supported on maps, instances, or Python objects".to_string()),
                 }
             }
@@ -375,7 +375,7 @@ impl Interpreter {
                 env.define(name.clone(), func_val);
             }
             StatementNode::UsePython { module, alias } => {
-                let py_module = crate::python::import(module)?;
+                let py_module = crate::python::legacy::import(module)?;
                 let name = alias.as_ref().unwrap_or(module).clone();
                 env.define(name, py_module);
             }
@@ -625,7 +625,7 @@ impl Interpreter {
             }
             ExpressionNode::Get(url_expr) => {
                 let url_val = self.evaluate(url_expr, env)?;
-                let execute_get = crate::python::http_get;
+                let execute_get = crate::python::legacy::http_get;
                 
                 match url_val {
                     Value::String(url) => execute_get(&url),
@@ -721,7 +721,7 @@ impl Interpreter {
                             Err(format!("Property '{}' not found", property))
                         }
                     }
-                    Value::PythonObject(py_obj) => crate::python::get_attr(&py_obj, property),
+                    Value::PythonObject(py_obj) => crate::python::legacy::get_attr(&py_obj, property),
                     _ => Err("Property access only allowed on objects/maps, strings, lists, or Python objects".to_string()),
                 }
             }
@@ -749,7 +749,7 @@ impl Interpreter {
                         };
                         Ok(map.get(&key).cloned().unwrap_or(Value::Null))
                     }
-                    Value::PythonObject(py_obj) => crate::python::get_item(&py_obj, &idx_val),
+                    Value::PythonObject(py_obj) => crate::python::legacy::get_item(&py_obj, &idx_val),
                     _ => Err("Can only index into a list, map, or Python object".to_string())
                 }
             }
@@ -758,7 +758,7 @@ impl Interpreter {
                 
                 let items = match list_val {
                     Value::List(l) => l.read().clone(),
-                    Value::PythonObject(py_obj) => crate::python::to_list(&py_obj)?,
+                    Value::PythonObject(py_obj) => crate::python::legacy::to_list(&py_obj)?,
                     _ => return Err("'where' can only be used on a list or iterable".to_string())
                 };
                 
@@ -778,7 +778,7 @@ impl Interpreter {
                 
                 let items = match list_val {
                     Value::List(l) => l.read().clone(),
-                    Value::PythonObject(py_obj) => crate::python::to_list(&py_obj)?,
+                    Value::PythonObject(py_obj) => crate::python::legacy::to_list(&py_obj)?,
                     _ => return Err("'select' can only be used on a list or iterable".to_string())
                 };
                 
@@ -795,7 +795,7 @@ impl Interpreter {
                 let list_val = self.evaluate(target, env)?;
                 let items = match list_val {
                     Value::List(l) => l.read().clone(),
-                    Value::PythonObject(py_obj) => crate::python::to_list(&py_obj)?,
+                    Value::PythonObject(py_obj) => crate::python::legacy::to_list(&py_obj)?,
                     _ => return Err(format!("'{}' can only be used on a list", op))
                 };
                 
@@ -869,7 +869,7 @@ impl Interpreter {
                 // Handle Python objects being called
                 if let Value::PythonObject(py_obj) = &func {
                     let args = arguments.iter().map(|a| self.evaluate(a, env)).collect::<Result<Vec<_>, _>>()?;
-                    return crate::python::call(py_obj, &args);
+                    return crate::python::legacy::call(py_obj, &args);
                 }
                 
                 // Handle native functions
@@ -927,7 +927,7 @@ impl Interpreter {
                 
                 if matches!(l, Value::PythonObject(_)) || matches!(r, Value::PythonObject(_)) {
                     if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%" | "==" | "!=" | ">" | "<" | ">=" | "<=") {
-                        return crate::python::binary_op(&l, &r, operator.as_str());
+                        return crate::python::legacy::binary_op(&l, &r, operator.as_str());
                     }
                 }
                 
@@ -1025,9 +1025,9 @@ impl Interpreter {
                         match (l, r) {
                             (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a.starts_with(&b))),
                             (Value::PythonObject(py_obj), Value::String(b)) => {
-                                let method = crate::python::get_attr(&py_obj, "startswith")?;
+                                let method = crate::python::legacy::get_attr(&py_obj, "startswith")?;
                                 match method {
-                                    Value::PythonObject(m) => crate::python::call(&m, &[Value::String(b)]),
+                                    Value::PythonObject(m) => crate::python::legacy::call(&m, &[Value::String(b)]),
                                     _ => Err("startswith method not found on object".to_string()),
                                 }
                             }
@@ -1038,9 +1038,9 @@ impl Interpreter {
                         match (l, r) {
                             (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a.ends_with(&b))),
                             (Value::PythonObject(py_obj), Value::String(b)) => {
-                                let method = crate::python::get_attr(&py_obj, "endswith")?;
+                                let method = crate::python::legacy::get_attr(&py_obj, "endswith")?;
                                 match method {
-                                    Value::PythonObject(m) => crate::python::call(&m, &[Value::String(b)]),
+                                    Value::PythonObject(m) => crate::python::legacy::call(&m, &[Value::String(b)]),
                                     _ => Err("endswith method not found on object".to_string()),
                                 }
                             }

@@ -214,7 +214,7 @@ impl VM {
                             *a = Value::List(std::sync::Arc::new(parking_lot::RwLock::new(new_vec)));
                         }
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::python::binary_op(&*a, &b, "+") {
+                            match crate::python::legacy::binary_op(&*a, &b, "+") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -231,7 +231,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) - *y),
                         (Value::Float(x), Value::Integer(y)) => *x -= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::python::binary_op(&*a, &b, "-") {
+                            match crate::python::legacy::binary_op(&*a, &b, "-") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -248,7 +248,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) * *y),
                         (Value::Float(x), Value::Integer(y)) => *x *= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::python::binary_op(&*a, &b, "*") {
+                            match crate::python::legacy::binary_op(&*a, &b, "*") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -265,7 +265,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) / *y),
                         (Value::Float(x), Value::Integer(y)) => *x /= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::python::binary_op(&*a, &b, "/") {
+                            match crate::python::legacy::binary_op(&*a, &b, "/") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -282,7 +282,7 @@ impl VM {
                         (Value::Integer(x), Value::Float(y)) => *a = Value::Float((*x as f64) % *y),
                         (Value::Float(x), Value::Integer(y)) => *x %= *y as f64,
                         (Value::PythonObject(_), _) | (_, Value::PythonObject(_)) => {
-                            match crate::python::binary_op(&*a, &b, "%") {
+                            match crate::python::legacy::binary_op(&*a, &b, "%") {
                                 Ok(v) => *a = v,
                                 Err(e) => throw!(frame, 'vm_loop, e),
                             }
@@ -515,7 +515,7 @@ impl VM {
                         }
                         Value::PythonObject(py_obj) => {
                             let start = self.stack.len() - arg_count;
-                            let result = crate::python::call(&py_obj, &self.stack[start..]);
+                            let result = crate::python::legacy::call(&py_obj, &self.stack[start..]);
                             
                             match result {
                                 Ok(v) => {
@@ -537,7 +537,7 @@ impl VM {
                         Value::String(s) => s.clone(),
                         _ => throw!(frame, 'vm_loop, "Import name must be string".to_string()),
                     };
-                    let result = crate::python::import(&name);
+                    let result = crate::python::legacy::import(&name);
                     match result {
                         Ok(v) => self.stack.push(v),
                         Err(e) => throw!(frame, 'vm_loop, e),
@@ -652,7 +652,7 @@ impl VM {
                             }
                         }
                         Value::PythonObject(py_obj) => {
-                            let result = crate::python::get_attr(&py_obj, &name);
+                            let result = crate::python::legacy::get_attr(&py_obj, &name);
                             match result {
                                 Ok(v) => self.stack.push(v),
                                 Err(e) => throw!(frame, 'vm_loop, e),
@@ -862,7 +862,7 @@ impl VM {
                 OpCode::Get => {
                     let url_val = self.stack.pop().unwrap();
                     let url = if let Value::String(s) = url_val { s } else { throw!(frame, 'vm_loop, "Expected string for get url".to_string()) };
-                    let execute_get = crate::python::http_get;
+                    let execute_get = crate::python::legacy::http_get;
                     match execute_get(&url) {
                         Ok(v) => self.stack.push(v),
                         Err(e) => throw!(frame, 'vm_loop, e),

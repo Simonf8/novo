@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const ENGINES: &[&str] = &["vm", "ast"];
+const ENGINES: &[&str] = &["vm", "ast", "next"];
 
 #[derive(Default)]
 struct Directives {

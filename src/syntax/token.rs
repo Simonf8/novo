@@ -81,7 +81,17 @@ pub enum Tok {
     Eof,
 }
 
+const KEYWORDS: &[&str] = &[
+    "show", "if", "otherwise", "else", "repeat", "for", "in", "while", "function", "task", "return", "true", "false", "none", "and", "or",
+    "not", "use", "python", "as", "class", "try", "catch", "break", "continue", "pass", "together", "await",
+];
+
 impl Tok {
+    /// The source text of a keyword token, so keywords can still name fields and methods.
+    pub fn keyword_text(&self) -> Option<&'static str> {
+        KEYWORDS.iter().copied().find(|w| Tok::keyword(w).as_ref() == Some(self))
+    }
+
     pub fn keyword(word: &str) -> Option<Tok> {
         Some(match word {
             "show" => Tok::Show,
