@@ -16,6 +16,10 @@ mod formatter;
 pub mod stdlib;
 pub mod jit;
 mod python;
+mod check;
+mod diagnostic;
+mod source;
+mod syntax;
 
 use std::env;
 use std::fs;

@@ -15,21 +15,8 @@ pub enum Ty {
     Func(Vec<Ty>, Box<Ty>),
     Class(ClassId),
     Task(Box<Ty>),
-    Tensor,
-    Model,
-    Optimizer,
     Any,
     Var(u32),
-}
-
-/// How a value of a type is represented at runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Repr {
-    Int,
-    Float,
-    Bool,
-    Obj,
-    Unit,
 }
 
 impl Ty {
@@ -41,32 +28,24 @@ impl Ty {
         Ty::Map(Box::new(key), Box::new(value))
     }
 
-    pub fn repr(&self) -> Repr {
-        match self {
-            Ty::Int => Repr::Int,
-            Ty::Float => Repr::Float,
-            Ty::Bool => Repr::Bool,
-            Ty::None => Repr::Unit,
-            Ty::Var(_) => Repr::Int,
-            _ => Repr::Obj,
-        }
+    pub fn task(inner: Ty) -> Ty {
+        Ty::Task(Box::new(inner))
     }
 
-    pub fn is_obj(&self) -> bool {
-        self.repr() == Repr::Obj
+    pub fn func(params: Vec<Ty>, ret: Ty) -> Ty {
+        Ty::Func(params, Box::new(ret))
     }
 
     pub fn is_numeric(&self) -> bool {
         matches!(self, Ty::Int | Ty::Float)
     }
 
-    pub fn has_vars(&self) -> bool {
+    pub fn children(&self) -> Vec<&Ty> {
         match self {
-            Ty::Var(_) => true,
-            Ty::List(t) | Ty::Task(t) => t.has_vars(),
-            Ty::Map(k, v) => k.has_vars() || v.has_vars(),
-            Ty::Func(ps, r) => ps.iter().any(Ty::has_vars) || r.has_vars(),
-            _ => false,
+            Ty::List(t) | Ty::Task(t) => vec![t],
+            Ty::Map(k, v) => vec![k, v],
+            Ty::Func(ps, r) => ps.iter().chain(std::iter::once(&**r)).collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -92,7 +71,7 @@ impl<'a> fmt::Display for TyDisplay<'a> {
             Ty::List(t) => write!(f, "List[{}]", sub(t)),
             Ty::Map(k, v) => write!(f, "Map[{}, {}]", sub(k), sub(v)),
             Ty::Func(ps, r) => {
-                f.write_str("Function(")?;
+                f.write_str("(")?;
                 for (i, p) in ps.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
@@ -103,15 +82,13 @@ impl<'a> fmt::Display for TyDisplay<'a> {
             }
             Ty::Class(id) => f.write_str(self.classes.get(id.0 as usize).map(String::as_str).unwrap_or("<class>")),
             Ty::Task(t) => write!(f, "Task[{}]", sub(t)),
-            Ty::Tensor => f.write_str("Tensor"),
-            Ty::Model => f.write_str("Model"),
-            Ty::Optimizer => f.write_str("Optimizer"),
             Ty::Any => f.write_str("Any"),
             Ty::Var(_) => f.write_str("_"),
         }
     }
 }
 
+/// Union-find style substitution for type variables.
 #[derive(Default)]
 pub struct Infer {
     vars: Vec<Option<Ty>>,
@@ -137,42 +114,40 @@ impl Infer {
     pub fn zonk(&self, ty: &Ty) -> Ty {
         match self.shallow(ty) {
             Ty::List(t) => Ty::list(self.zonk(&t)),
-            Ty::Task(t) => Ty::Task(Box::new(self.zonk(&t))),
+            Ty::Task(t) => Ty::task(self.zonk(&t)),
             Ty::Map(k, v) => Ty::map(self.zonk(&k), self.zonk(&v)),
-            Ty::Func(ps, r) => Ty::Func(ps.iter().map(|p| self.zonk(p)).collect(), Box::new(self.zonk(&r))),
+            Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| self.zonk(p)).collect(), self.zonk(&r)),
             other => other,
         }
     }
 
-    /// Zonks a type and replaces unresolved variables with `None`.
-    pub fn finalize(&self, ty: &Ty) -> Ty {
+    pub fn free_vars(&self, ty: &Ty, out: &mut Vec<u32>) {
         match self.shallow(ty) {
-            Ty::Var(_) => Ty::None,
-            Ty::List(t) => Ty::list(self.finalize_elem(&t)),
-            Ty::Task(t) => Ty::Task(Box::new(self.finalize(&t))),
-            Ty::Map(k, v) => Ty::map(self.finalize_elem(&k), self.finalize_elem(&v)),
-            Ty::Func(ps, r) => Ty::Func(ps.iter().map(|p| self.finalize(p)).collect(), Box::new(self.finalize(&r))),
-            other => other,
-        }
-    }
-
-    fn finalize_elem(&self, ty: &Ty) -> Ty {
-        match self.shallow(ty) {
-            Ty::Var(_) => Ty::Int,
-            _ => self.finalize(ty),
+            Ty::Var(v) => {
+                if !out.contains(&v) {
+                    out.push(v);
+                }
+            }
+            t => {
+                for c in t.children() {
+                    self.free_vars(c, out);
+                }
+            }
         }
     }
 
     fn occurs(&self, var: u32, ty: &Ty) -> bool {
         match self.shallow(ty) {
             Ty::Var(v) => v == var,
-            Ty::List(t) | Ty::Task(t) => self.occurs(var, &t),
-            Ty::Map(k, v) => self.occurs(var, &k) || self.occurs(var, &v),
-            Ty::Func(ps, r) => ps.iter().any(|p| self.occurs(var, p)) || self.occurs(var, &r),
-            _ => false,
+            t => t.children().into_iter().any(|c| self.occurs(var, c)),
         }
     }
 
+    pub fn bind(&mut self, var: u32, ty: Ty) {
+        self.vars[var as usize] = Some(ty);
+    }
+
+    /// Makes two types equal. `Any` is compatible with every type without binding it.
     pub fn unify(&mut self, a: &Ty, b: &Ty) -> bool {
         let a = self.shallow(a);
         let b = self.shallow(b);
@@ -182,22 +157,35 @@ impl Infer {
                 if self.occurs(*x, &b) {
                     return false;
                 }
-                self.vars[*x as usize] = Some(b);
+                self.bind(*x, b);
                 true
             }
             (_, Ty::Var(y)) => {
                 if self.occurs(*y, &a) {
                     return false;
                 }
-                self.vars[*y as usize] = Some(a);
+                self.bind(*y, a);
                 true
             }
+            (Ty::Any, _) | (_, Ty::Any) => true,
             (Ty::List(x), Ty::List(y)) | (Ty::Task(x), Ty::Task(y)) => self.unify(x, y),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => self.unify(k1, k2) && self.unify(v1, v2),
             (Ty::Func(p1, r1), Ty::Func(p2, r2)) => {
                 p1.len() == p2.len() && p1.iter().zip(p2).all(|(x, y)| self.unify(x, y)) && self.unify(r1, r2)
             }
             _ => a == b,
+        }
+    }
+
+    /// Replaces the given variables with fresh ones throughout `ty`.
+    pub fn substitute(&self, ty: &Ty, map: &[(u32, Ty)]) -> Ty {
+        match self.shallow(ty) {
+            Ty::Var(v) => map.iter().find(|(k, _)| *k == v).map(|(_, t)| t.clone()).unwrap_or(Ty::Var(v)),
+            Ty::List(t) => Ty::list(self.substitute(&t, map)),
+            Ty::Task(t) => Ty::task(self.substitute(&t, map)),
+            Ty::Map(k, v) => Ty::map(self.substitute(&k, map), self.substitute(&v, map)),
+            Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| self.substitute(p, map)).collect(), self.substitute(&r, map)),
+            other => other,
         }
     }
 }
