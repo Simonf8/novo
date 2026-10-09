@@ -1,0 +1,5 @@
+# engines: next
+# expect-error: would change this variable from `Int` to `Float`
+total = 0
+for x in [1.5, 2.5]:
+    total += x

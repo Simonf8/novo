@@ -1,0 +1,4 @@
+# engines: next
+# expect-error: expected `Int`, found `String`
+function f(x: Int) => x
+show f("s")

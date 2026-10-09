@@ -129,7 +129,13 @@ impl<'s> Checker<'s> {
                     };
                     Outcome::Fail(Diagnostic::error(*span, msg))
                 }
-                t => Outcome::Fail(Diagnostic::error(*span, format!("`{}` has no field `{name}`", self.show(&t)))),
+                t => {
+                    let mut diag = Diagnostic::error(*span, format!("`{}` has no field `{name}`", self.show(&t)));
+                    if method_signature(&t, name).is_some() {
+                        diag = diag.with_help(format!("`{name}` is a method; call it with `{name}()`"));
+                    }
+                    Outcome::Fail(diag)
+                }
             },
             Constraint::Index { target, index, out, span } => match self.infer.shallow(target) {
                 Ty::Var(_) => Outcome::Wait,

@@ -430,7 +430,7 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Tok::Ident(w) => QueryOp::from_word(w).is_none(),
             Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::FStr(_) | Tok::True | Tok::False | Tok::None => true,
-            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::Pipe | Tok::Minus | Tok::Not | Tok::Await => true,
+            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::Pipe | Tok::Minus | Tok::Not | Tok::Await | Tok::Together => true,
             _ => false,
         }
     }

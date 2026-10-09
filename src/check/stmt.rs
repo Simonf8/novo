@@ -115,7 +115,12 @@ impl<'s> Checker<'s> {
                     self.unify_at(target.span, a, &place_ty);
                 }
                 let value = self.infer_expr(value);
+                let errors = self.diags.len();
                 let value = self.coerce(value, &place_ty);
+                if self.diags.len() > errors && matches!(place, Place::Local(_) | Place::Global(_)) {
+                    let diag = self.diags.pop().unwrap().with_help("a variable keeps the type of its first value; use a new name for a different type");
+                    self.diags.push(diag);
+                }
                 StmtKind::Assign { place, op: None, value }
             }
             ast::StmtKind::AugAssign { target, op, value } => {

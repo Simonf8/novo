@@ -1,0 +1,4 @@
+# engines: next
+# expect-error: `List[Int]` has no method `shove`
+xs = [1]
+xs.shove(2)

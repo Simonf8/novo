@@ -441,6 +441,7 @@ impl<'s> Checker<'s> {
         self.solve_pending();
         let ctx = self.stack.pop().unwrap();
 
+        self.funcs[id.0 as usize].state = FnState::Pending;
         let scheme = self.generalize(&fty, ctx.pending);
         let defaults = self.funcs[id.0 as usize].params.iter().map(|p| p.default.clone()).collect();
         self.funcs[id.0 as usize].hir = Some(hir::Func {

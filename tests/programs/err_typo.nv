@@ -1,0 +1,4 @@
+# engines: next
+# expect-error: did you mean `count`?
+count = 1
+show cuont

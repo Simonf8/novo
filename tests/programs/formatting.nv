@@ -1,0 +1,22 @@
+# engines: next
+pi = 3.14159
+show f"{pi:.2f}"
+show f"[{42:>6}]"
+show f"[{'ab':<4}]"
+show f"[{'ab':^6}]"
+show f"{1234567:,}"
+show f"{7:03d}"
+show f"{0.25:.1%}"
+s = "hello world"
+show s[0], s[-1], s[0:5], s[6:]
+show s.split(" ")
+show "x" * 3
+show "ell" in s
+show s.index_of("world")
+show "a-b-c".replace("-", "+")
+show 0.1 + 0.2
+show 1e20
+show 1.0 / 3
+show 2 ** 10, 2 ** 0.5
+show 7 // 2, -7 // 2, -7 % 3, 7 % -3
+show 10 / 4
