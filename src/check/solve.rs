@@ -20,6 +20,8 @@ pub enum Constraint {
     Iter { iterable: Ty, item: Ty, span: Span },
     Len { ty: Ty, span: Span },
     Numeric { ty: Ty, span: Span },
+    /// A number or a tensor, as `sum` accepts.
+    Summable { ty: Ty, span: Span },
 }
 
 enum Outcome {
@@ -38,7 +40,7 @@ impl Constraint {
             Constraint::Index { target, index, out, .. } => vec![target, index, out],
             Constraint::Slice { target, .. } => vec![target],
             Constraint::Iter { iterable, item, .. } => vec![iterable, item],
-            Constraint::Len { ty, .. } | Constraint::Numeric { ty, .. } => vec![ty],
+            Constraint::Len { ty, .. } | Constraint::Numeric { ty, .. } | Constraint::Summable { ty, .. } => vec![ty],
         }
     }
 
@@ -56,6 +58,7 @@ impl Constraint {
             Constraint::Iter { iterable, item, span } => Constraint::Iter { iterable: s(iterable), item: s(item), span: *span },
             Constraint::Len { ty, span } => Constraint::Len { ty: s(ty), span: *span },
             Constraint::Numeric { ty, span } => Constraint::Numeric { ty: s(ty), span: *span },
+            Constraint::Summable { ty, span } => Constraint::Summable { ty: s(ty), span: *span },
         }
     }
 }
@@ -109,7 +112,7 @@ impl<'s> Checker<'s> {
             Constraint::Binary { op, lhs, rhs, out, span } => self.solve_binary(*op, lhs, rhs, out, *span),
             Constraint::Neg { operand, out, span } => match self.infer.shallow(operand) {
                 Ty::Var(_) => Outcome::Wait,
-                t @ (Ty::Int | Ty::Float | Ty::Any) => self.settle(out, &t, *span),
+                t @ (Ty::Int | Ty::Float | Ty::Tensor | Ty::Any) => self.settle(out, &t, *span),
                 t => Outcome::Fail(Diagnostic::error(*span, format!("cannot negate a `{}`", self.show(&t)))),
             },
             Constraint::Method { recv, name, args, out, span } => self.solve_method(recv, name, args, out, *span),
@@ -146,11 +149,12 @@ impl<'s> Checker<'s> {
                     }
                     self.settle(out, &e, *span)
                 }
-                Ty::Str => {
+                t @ (Ty::Str | Ty::Tensor) => {
                     if !self.infer.unify(index, &Ty::Int) {
-                        return Outcome::Fail(Diagnostic::error(*span, format!("string index must be an `Int`, found `{}`", self.show(index))));
+                        let msg = format!("{} index must be an `Int`, found `{}`", if t == Ty::Str { "string" } else { "tensor" }, self.show(index));
+                        return Outcome::Fail(Diagnostic::error(*span, msg));
                     }
-                    self.settle(out, &Ty::Str, *span)
+                    self.settle(out, &t, *span)
                 }
                 Ty::Map(k, v) => {
                     if !self.infer.unify(&k, index) {
@@ -162,7 +166,7 @@ impl<'s> Checker<'s> {
             },
             Constraint::Slice { target, span } => match self.infer.shallow(target) {
                 Ty::Var(_) => Outcome::Wait,
-                Ty::List(_) | Ty::Str | Ty::Any => Outcome::Done,
+                Ty::List(_) | Ty::Str | Ty::Tensor | Ty::Any => Outcome::Done,
                 t => Outcome::Fail(Diagnostic::error(*span, format!("cannot slice a `{}`", self.show(&t)))),
             },
             Constraint::Iter { iterable, item, span } => match self.infer.shallow(iterable) {
@@ -170,6 +174,7 @@ impl<'s> Checker<'s> {
                 Ty::Any => self.settle(item, &Ty::Any, *span),
                 Ty::List(e) => self.settle(item, &e, *span),
                 Ty::Str => self.settle(item, &Ty::Str, *span),
+                Ty::Tensor => self.settle(item, &Ty::Tensor, *span),
                 Ty::Map(k, _) => self.settle(item, &k, *span),
                 t => Outcome::Fail(
                     Diagnostic::error(*span, format!("cannot iterate over a `{}`", self.show(&t))).with_help("loops work over lists, strings, maps and `range(...)`"),
@@ -177,13 +182,18 @@ impl<'s> Checker<'s> {
             },
             Constraint::Len { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
-                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Any => Outcome::Done,
-                t => Outcome::Fail(Diagnostic::error(*span, format!("`len` needs a list, string or map, found `{}`", self.show(&t)))),
+                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tensor | Ty::Any => Outcome::Done,
+                t => Outcome::Fail(Diagnostic::error(*span, format!("`len` needs a list, string, map or tensor, found `{}`", self.show(&t)))),
             },
             Constraint::Numeric { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::Int | Ty::Float | Ty::Any => Outcome::Done,
                 t => Outcome::Fail(Diagnostic::error(*span, format!("expected a number, found `{}`", self.show(&t)))),
+            },
+            Constraint::Summable { ty, span } => match self.infer.shallow(ty) {
+                Ty::Var(_) => Outcome::Wait,
+                Ty::Int | Ty::Float | Ty::Tensor | Ty::Any => Outcome::Done,
+                t => Outcome::Fail(Diagnostic::error(*span, format!("expected numbers or tensors to sum, found `{}`", self.show(&t)))),
             },
         }
     }
@@ -204,6 +214,9 @@ impl<'s> Checker<'s> {
             Outcome::Fail(Diagnostic::error(span, msg))
         };
         let is_var = |t: &Ty| matches!(t, Ty::Var(_));
+        if l == Ty::Tensor || r == Ty::Tensor {
+            return self.solve_tensor_binary(op, &l, &r, out, span);
+        }
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::FloorDiv | BinOp::Pow => {
                 if l == Ty::Any || r == Ty::Any {
@@ -310,9 +323,39 @@ impl<'s> Checker<'s> {
                 if l == Ty::Any || r == Ty::Any {
                     return self.settle(out, &Ty::Any, span);
                 }
-                Outcome::Fail(Diagnostic::error(span, "`@` is reserved for tensors, which are not available yet"))
+                if is_var(&l) && is_var(&r) {
+                    return Outcome::Wait;
+                }
+                bad(self)
             }
         }
+    }
+
+    /// Operators with at least one `Tensor` operand: arithmetic broadcasts against
+    /// tensors and numbers, `**` takes a number exponent, and `@` needs two tensors.
+    fn solve_tensor_binary(&mut self, op: BinOp, l: &Ty, r: &Ty, out: &Ty, span: Span) -> Outcome {
+        let tensor_or_number = |t: &Ty| matches!(t, Ty::Tensor | Ty::Int | Ty::Float | Ty::Any);
+        let other = if *l == Ty::Tensor { r } else { l };
+        let ok = match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                if matches!(other, Ty::Var(_)) {
+                    return Outcome::Wait;
+                }
+                tensor_or_number(other)
+            }
+            BinOp::Pow => *l == Ty::Tensor && (r.is_numeric() || matches!(r, Ty::Var(_) | Ty::Any)),
+            BinOp::MatMul => self.infer.unify(l, &Ty::Tensor) && self.infer.unify(r, &Ty::Tensor),
+            _ => false,
+        };
+        if !ok {
+            let msg = format!("cannot apply `{}` to `{}` and `{}`", op.symbol(), self.show(l), self.show(r));
+            let mut diag = Diagnostic::error(span, msg);
+            if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+                diag = diag.with_help("compare tensors element-wise with `a.eq(b)`");
+            }
+            return Outcome::Fail(diag);
+        }
+        self.settle(out, &Ty::Tensor, span)
     }
 
     fn solve_method(&mut self, recv: &Ty, name: &str, args: &[Ty], out: &Ty, span: Span) -> Outcome {
@@ -346,7 +389,7 @@ impl<'s> Checker<'s> {
                 }
                 Outcome::Fail(Diagnostic::error(span, format!("`{}` has no method `{name}`", class.name)))
             }
-            Ty::Str | Ty::List(_) | Ty::Map(..) => {
+            Ty::Str | Ty::List(_) | Ty::Map(..) | Ty::Tensor | Ty::Optimizer => {
                 let Some((params, required, ret)) = method_signature(&recv, name) else {
                     return Outcome::Fail(Diagnostic::error(span, format!("`{}` has no method `{name}`", self.show(&recv))));
                 };

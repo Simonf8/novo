@@ -1,0 +1,26 @@
+use nn
+
+nn.seed(7)
+x = nn.randn([100, 1])
+y = x * 3.0 + 2.0
+w = nn.param(nn.zeros([1, 1]))
+b = nn.param(nn.zeros([1]))
+opt = nn.sgd([w, b], 0.1)
+show opt
+repeat 200 times:
+    loss = nn.mse(x @ w + b, y)
+    opt.step(loss)
+show f"w = {w.item():.3f}, b = {b.item():.3f}"
+opt.set_lr(0.5)
+show opt.lr()
+
+z = nn.param(nn.tensor([2.0, 3.0]))
+f = (z * z).sum()
+f.backward()
+show z.grad()
+
+function sq(t: Tensor) -> Tensor:
+    return t * t
+
+total = [nn.tensor([1.0]), nn.tensor([2.0])] select sq(it) sum
+show total

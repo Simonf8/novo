@@ -273,7 +273,7 @@ impl<'s> Checker<'s> {
                     Some(m) => self.define(id, alias.as_ref().unwrap_or(name), Item::Std(m)),
                     None => {
                         let msg = format!("unknown module `{}`", name.name);
-                        let help = format!("standard modules are math, time, json, fs and env; to load a file write `use \"{}.nv\"`", name.name);
+                        let help = format!("standard modules are math, time, json, fs, env and nn; to load a file write `use \"{}.nv\"`", name.name);
                         self.error(Diagnostic::error(name.span, msg).with_help(help));
                     }
                 },
@@ -629,6 +629,8 @@ impl<'s> Checker<'s> {
             "String" | "str" | "string" => Some(Ty::Str),
             "None" => Some(Ty::None),
             "Any" => Some(Ty::Any),
+            "Tensor" => Some(Ty::Tensor),
+            "Optimizer" => Some(Ty::Optimizer),
             _ => None,
         };
         if let Some(ty) = simple {
@@ -664,7 +666,7 @@ impl<'s> Checker<'s> {
                     Ty::Class(c)
                 }
                 _ => {
-                    self.error(Diagnostic::error(t.span, format!("unknown type `{name}`")).with_help("built-in types are Int, Float, Bool, String, None, Any, List[T], Map[K, V] and Task[T]"));
+                    self.error(Diagnostic::error(t.span, format!("unknown type `{name}`")).with_help("built-in types are Int, Float, Bool, String, None, Any, List[T], Map[K, V], Task[T], Tensor and Optimizer"));
                     Ty::Any
                 }
             },

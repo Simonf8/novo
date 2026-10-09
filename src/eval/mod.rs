@@ -3,6 +3,7 @@
 
 pub mod builtins;
 mod ops;
+mod tensor;
 pub mod value;
 
 use crate::check::hir::{self, Block, ExprKind, FuncId, ModuleId, Place, Program, StmtKind};
@@ -52,6 +53,7 @@ pub struct Interp {
     out: Arc<Mutex<BufWriter<Stdout>>>,
     args: Arc<Vec<String>>,
     native: Option<Arc<crate::native::Native>>,
+    tensors: Arc<tensor::State>,
 }
 
 /// Runs a checked program on a thread with a large stack, compiling eligible
@@ -69,6 +71,7 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
         out: Arc::new(Mutex::new(BufWriter::new(std::io::stdout()))),
         args: Arc::new(args),
         native,
+        tensors: Arc::default(),
     };
     let handle = std::thread::Builder::new()
         .stack_size(MAIN_STACK)
@@ -302,6 +305,7 @@ impl Interp {
             Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string().into())).collect()),
             Value::Map(m) => Ok(m.read().iter().map(|(k, _)| k.to_value()).collect()),
             Value::Py(obj) => crate::python::to_list(obj),
+            Value::Tensor(t) => tensor::rows(t),
             other => Err(format!("cannot iterate over a {}", other.type_name())),
         }
     }
@@ -402,6 +406,7 @@ impl Interp {
                 m.read().get(&key).cloned().ok_or_else(|| format!("key {} is not in the map", self.display(k)))
             }
             (Value::Py(p), k) => crate::python::get_item(p, k),
+            (Value::Tensor(t), Value::Int(i)) => tensor::index(t, *i),
             (o, i) => Err(format!("cannot index a {} with a {}", o.type_name(), i.type_name())),
         }
     }
@@ -426,6 +431,9 @@ impl Interp {
     fn binary_values(&self, op: BinOp, a: &Value, b: &Value) -> Result<Value, String> {
         if matches!(a, Value::Py(_)) || matches!(b, Value::Py(_)) {
             return crate::python::binary_op(a, b, op.symbol());
+        }
+        if matches!(a, Value::Tensor(_)) || matches!(b, Value::Tensor(_)) {
+            return tensor::binary(op, a, b);
         }
         ops::binary(op, a, b)
     }
@@ -486,7 +494,10 @@ impl Interp {
                         Value::Bool(b) => Value::Bool(!b),
                         other => return fail(format!("`not` needs a Bool, found a {}", other.type_name()), span),
                     },
-                    UnaryOp::Neg => ops::negate(&v).at(span)?,
+                    UnaryOp::Neg => match &v {
+                        Value::Tensor(t) => tensor::negate(t).at(span)?,
+                        _ => ops::negate(&v).at(span)?,
+                    },
                 }
             }
             ExprKind::Binary { op: BinOp::And, lhs, rhs } => Value::Bool(self.cond(lhs, frame)? && self.cond(rhs, frame)?),
@@ -554,6 +565,7 @@ impl Interp {
                         let (a, b) = builtins::bounds(s, t, chars.len());
                         Value::Str(chars[a..b].iter().collect::<String>().into())
                     }
+                    Value::Tensor(tensor) => tensor::slice(&tensor, s, t).at(span)?,
                     other => return fail(format!("cannot slice a {}", other.type_name()), span),
                 }
             }
@@ -608,6 +620,8 @@ impl Interp {
                 let method = crate::python::get_attr(p, name).at(span)?;
                 self.call_value(&method, args, span)
             }
+            Value::Tensor(t) => self.tensors.method(t, name, &args).at(span),
+            Value::Optimizer(o) => tensor::optimizer_method(o, name, &args).at(span),
             Value::Map(m) if !is_map_method(name) => {
                 let f = m.read().get(&Key::Str(name.into())).cloned();
                 match f {
@@ -682,13 +696,16 @@ impl Interp {
                 let n = items.len();
                 for item in &items {
                     let v = apply(item, frame)?;
-                    total = ops::binary(BinOp::Add, &total, &v).at(span)?;
+                    total = self.binary_values(BinOp::Add, &total, &v).at(span)?;
                 }
                 if op == QueryOp::Average {
                     if n == 0 {
                         return fail("average of an empty list", span);
                     }
-                    Value::Float(total.as_f64().expect("numeric total") / n as f64)
+                    match total.as_f64() {
+                        Some(t) => Value::Float(t / n as f64),
+                        None => self.binary_values(BinOp::Div, &total, &Value::Int(n as i64)).at(span)?,
+                    }
                 } else {
                     total
                 }

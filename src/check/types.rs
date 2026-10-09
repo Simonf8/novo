@@ -15,6 +15,8 @@ pub enum Ty {
     Func(Vec<Ty>, Box<Ty>),
     Class(ClassId),
     Task(Box<Ty>),
+    Tensor,
+    Optimizer,
     Any,
     Var(u32),
 }
@@ -82,6 +84,8 @@ impl<'a> fmt::Display for TyDisplay<'a> {
             }
             Ty::Class(id) => f.write_str(self.classes.get(id.0 as usize).map(String::as_str).unwrap_or("<class>")),
             Ty::Task(t) => write!(f, "Task[{}]", sub(t)),
+            Ty::Tensor => f.write_str("Tensor"),
+            Ty::Optimizer => f.write_str("Optimizer"),
             Ty::Any => f.write_str("Any"),
             Ty::Var(_) => f.write_str("_"),
         }

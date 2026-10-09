@@ -4,7 +4,7 @@ use super::types::Ty;
 use super::{Checker, FnCtx, Item, Resolved};
 use crate::diagnostic::Diagnostic;
 use crate::source::Span;
-use crate::syntax::ast::{self, BinOp};
+use crate::syntax::ast;
 
 /// Collects the names a block assigns, not looking inside nested functions or classes.
 pub(super) fn assigned_names(block: &[ast::Stmt], out: &mut Vec<ast::Ident>) {
@@ -127,7 +127,7 @@ impl<'s> Checker<'s> {
                 let place = self.place(target)?;
                 let place_ty = self.place_ty(&place, target.span);
                 let value = self.infer_expr(value);
-                let out = if *op == BinOp::Div { Ty::Float } else { self.infer.fresh() };
+                let out = self.infer.fresh();
                 self.add_constraint(Constraint::Binary { op: *op, lhs: place_ty.clone(), rhs: value.ty.clone(), out: out.clone(), span });
                 if !self.infer.unify(&place_ty, &out) {
                     let msg = format!("`{}=` would change this variable from `{}` to `{}`", op.symbol(), self.show(&place_ty), self.show(&out));

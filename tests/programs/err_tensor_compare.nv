@@ -1,0 +1,5 @@
+# expect-error: compare tensors element-wise with `a.eq(b)`
+use nn
+t = nn.tensor([1.0])
+if t > t:
+    show 1

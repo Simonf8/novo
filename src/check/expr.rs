@@ -637,8 +637,10 @@ impl<'s> Checker<'s> {
     fn query(&mut self, op: QueryOp, target: &ast::Expr, body: Option<&ast::Expr>, parallel: bool, span: Span) -> hir::Expr {
         let target = self.infer_expr(target);
         let item_ty = self.infer.fresh();
-        if !self.infer.unify(&target.ty, &Ty::list(item_ty.clone())) {
-            let msg = format!("`{}` works on lists, found `{}`", op.word(), self.show(&target.ty));
+        if self.infer.shallow(&target.ty) == Ty::Tensor {
+            self.infer.unify(&item_ty, &Ty::Tensor);
+        } else if !self.infer.unify(&target.ty, &Ty::list(item_ty.clone())) {
+            let msg = format!("`{}` works on lists and tensors, found `{}`", op.word(), self.show(&target.ty));
             self.error(Diagnostic::error(target.span, msg));
         }
         let item = self.ctx().add_local("it", item_ty.clone());
@@ -653,7 +655,7 @@ impl<'s> Checker<'s> {
             }
             QueryOp::Select => Ty::list(elem),
             QueryOp::Sum => {
-                self.add_constraint(Constraint::Numeric { ty: elem.clone(), span });
+                self.add_constraint(Constraint::Summable { ty: elem.clone(), span });
                 elem
             }
             QueryOp::Average => {

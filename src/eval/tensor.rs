@@ -1,0 +1,529 @@
+//! Tensors, gradients and optimizers, backed by candle on the CPU.
+
+use super::value::Value;
+use crate::check::builtins::Builtin;
+use crate::syntax::ast::BinOp;
+use candle_core::backprop::GradStore;
+use candle_core::{DType, Device, Tensor, Var, D};
+use candle_nn::optim::{AdamW, Optimizer as _, ParamsAdamW, SGD};
+use parking_lot::Mutex;
+use std::sync::Arc;
+
+type R<T> = Result<T, String>;
+
+fn err(e: candle_core::Error) -> String {
+    e.to_string().lines().next().unwrap_or("tensor error").to_string()
+}
+
+/// A tensor value. Parameters wrap a `Var` so optimizers can update them in place.
+#[derive(Debug)]
+pub struct NTensor {
+    tensor: Tensor,
+    var: Option<Var>,
+}
+
+impl NTensor {
+    pub fn get(&self) -> Tensor {
+        match &self.var {
+            Some(v) => v.as_tensor().clone(),
+            None => self.tensor.clone(),
+        }
+    }
+}
+
+fn wrap(t: Tensor) -> Value {
+    Value::Tensor(Arc::new(NTensor { tensor: t, var: None }))
+}
+
+pub enum Opt {
+    Sgd(SGD),
+    Adam(AdamW),
+}
+
+impl std::fmt::Debug for Opt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Opt::Sgd(_) => "SGD",
+            Opt::Adam(_) => "Adam",
+        })
+    }
+}
+
+/// Process-wide state: the random generator and the gradients from the latest `backward`.
+pub struct State {
+    rng: Mutex<Rng>,
+    grads: Mutex<Option<GradStore>>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        State { rng: Mutex::new(Rng::new(seed)), grads: Mutex::new(None) }
+    }
+}
+
+/// SplitMix64, so seeded programs produce the same numbers everywhere.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Rng {
+        Rng(seed)
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn uniform(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn normal(&mut self) -> f64 {
+        let u1 = self.uniform().max(f64::MIN_POSITIVE);
+        let u2 = self.uniform();
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+    }
+}
+
+fn shape_arg(v: &Value) -> R<Vec<usize>> {
+    let Value::List(items) = v else { return Err("a shape must be a list of Ints".into()) };
+    items
+        .read()
+        .iter()
+        .map(|d| match d {
+            Value::Int(n) if *n >= 0 => Ok(*n as usize),
+            _ => Err("shape dimensions must be non-negative Ints".to_string()),
+        })
+        .collect()
+}
+
+fn tensor_arg(v: &Value) -> R<Tensor> {
+    match v {
+        Value::Tensor(t) => Ok(t.get()),
+        other => Err(format!("expected a Tensor, found a {}", other.type_name())),
+    }
+}
+
+fn int_arg(v: &Value) -> R<i64> {
+    match v {
+        Value::Int(i) => Ok(*i),
+        other => Err(format!("expected an Int, found a {}", other.type_name())),
+    }
+}
+
+fn float_arg(v: &Value) -> R<f64> {
+    v.as_f64().ok_or_else(|| format!("expected a number, found a {}", v.type_name()))
+}
+
+/// Builds a tensor from a number or nested lists of numbers.
+fn from_value(v: &Value) -> R<Tensor> {
+    let mut shape = Vec::new();
+    let mut probe = v.clone();
+    loop {
+        let next = match &probe {
+            Value::List(items) => {
+                let items = items.read();
+                shape.push(items.len());
+                match items.first() {
+                    Some(first) => first.clone(),
+                    None => break,
+                }
+            }
+            _ => break,
+        };
+        probe = next;
+    }
+    let mut data = Vec::new();
+    flatten(v, &shape, 0, &mut data)?;
+    Tensor::from_vec(data, shape, &Device::Cpu).map_err(err)
+}
+
+fn flatten(v: &Value, shape: &[usize], depth: usize, out: &mut Vec<f32>) -> R<()> {
+    match v {
+        Value::List(items) => {
+            let items = items.read();
+            if depth >= shape.len() || items.len() != shape[depth] {
+                return Err("nested lists must form a rectangular shape".into());
+            }
+            for item in items.iter() {
+                flatten(item, shape, depth + 1, out)?;
+            }
+            Ok(())
+        }
+        Value::Tensor(t) if depth == shape.len() => {
+            let t = t.get();
+            if t.rank() != 0 {
+                return Err("nested tensors must be scalars".into());
+            }
+            out.push(t.to_dtype(DType::F32).and_then(|t| t.to_scalar::<f32>()).map_err(err)?);
+            Ok(())
+        }
+        other if depth == shape.len() => {
+            out.push(float_arg(other)? as f32);
+            Ok(())
+        }
+        _ => Err("nested lists must form a rectangular shape".into()),
+    }
+}
+
+impl State {
+    pub fn builtin(&self, b: Builtin, args: &[Value]) -> R<Value> {
+        let cpu = &Device::Cpu;
+        let t = match b {
+            Builtin::NnTensor => from_value(&args[0])?,
+            Builtin::NnZeros => Tensor::zeros(shape_arg(&args[0])?, DType::F32, cpu).map_err(err)?,
+            Builtin::NnOnes => Tensor::ones(shape_arg(&args[0])?, DType::F32, cpu).map_err(err)?,
+            Builtin::NnRandn | Builtin::NnRand => {
+                let shape = shape_arg(&args[0])?;
+                let n: usize = shape.iter().product();
+                let mut rng = self.rng.lock();
+                let data: Vec<f32> = (0..n).map(|_| if b == Builtin::NnRandn { rng.normal() } else { rng.uniform() } as f32).collect();
+                Tensor::from_vec(data, shape, cpu).map_err(err)?
+            }
+            Builtin::NnArange => Tensor::arange(0f32, int_arg(&args[0])?.max(0) as f32, cpu).map_err(err)?,
+            Builtin::NnEye => Tensor::eye(int_arg(&args[0])?.max(0) as usize, DType::F32, cpu).map_err(err)?,
+            Builtin::NnParam => {
+                let var = Var::from_tensor(&tensor_arg(&args[0])?).map_err(err)?;
+                return Ok(Value::Tensor(Arc::new(NTensor { tensor: var.as_tensor().clone(), var: Some(var) })));
+            }
+            Builtin::NnSeed => {
+                *self.rng.lock() = Rng::new(int_arg(&args[0])? as u64);
+                return Ok(Value::None);
+            }
+            Builtin::NnSgd | Builtin::NnAdam => {
+                let Value::List(items) = &args[0] else { return Err("optimizers take a list of parameters".into()) };
+                let mut vars = Vec::new();
+                for item in items.read().iter() {
+                    match item {
+                        Value::Tensor(t) => match &t.var {
+                            Some(v) => vars.push(v.clone()),
+                            None => return Err("optimizers can only update parameters; wrap trainable tensors with `nn.param`".into()),
+                        },
+                        other => return Err(format!("expected a Tensor parameter, found a {}", other.type_name())),
+                    }
+                }
+                let lr = float_arg(&args[1])?;
+                let opt = if b == Builtin::NnSgd {
+                    Opt::Sgd(SGD::new(vars, lr).map_err(err)?)
+                } else {
+                    let params = ParamsAdamW { lr, weight_decay: 0.0, ..ParamsAdamW::default() };
+                    Opt::Adam(AdamW::new(vars, params).map_err(err)?)
+                };
+                return Ok(Value::Optimizer(Arc::new(Mutex::new(opt))));
+            }
+            Builtin::NnMse => candle_nn::loss::mse(&tensor_arg(&args[0])?, &tensor_arg(&args[1])?).map_err(err)?,
+            Builtin::NnCrossEntropy => {
+                let targets = tensor_arg(&args[1])?.to_dtype(DType::U32).map_err(err)?;
+                candle_nn::loss::cross_entropy(&tensor_arg(&args[0])?, &targets).map_err(err)?
+            }
+            Builtin::NnStack => {
+                let Value::List(items) = &args[0] else { return Err("`nn.stack` takes a list of tensors".into()) };
+                let tensors = items.read().iter().map(tensor_arg).collect::<R<Vec<_>>>()?;
+                if tensors.is_empty() {
+                    return Err("`nn.stack` needs at least one tensor".into());
+                }
+                let dim = match args.get(1) {
+                    Some(d) => dim(int_arg(d)?, tensors[0].rank() + 1)?,
+                    None => 0,
+                };
+                Tensor::stack(&tensors, dim).map_err(err)?
+            }
+            _ => unreachable!("not a tensor builtin"),
+        };
+        Ok(wrap(t))
+    }
+
+    pub fn method(&self, recv: &NTensor, name: &str, args: &[Value]) -> R<Value> {
+        let t = recv.get();
+        let arg_dim = |i: usize| -> R<Option<usize>> {
+            match args.get(i) {
+                Some(v) => Ok(Some(dim(int_arg(v)?, t.rank())?)),
+                None => Ok(None),
+            }
+        };
+        let out = match name {
+            "shape" => return Ok(Value::list(t.dims().iter().map(|d| Value::Int(*d as i64)).collect())),
+            "rank" => return Ok(Value::Int(t.rank() as i64)),
+            "size" => return Ok(Value::Int(t.elem_count() as i64)),
+            "item" => {
+                if t.elem_count() != 1 {
+                    return Err(format!("`item` needs a tensor with one element, this one has shape {:?}", t.dims()));
+                }
+                let v = t.flatten_all().and_then(|f| f.to_dtype(DType::F64)).and_then(|f| f.to_vec1::<f64>()).map_err(err)?;
+                return Ok(Value::Float(v[0]));
+            }
+            "to_list" => return to_list(&t),
+            "backward" => {
+                let grads = t.backward().map_err(err)?;
+                *self.grads.lock() = Some(grads);
+                return Ok(Value::None);
+            }
+            "grad" => {
+                let grads = self.grads.lock();
+                let g = grads.as_ref().and_then(|g| g.get(&t)).ok_or("this tensor has no gradient; call `backward` on a result that depends on it")?;
+                g.clone()
+            }
+            "sum" => match arg_dim(0)? {
+                Some(d) => t.sum(d),
+                None => t.sum_all(),
+            }
+            .map_err(err)?,
+            "mean" => match arg_dim(0)? {
+                Some(d) => t.mean(d),
+                None => t.mean_all(),
+            }
+            .map_err(err)?,
+            "max" => t.max(arg_dim(0)?.unwrap()).map_err(err)?,
+            "min" => t.min(arg_dim(0)?.unwrap()).map_err(err)?,
+            "argmax" => t.argmax(arg_dim(0)?.unwrap()).and_then(|a| a.to_dtype(DType::F32)).map_err(err)?,
+            "argmin" => t.argmin(arg_dim(0)?.unwrap()).and_then(|a| a.to_dtype(DType::F32)).map_err(err)?,
+            "softmax" => candle_nn::ops::softmax(&t, arg_dim(0)?.unwrap()).map_err(err)?,
+            "log_softmax" => candle_nn::ops::log_softmax(&t, arg_dim(0)?.unwrap()).map_err(err)?,
+            "squeeze" => t.squeeze(arg_dim(0)?.unwrap()).map_err(err)?,
+            "unsqueeze" => t.unsqueeze(dim(int_arg(&args[0])?, t.rank() + 1)?).map_err(err)?,
+            "relu" => t.relu().map_err(err)?,
+            "sigmoid" => candle_nn::ops::sigmoid(&t).map_err(err)?,
+            "tanh" => t.tanh().map_err(err)?,
+            "exp" => t.exp().map_err(err)?,
+            "log" => t.log().map_err(err)?,
+            "sqrt" => t.sqrt().map_err(err)?,
+            "abs" => t.abs().map_err(err)?,
+            "gelu" => t.gelu().map_err(err)?,
+            "silu" => t.silu().map_err(err)?,
+            "square" => t.sqr().map_err(err)?,
+            "t" => {
+                if t.rank() < 2 {
+                    return Err("`t` needs a tensor with at least two dimensions".into());
+                }
+                t.t().map_err(err)?
+            }
+            "transpose" => t.transpose(dim(int_arg(&args[0])?, t.rank())?, dim(int_arg(&args[1])?, t.rank())?).map_err(err)?,
+            "flatten" => t.flatten_all().map_err(err)?,
+            "detach" => t.detach(),
+            "copy" => t.copy().map_err(err)?,
+            "reshape" => {
+                let shape = shape_arg(&args[0])?;
+                let n: usize = shape.iter().product();
+                if n != t.elem_count() {
+                    return Err(format!("cannot reshape a tensor of shape {:?} into {:?}", t.dims(), shape));
+                }
+                t.reshape(shape).map_err(err)?
+            }
+            "matmul" => matmul(&t, &tensor_arg(&args[0])?)?,
+            "eq" => t.broadcast_eq(&tensor_arg(&args[0])?).and_then(|m| m.to_dtype(DType::F32)).map_err(err)?,
+            "pow" => t.powf(float_arg(&args[0])?).map_err(err)?,
+            "clamp" => t.clamp(float_arg(&args[0])? as f32, float_arg(&args[1])? as f32).map_err(err)?,
+            _ => return Err(format!("Tensor has no method `{name}`")),
+        };
+        Ok(wrap(out))
+    }
+}
+
+pub fn optimizer_method(opt: &Mutex<Opt>, name: &str, args: &[Value]) -> R<Value> {
+    let mut opt = opt.lock();
+    match name {
+        "step" => {
+            let loss = tensor_arg(&args[0])?;
+            match &mut *opt {
+                Opt::Sgd(o) => o.backward_step(&loss),
+                Opt::Adam(o) => o.backward_step(&loss),
+            }
+            .map_err(err)?;
+            Ok(Value::None)
+        }
+        "lr" => Ok(Value::Float(match &*opt {
+            Opt::Sgd(o) => o.learning_rate(),
+            Opt::Adam(o) => o.learning_rate(),
+        })),
+        "set_lr" => {
+            let lr = float_arg(&args[0])?;
+            match &mut *opt {
+                Opt::Sgd(o) => o.set_learning_rate(lr),
+                Opt::Adam(o) => o.set_learning_rate(lr),
+            }
+            Ok(Value::None)
+        }
+        _ => Err(format!("Optimizer has no method `{name}`")),
+    }
+}
+
+fn dim(d: i64, rank: usize) -> R<usize> {
+    let resolved = if d < 0 { d + rank as i64 } else { d };
+    if resolved < 0 || resolved >= rank as i64 {
+        return Err(format!("dimension {d} is out of range for a tensor with {rank} dimensions"));
+    }
+    Ok(resolved as usize)
+}
+
+fn matmul(a: &Tensor, b: &Tensor) -> R<Tensor> {
+    let (ar, br) = (a.rank(), b.rank());
+    if ar == 0 || br == 0 {
+        return Err("`@` needs tensors with at least one dimension".into());
+    }
+    let a2 = if ar == 1 { a.unsqueeze(0).map_err(err)? } else { a.clone() };
+    let b2 = if br == 1 { b.unsqueeze(1).map_err(err)? } else { b.clone() };
+    let (ka, kb) = (a2.dims()[a2.rank() - 1], b2.dims()[b2.rank() - 2]);
+    if ka != kb {
+        return Err(format!("cannot multiply shapes {:?} and {:?}: inner dimensions {ka} and {kb} differ", a.dims(), b.dims()));
+    }
+    let out = if a2.rank() == b2.rank() { a2.matmul(&b2) } else { a2.broadcast_matmul(&b2) }.map_err(err)?;
+    let out = if ar == 1 { out.squeeze(out.rank() - 2).map_err(err)? } else { out };
+    if br == 1 { out.squeeze(D::Minus1).map_err(err) } else { Ok(out) }
+}
+
+pub fn binary(op: BinOp, a: &Value, b: &Value) -> R<Value> {
+    let scalar = |v: &Value| v.as_f64();
+    let out = match (a, b) {
+        (Value::Tensor(x), Value::Tensor(y)) => {
+            let (x, y) = (x.get(), y.get());
+            match op {
+                BinOp::Add => x.broadcast_add(&y),
+                BinOp::Sub => x.broadcast_sub(&y),
+                BinOp::Mul => x.broadcast_mul(&y),
+                BinOp::Div => x.broadcast_div(&y),
+                BinOp::MatMul => return matmul(&x, &y).map(wrap),
+                _ => return Err(format!("cannot apply `{}` to two tensors", op.symbol())),
+            }
+            .map_err(|e| shape_error(op, &x, &y, e))?
+        }
+        (Value::Tensor(x), s) => {
+            let x = x.get();
+            let s = scalar(s).ok_or_else(|| format!("cannot apply `{}` to a Tensor and a {}", op.symbol(), s.type_name()))?;
+            match op {
+                BinOp::Add => x.affine(1.0, s),
+                BinOp::Sub => x.affine(1.0, -s),
+                BinOp::Mul => x.affine(s, 0.0),
+                BinOp::Div => {
+                    if s == 0.0 {
+                        return Err("division by zero".into());
+                    }
+                    x.affine(1.0 / s, 0.0)
+                }
+                BinOp::Pow => x.powf(s),
+                _ => return Err(format!("cannot apply `{}` to a Tensor and a number", op.symbol())),
+            }
+            .map_err(err)?
+        }
+        (s, Value::Tensor(y)) => {
+            let y = y.get();
+            let s = scalar(s).ok_or_else(|| format!("cannot apply `{}` to a {} and a Tensor", op.symbol(), s.type_name()))?;
+            match op {
+                BinOp::Add => y.affine(1.0, s),
+                BinOp::Sub => y.affine(-1.0, s),
+                BinOp::Mul => y.affine(s, 0.0),
+                BinOp::Div => y.recip().and_then(|r| r.affine(s, 0.0)),
+                _ => return Err(format!("cannot apply `{}` to a number and a Tensor", op.symbol())),
+            }
+            .map_err(err)?
+        }
+        _ => unreachable!("one operand is a tensor"),
+    };
+    Ok(wrap(out))
+}
+
+fn shape_error(op: BinOp, x: &Tensor, y: &Tensor, e: candle_core::Error) -> String {
+    let msg = err(e);
+    if msg.contains("shape") {
+        format!("cannot apply `{}` to tensors of shapes {:?} and {:?}", op.symbol(), x.dims(), y.dims())
+    } else {
+        msg
+    }
+}
+
+pub fn negate(t: &NTensor) -> R<Value> {
+    t.get().neg().map(wrap).map_err(err)
+}
+
+pub fn index(t: &NTensor, i: i64) -> R<Value> {
+    let t = t.get();
+    let len = *t.dims().first().ok_or("cannot index a tensor with no dimensions")?;
+    let at = super::builtins::index(i, len)?;
+    t.get(at).map(wrap).map_err(err)
+}
+
+pub fn slice(t: &NTensor, start: Option<i64>, end: Option<i64>) -> R<Value> {
+    let t = t.get();
+    let len = *t.dims().first().ok_or("cannot slice a tensor with no dimensions")?;
+    let (a, b) = super::builtins::bounds(start, end, len);
+    t.narrow(0, a, b - a).map(wrap).map_err(err)
+}
+
+pub fn rows(t: &NTensor) -> R<Vec<Value>> {
+    let t = t.get();
+    let len = *t.dims().first().ok_or("cannot iterate over a tensor with no dimensions")?;
+    (0..len).map(|i| t.get(i).map(wrap).map_err(err)).collect()
+}
+
+pub fn len(t: &NTensor) -> R<i64> {
+    t.get().dims().first().map(|d| *d as i64).ok_or_else(|| "a tensor with no dimensions has no length".to_string())
+}
+
+fn values(t: &Tensor) -> R<Vec<f32>> {
+    t.flatten_all().and_then(|f| f.to_dtype(DType::F32)).and_then(|f| f.to_vec1::<f32>()).map_err(err)
+}
+
+fn to_list(t: &Tensor) -> R<Value> {
+    let data = values(t)?;
+    fn build(data: &[f32], dims: &[usize]) -> Value {
+        match dims.split_first() {
+            None => Value::Float(f64::from(data[0])),
+            Some((&n, rest)) => {
+                let stride: usize = rest.iter().product();
+                Value::list((0..n).map(|i| build(&data[i * stride..], rest)).collect())
+            }
+        }
+    }
+    Ok(build(&data, t.dims()))
+}
+
+fn format_f32(f: f32) -> String {
+    if f.is_finite() && f == f.trunc() && f.abs() < 1e16 {
+        format!("{f:.1}")
+    } else if f.is_nan() {
+        "nan".into()
+    } else if f.is_infinite() {
+        if f > 0.0 { "inf".into() } else { "-inf".into() }
+    } else if f.abs() >= 1e16 || f.abs() < 1e-4 {
+        format!("{f:e}")
+    } else {
+        format!("{f}")
+    }
+}
+
+/// Formats like `tensor([[1.0, 2.0], [3.0, 4.0]])`, eliding the middle of long dimensions.
+pub fn display(t: &NTensor) -> String {
+    let t = t.get();
+    let Ok(data) = values(&t) else { return "tensor(<unprintable>)".into() };
+    fn write(out: &mut String, data: &[f32], dims: &[usize]) {
+        match dims.split_first() {
+            None => out.push_str(&format_f32(data[0])),
+            Some((&n, rest)) => {
+                let stride: usize = rest.iter().product();
+                out.push('[');
+                let shown: Vec<usize> = if n > 6 { (0..3).chain(n - 3..n).collect() } else { (0..n).collect() };
+                for (k, i) in shown.iter().enumerate() {
+                    if k > 0 {
+                        out.push_str(", ");
+                    }
+                    if n > 6 && k == 3 {
+                        out.push_str("..., ");
+                    }
+                    write(out, &data[i * stride..], rest);
+                }
+                out.push(']');
+            }
+        }
+    }
+    let mut out = String::from("tensor(");
+    if t.elem_count() == 0 {
+        out.push_str(&format!("[], shape={:?}", t.dims()));
+    } else {
+        write(&mut out, &data, t.dims());
+    }
+    out.push(')');
+    out
+}

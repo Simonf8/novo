@@ -1,0 +1,38 @@
+# A two-layer neural network learns XOR, trained with Adam and cross-entropy.
+
+use nn
+
+nn.seed(42)
+
+class MLP:
+    w1: Tensor
+    b1: Tensor
+    w2: Tensor
+    b2: Tensor
+
+    function forward(x: Tensor) -> Tensor:
+        hidden = (x @ self.w1 + self.b1).tanh()
+        return hidden @ self.w2 + self.b2
+
+    function params() -> List[Tensor]:
+        return [self.w1, self.b1, self.w2, self.b2]
+
+function layer(inputs: Int, outputs: Int) -> Tensor:
+    return nn.param(nn.randn([inputs, outputs]) * (1.0 / inputs ** 0.5))
+
+model = MLP(layer(2, 8), nn.param(nn.zeros([8])), layer(8, 2), nn.param(nn.zeros([2])))
+
+inputs = nn.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
+labels = nn.tensor([0, 1, 1, 0])
+optimizer = nn.adam(model.params(), 0.05)
+
+for epoch in range(301):
+    loss = nn.cross_entropy(model.forward(inputs), labels)
+    optimizer.step(loss)
+    if epoch % 100 == 0:
+        show f"epoch {epoch:>3}  loss {loss.item():.4f}"
+
+predictions = model.forward(inputs).argmax(1)
+show "predictions:", predictions
+accuracy = predictions.eq(labels).mean().item()
+show f"accuracy: {accuracy:.0%}"

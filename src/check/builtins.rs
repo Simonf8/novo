@@ -43,6 +43,20 @@ pub enum Builtin {
     EnvGet,
     EnvSet,
     EnvArgs,
+    NnTensor,
+    NnZeros,
+    NnOnes,
+    NnRandn,
+    NnRand,
+    NnArange,
+    NnEye,
+    NnParam,
+    NnSeed,
+    NnSgd,
+    NnAdam,
+    NnMse,
+    NnCrossEntropy,
+    NnStack,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +66,7 @@ pub enum StdModule {
     Json,
     Fs,
     Env,
+    Nn,
 }
 
 impl StdModule {
@@ -62,6 +77,7 @@ impl StdModule {
             "json" => StdModule::Json,
             "fs" => StdModule::Fs,
             "env" => StdModule::Env,
+            "nn" => StdModule::Nn,
             _ => return None,
         })
     }
@@ -99,6 +115,20 @@ impl StdModule {
             (StdModule::Env, "get") => EnvGet,
             (StdModule::Env, "set") => EnvSet,
             (StdModule::Env, "args") => EnvArgs,
+            (StdModule::Nn, "tensor") => NnTensor,
+            (StdModule::Nn, "zeros") => NnZeros,
+            (StdModule::Nn, "ones") => NnOnes,
+            (StdModule::Nn, "randn") => NnRandn,
+            (StdModule::Nn, "rand") => NnRand,
+            (StdModule::Nn, "arange") => NnArange,
+            (StdModule::Nn, "eye") => NnEye,
+            (StdModule::Nn, "param") => NnParam,
+            (StdModule::Nn, "seed") => NnSeed,
+            (StdModule::Nn, "sgd") => NnSgd,
+            (StdModule::Nn, "adam") => NnAdam,
+            (StdModule::Nn, "mse") => NnMse,
+            (StdModule::Nn, "cross_entropy") => NnCrossEntropy,
+            (StdModule::Nn, "stack") => NnStack,
             _ => return None,
         })
     }
@@ -175,6 +205,20 @@ impl Builtin {
             EnvGet => "env.get",
             EnvSet => "env.set",
             EnvArgs => "env.args",
+            NnTensor => "nn.tensor",
+            NnZeros => "nn.zeros",
+            NnOnes => "nn.ones",
+            NnRandn => "nn.randn",
+            NnRand => "nn.rand",
+            NnArange => "nn.arange",
+            NnEye => "nn.eye",
+            NnParam => "nn.param",
+            NnSeed => "nn.seed",
+            NnSgd => "nn.sgd",
+            NnAdam => "nn.adam",
+            NnMse => "nn.mse",
+            NnCrossEntropy => "nn.cross_entropy",
+            NnStack => "nn.stack",
         }
     }
 
@@ -202,6 +246,14 @@ impl Builtin {
             EnvGet => (vec![s(), s()], 1, s()),
             EnvSet => (vec![s(), s()], 2, Ty::None),
             EnvArgs => (vec![], 0, Ty::list(s())),
+            NnTensor => (vec![Ty::Any], 1, Ty::Tensor),
+            NnZeros | NnOnes | NnRandn | NnRand => (vec![Ty::list(Ty::Int)], 1, Ty::Tensor),
+            NnArange | NnEye => (vec![Ty::Int], 1, Ty::Tensor),
+            NnParam => (vec![Ty::Tensor], 1, Ty::Tensor),
+            NnSeed => (vec![Ty::Int], 1, Ty::None),
+            NnSgd | NnAdam => (vec![Ty::list(Ty::Tensor), f()], 2, Ty::Optimizer),
+            NnMse | NnCrossEntropy => (vec![Ty::Tensor, Ty::Tensor], 2, Ty::Tensor),
+            NnStack => (vec![Ty::list(Ty::Tensor), Ty::Int], 1, Ty::Tensor),
             _ => return None,
         })
     }
@@ -262,6 +314,32 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
                 _ => return None,
             })
         }
+        Ty::Tensor => {
+            let t = || Ty::Tensor;
+            Some(match name {
+                "shape" => (vec![], 0, Ty::list(i())),
+                "rank" | "size" => (vec![], 0, i()),
+                "item" => (vec![], 0, Ty::Float),
+                "to_list" => (vec![], 0, Ty::Any),
+                "sum" | "mean" => (vec![i()], 0, t()),
+                "max" | "min" | "argmax" | "argmin" | "softmax" | "log_softmax" | "squeeze" | "unsqueeze" => (vec![i()], 1, t()),
+                "relu" | "sigmoid" | "tanh" | "exp" | "log" | "sqrt" | "abs" | "gelu" | "silu" | "square" | "t" | "flatten" | "detach"
+                | "grad" | "copy" => (vec![], 0, t()),
+                "reshape" => (vec![Ty::list(i())], 1, t()),
+                "transpose" => (vec![i(), i()], 2, t()),
+                "matmul" | "eq" => (vec![t()], 1, t()),
+                "pow" => (vec![Ty::Float], 1, t()),
+                "clamp" => (vec![Ty::Float, Ty::Float], 2, t()),
+                "backward" => (vec![], 0, Ty::None),
+                _ => return None,
+            })
+        }
+        Ty::Optimizer => Some(match name {
+            "step" => (vec![Ty::Tensor], 1, Ty::None),
+            "lr" => (vec![], 0, Ty::Float),
+            "set_lr" => (vec![Ty::Float], 1, Ty::None),
+            _ => return None,
+        }),
         _ => None,
     }
 }

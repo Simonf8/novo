@@ -1,0 +1,52 @@
+use nn
+
+a = nn.tensor([[1.0, 2.0], [3.0, 4.0]])
+show a
+show a.shape(), a.rank(), a.size(), len(a)
+show a @ a
+show a + 1, a * 2, 10 - a, 1 / a
+show a.sum(), a.sum(0), a.mean(1)
+show a.t(), a.reshape([4]), a[1], a[0:1]
+show f"{a.softmax(1)[0][1].item():.4f}"
+for row in a:
+    show row.sum().item()
+show nn.eye(3)
+show nn.arange(10)
+
+nn.seed(7)
+x = nn.randn([100, 1])
+y = x * 3.0 + 2.0
+w = nn.param(nn.zeros([1, 1]))
+b = nn.param(nn.zeros([1]))
+opt = nn.sgd([w, b], 0.1)
+repeat 200 times:
+    pred = x @ w + b
+    loss = nn.mse(pred, y)
+show a.max(1), a.argmax(0), a.pow(2.0), -a, a.square().sqrt()
+show a.unsqueeze(0).shape(), nn.ones([2, 1, 3]).squeeze(1).shape(), a.flatten().to_list()
+show nn.stack([a, a], 0).shape(), a.transpose(0, 1).eq(a.t())
+show nn.tensor([1.0, 2.0]) @ nn.tensor([3.0, 4.0]), a @ nn.tensor([1.0, 1.0])
+show nn.zeros([2, 3]).shape(), nn.rand([3]).shape()
+rows = a select it.sum().item()
+show rows
+
+try:
+    show a @ nn.ones([3, 3])
+catch e:
+    show e
+try:
+    show a + nn.ones([3])
+catch e:
+    show e
+try:
+    show a.item()
+catch e:
+    show e
+try:
+    opt = nn.sgd([a], 0.1)
+catch e:
+    show e
+try:
+    show a.grad()
+catch e:
+    show e

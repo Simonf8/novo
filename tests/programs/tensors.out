@@ -1,0 +1,22 @@
+tensor([[1.0, 2.0], [3.0, 4.0]])
+[2, 2] 2 4 2
+tensor([[7.0, 10.0], [15.0, 22.0]])
+tensor([[2.0, 3.0], [4.0, 5.0]]) tensor([[2.0, 4.0], [6.0, 8.0]]) tensor([[9.0, 8.0], [7.0, 6.0]]) tensor([[1.0, 0.5], [0.33333334, 0.25]])
+tensor(10.0) tensor([4.0, 6.0]) tensor([1.5, 3.5])
+tensor([[1.0, 3.0], [2.0, 4.0]]) tensor([1.0, 2.0, 3.0, 4.0]) tensor([3.0, 4.0]) tensor([[1.0, 2.0]])
+0.7311
+3.0
+7.0
+tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+tensor([0.0, 1.0, 2.0, ..., 7.0, 8.0, 9.0])
+tensor([2.0, 4.0]) tensor([1.0, 1.0]) tensor([[1.0, 4.0], [9.0, 16.0]]) tensor([[-1.0, -2.0], [-3.0, -4.0]]) tensor([[1.0, 2.0], [3.0, 4.0]])
+[1, 2, 2] [2, 3] [1.0, 2.0, 3.0, 4.0]
+[2, 2, 2] tensor([[1.0, 1.0], [1.0, 1.0]])
+tensor(11.0) tensor([3.0, 7.0])
+[2, 3] [3]
+[3.0, 7.0]
+cannot multiply shapes [2, 2] and [3, 3]: inner dimensions 2 and 3 differ
+cannot apply `+` to tensors of shapes [2, 2] and [3]
+`item` needs a tensor with one element, this one has shape [2, 2]
+optimizers can only update parameters; wrap trainable tensors with `nn.param`
+this tensor has no gradient; call `backward` on a result that depends on it

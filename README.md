@@ -111,8 +111,31 @@ handle = together square(12)
 show await handle                               # 144
 ```
 
+Tensors and training come from the `nn` module:
+
+```novo
+use nn
+
+nn.seed(7)
+x = nn.randn([100, 1])
+y = x * 3.0 + 2.0
+
+w = nn.param(nn.zeros([1, 1]))
+b = nn.param(nn.zeros([1]))
+optimizer = nn.sgd([w, b], 0.1)
+
+repeat 200 times:
+    loss = nn.mse(x @ w + b, y)
+    optimizer.step(loss)        # backward pass and update
+
+show f"w = {w.item():.3f}, b = {b.item():.3f}"     # w = 3.000, b = 2.000
+```
+
+[examples/xor_mlp.nv](examples/xor_mlp.nv) trains a small neural network
+written as a Novo class.
+
 Modules: `use "path/to/file.nv" as m` loads another file; `use math`,
-`use json`, `use time`, `use fs` and `use env` bring in the standard library;
+`use json`, `use time`, `use fs`, `use env` and `use nn` bring in the standard library;
 `use python numpy as np` imports a Python module when built with the
 `python` feature.
 
@@ -162,12 +185,10 @@ errors (`# expect-error: ...`) and required features
 
 1. **More native code.** Lists, strings, classes and closures in compiled
    functions, cheaper calls, and ahead-of-time executables.
-2. **Tensors and autograd.** A built-in `Tensor` type, `@` for matrix
-   multiplication, and reverse-mode differentiation for training models.
-3. **Shapes in types.** Catch tensor dimension mismatches at check time.
-4. **Data and models.** Data loading, batching, and loading pretrained
-   weights.
-5. **Tooling.** Language server, REPL, and a comment-preserving formatter.
+2. **Shapes in types.** Catch tensor dimension mismatches at check time.
+3. **Data and models.** Data loading, batching, layers, GPU support through
+   candle's CUDA and Metal backends, and loading pretrained weights.
+4. **Tooling.** Language server, REPL, and a comment-preserving formatter.
 
 ## License
 

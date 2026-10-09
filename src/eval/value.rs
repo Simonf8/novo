@@ -18,6 +18,8 @@ pub enum Value {
     Func(Arc<Closure>),
     Instance(Arc<Instance>),
     Task(Arc<TaskHandle>),
+    Tensor(Arc<super::tensor::NTensor>),
+    Optimizer(Arc<Mutex<super::tensor::Opt>>),
     #[allow(dead_code)]
     Py(crate::python::PyHandle),
 }
@@ -156,6 +158,8 @@ impl Value {
             Value::Func(_) => "Function",
             Value::Instance(_) => "instance",
             Value::Task(_) => "Task",
+            Value::Tensor(_) => "Tensor",
+            Value::Optimizer(_) => "Optimizer",
             Value::Py(_) => "Python object",
         }
     }
@@ -247,6 +251,10 @@ fn write_value(out: &mut String, v: &Value, prog: &Program, depth: usize) {
             out.push(')');
         }
         Value::Task(_) => out.push_str("<task>"),
+        Value::Tensor(t) => out.push_str(&super::tensor::display(t)),
+        Value::Optimizer(o) => {
+            let _ = write!(out, "<{:?} optimizer>", o.lock());
+        }
         Value::Py(_) => out.push_str("<python object>"),
     }
 }
@@ -275,6 +283,8 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Value::Func(x), Value::Func(y)) => Arc::ptr_eq(x, y),
         (Value::Instance(x), Value::Instance(y)) => Arc::ptr_eq(x, y),
         (Value::Task(x), Value::Task(y)) => Arc::ptr_eq(x, y),
+        (Value::Tensor(x), Value::Tensor(y)) => Arc::ptr_eq(x, y),
+        (Value::Optimizer(x), Value::Optimizer(y)) => Arc::ptr_eq(x, y),
         _ => false,
     }
 }

@@ -58,7 +58,8 @@ impl Interp {
                 Value::Str(s) => s.chars().count() as i64,
                 Value::List(l) => l.read().len() as i64,
                 Value::Map(m) => m.read().len() as i64,
-                other => return Err(format!("`len` needs a list, string or map, found a {}", other.type_name())),
+                Value::Tensor(t) => super::tensor::len(t)?,
+                other => return Err(format!("`len` needs a list, string, map or tensor, found a {}", other.type_name())),
             }),
             Builtin::Range => {
                 let (start, end, step) = match args.len() {
@@ -221,6 +222,20 @@ impl Interp {
                 Value::None
             }
             Builtin::EnvArgs => Value::list(self.args.iter().map(|a| Value::Str(a.as_str().into())).collect()),
+            Builtin::NnTensor
+            | Builtin::NnZeros
+            | Builtin::NnOnes
+            | Builtin::NnRandn
+            | Builtin::NnRand
+            | Builtin::NnArange
+            | Builtin::NnEye
+            | Builtin::NnParam
+            | Builtin::NnSeed
+            | Builtin::NnSgd
+            | Builtin::NnAdam
+            | Builtin::NnMse
+            | Builtin::NnCrossEntropy
+            | Builtin::NnStack => self.tensors.builtin(b, &args)?,
         })
     }
 

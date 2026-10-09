@@ -1,0 +1,5 @@
+<SGD optimizer>
+w = 3.000, b = 2.000
+0.5
+tensor([4.0, 6.0])
+tensor([5.0])

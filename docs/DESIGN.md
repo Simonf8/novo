@@ -17,6 +17,8 @@ Novo is statically typed with full inference. Annotations are optional.
 | `List[T]`     | growable list, shared by reference         | `List[T]`               |
 | `Map[K, V]`   | insertion-ordered map, shared by reference | `Map[K, V]`             |
 | `Task[T]`     | a computation running in the background    | `Task[T]`               |
+| `Tensor`      | an n-dimensional array of 32-bit floats    | `Tensor`                |
+| `Optimizer`   | updates parameters from a loss             | `Optimizer`             |
 | classes       | user-defined records with methods          | the class name          |
 | functions     | `(A, B) -> R`                              | inferred only           |
 | `Any`         | a dynamically typed value                  | `Any`                   |
@@ -118,6 +120,32 @@ it requires building with `--features python`.
 - `run [a, b, c] in parallel` and `[a, b, c] together` evaluate every element
   concurrently and return the list of results.
 - `(xs select body) together` maps in parallel.
+
+## Tensors
+
+`use nn` brings in tensors, built on candle:
+
+- Creation: `nn.tensor(nested_lists)`, `nn.zeros(shape)`, `nn.ones(shape)`,
+  `nn.randn(shape)`, `nn.rand(shape)`, `nn.arange(n)`, `nn.eye(n)` and
+  `nn.stack(tensors, dim)`. `nn.seed(n)` makes random tensors reproducible.
+- Operators: `+ - * /` broadcast between tensors and with numbers, `**` takes
+  a number exponent, `@` is matrix multiplication (vectors are treated as rows
+  or columns as needed), and unary `-` negates. Comparisons are not operators;
+  use `a.eq(b)`, which returns a tensor of ones and zeros.
+- Indexing: `t[i]` selects along the first dimension and `t[a:b]` narrows it.
+  `len(t)`, `for row in t` and queries (`t select ...`) work on rows.
+- Methods: `shape`, `rank`, `size`, `item`, `to_list`, `sum`/`mean` (over
+  everything or one dimension), `max`, `min`, `argmax`, `argmin`, `softmax`,
+  `log_softmax`, `relu`, `sigmoid`, `tanh`, `gelu`, `silu`, `exp`, `log`,
+  `sqrt`, `abs`, `square`, `pow`, `clamp`, `reshape`, `flatten`, `t`,
+  `transpose`, `squeeze`, `unsqueeze`, `matmul`, `eq`, `detach` and `copy`.
+- Training: `nn.param(t)` marks a tensor as trainable. `loss.backward()`
+  computes gradients, readable with `p.grad()`. `nn.sgd(params, lr)` and
+  `nn.adam(params, lr)` create optimizers whose `step(loss)` runs backward and
+  updates the parameters. `nn.mse` and `nn.cross_entropy` are the losses;
+  cross-entropy takes class indices as a tensor of whole numbers.
+
+Shape errors are run-time errors that name both shapes.
 
 ## Display
 
