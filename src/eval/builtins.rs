@@ -156,6 +156,29 @@ impl Interp {
                 Value::None
             }
             Builtin::Fail => return Err(string(&args[0])?.to_string()),
+            Builtin::Chr => {
+                let code = int(&args[0])?;
+                let c = u32::try_from(code).ok().and_then(char::from_u32).ok_or_else(|| format!("{code} is not a valid character code"))?;
+                Value::Str(c.to_string().into())
+            }
+            Builtin::Ord => {
+                let s = string(&args[0])?;
+                let mut chars = s.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Value::Int(i64::from(u32::from(c))),
+                    _ => return Err(format!("`ord` needs a single character, found \"{s}\"")),
+                }
+            }
+            Builtin::FromBytes => {
+                let bytes = list(&args[0])?
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(b) if (0..=255).contains(b) => Ok(*b as u8),
+                        _ => Err("`from_bytes` needs a list of Ints from 0 to 255".to_string()),
+                    })
+                    .collect::<Result<Vec<u8>, _>>()?;
+                Value::Str(String::from_utf8_lossy(&bytes).into_owned().into())
+            }
             Builtin::Enumerate => Value::list(list(&args[0])?.into_iter().enumerate().map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v].into())).collect()),
             Builtin::Zip => {
                 let (a, b) = (list(&args[0])?, list(&args[1])?);
@@ -351,6 +374,18 @@ impl Interp {
                 "join" => {
                     let parts: Vec<String> = list(&args[0])?.iter().map(|v| self.display(v)).collect();
                     Value::Str(parts.join(s).into())
+                }
+                "bytes" => Value::list(s.bytes().map(|b| Value::Int(i64::from(b))).collect()),
+                "is_alpha" | "is_digit" | "is_space" | "is_alnum" | "is_upper" | "is_lower" => {
+                    let test: fn(char) -> bool = match name {
+                        "is_alpha" => char::is_alphabetic,
+                        "is_digit" => char::is_numeric,
+                        "is_space" => char::is_whitespace,
+                        "is_alnum" => char::is_alphanumeric,
+                        "is_upper" => char::is_uppercase,
+                        _ => char::is_lowercase,
+                    };
+                    Value::Bool(!s.is_empty() && s.chars().all(test))
                 }
                 _ => return Err(format!("String has no method `{name}`")),
             }),

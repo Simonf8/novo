@@ -92,8 +92,10 @@ or an expression that uses `it` (`xs where it > 1`):
 
 Built-in functions: `len`, `range`, `str`, `int`, `float`, `bool`, `abs`,
 `min`, `max`, `round`, `sum`, `any`, `all`, `sorted` (with an optional key
-function), `reversed`, `enumerate`, `zip`, `type_of`, `input`, `assert`,
-`assert_eq` and `fail`.
+function), `reversed`, `enumerate`, `zip`, `chr`, `ord`, `from_bytes`
+(UTF-8, replacing invalid sequences), `type_of`, `input`, `assert`,
+`assert_eq` and `fail`. Strings have `bytes()` and the character tests
+`is_alpha`, `is_digit`, `is_space`, `is_alnum`, `is_upper` and `is_lower`.
 
 ## Classes
 

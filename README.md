@@ -133,6 +133,20 @@ repeat 200 times:
 show f"w = {w.item():.3f}, b = {b.item():.3f}"     # w = 3.000, b = 2.000
 ```
 
+### Running GPT-2
+
+[examples/gpt2](examples/gpt2) is GPT-2 written in Novo: the byte-level BPE
+tokenizer and the transformer, loading the published weights. Both are tested
+against Hugging Face `transformers`. They produce identical token ids, logits
+within 1e-4, and the same greedy continuation. Download `config.json`,
+`model.safetensors`, `vocab.json` and `merges.txt` from
+[openai-community/gpt2](https://huggingface.co/openai-community/gpt2) into a
+folder, then:
+
+```bash
+novo run examples/gpt2/generate.nv path/to/gpt2 "The meaning of life is" 30
+```
+
 [examples/xor_mlp.nv](examples/xor_mlp.nv) trains a small neural network
 written as a Novo class, and [examples/tiny_gpt.nv](examples/tiny_gpt.nv) is a
 character-level GPT (embeddings, causal multi-head self-attention, layer norm,
