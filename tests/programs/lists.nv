@@ -1,0 +1,10 @@
+# xfail: vm ast
+xs = [5, 3, 8]
+xs.push(1)
+show xs
+show xs.length()
+xs[0] = 42
+show xs[0]
+show xs + [9]
+nested = [[1, 2], [3, 4]]
+show nested[1][0]

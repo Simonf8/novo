@@ -215,8 +215,7 @@ fn execute_run(filename: &str, engine: &str) {
                 match vm.interpret(chunk) {
                     vm::InterpretResult::Ok => {}
                     vm::InterpretResult::RuntimeError(e) => {
-                        eprintln!("VM Runtime Error: {}", e);
-                        print_error(&source, &e, "VM Runtime Error");
+                        print_error(&source, &e, "Runtime error");
                         std::process::exit(1);
                     }
                 }
@@ -243,8 +242,7 @@ fn execute_run(filename: &str, engine: &str) {
                 match vm.interpret(chunk) {
                     vm::InterpretResult::Ok => {}
                     vm::InterpretResult::RuntimeError(e) => {
-                        eprintln!("VM Runtime Error: {}", e);
-                        print_error(&source, &e, "VM Runtime Error");
+                        print_error(&source, &e, "Runtime error");
                         std::process::exit(1);
                     }
                 }

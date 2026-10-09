@@ -1,0 +1,6 @@
+# xfail: vm ast
+try:
+    result = 10 / 0
+catch e:
+    show "caught"
+show "after"

@@ -518,6 +518,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(windows), ignore = "emits Windows x64 calling convention code")]
     fn test_jit_arithmetic_execution() {
         let mut func = FunctionIR::new("test_calc".to_string());
         let x = func.new_value();
@@ -546,6 +547,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(windows), ignore = "emits Windows x64 calling convention code")]
     fn test_jit_recursive_fibonacci() {
         // function fib(n):
         //   if n <= 1: return n

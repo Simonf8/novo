@@ -1,0 +1,3 @@
+# xfail: vm
+repeat 3 times:
+    show f"Iteration {it}"
