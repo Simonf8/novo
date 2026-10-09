@@ -155,7 +155,7 @@ impl Compiler {
 
     fn signature(&self, params: &[Scalar], ret: Scalar) -> ir::Signature {
         let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
+        sig.params.extend([AbiParam::new(types::I64); 2]);
         sig.params.extend(params.iter().map(|p| AbiParam::new(p.clif())));
         sig.returns.push(AbiParam::new(ret.clif()));
         sig
@@ -258,7 +258,8 @@ impl Compiler {
                 let p = b.block_params(block);
                 (p[0], p[1], p[2])
             };
-            let mut call_args = vec![ctx];
+            let depth = b.ins().load(types::I64, MemFlagsData::trusted(), ctx, runtime::DEPTH_OFFSET);
+            let mut call_args = vec![ctx, depth];
             for (i, p) in params.iter().enumerate() {
                 let word = b.ins().load(types::I64, MemFlagsData::trusted(), args, (i * 8) as i32);
                 call_args.push(match p {

@@ -31,7 +31,7 @@ everything else runs on the interpreter.
 
 | Benchmark (`benches/`) | Rust `-O` | Novo | CPython 3.13 |
 |------------------------|----------:|-----:|-------------:|
-| `fib(32)`              | 0.013 s   | 0.054 s | 0.322 s |
+| `fib(32)`              | 0.013 s   | 0.026 s | 0.322 s |
 | nested integer loops   | 0.100 s   | 0.123 s | 1.585 s |
 | Mandelbrot 600×600     | 0.090 s   | 0.101 s | 3.445 s |
 

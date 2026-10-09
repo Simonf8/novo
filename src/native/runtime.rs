@@ -31,8 +31,8 @@ fn message(code: u32) -> &'static str {
     }
 }
 
-/// State shared between compiled code and the runtime. Compiled code reads and
-/// writes only `status` (offset 0) and `depth` (offset 8).
+/// State shared between compiled code and the runtime. Compiled code reads only
+/// `status` (offset 0) and, on entry, the starting `depth` (offset 8).
 #[repr(C)]
 pub struct Ctx {
     status: u8,

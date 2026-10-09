@@ -1,6 +1,7 @@
 //! Lowers one function instance from typed HIR to Cranelift IR.
 
-use super::runtime::{code, math, DEPTH_OFFSET, MAX_DEPTH, STATUS_OFFSET};
+use super::runtime::{code, MAX_DEPTH, STATUS_OFFSET};
+use super::runtime::math;
 use super::{Batch, Compiler, Key, Scalar};
 use crate::check::builtins::Builtin;
 use crate::check::hir::{self, ExprKind, Place, Program, StmtKind};
@@ -35,6 +36,8 @@ struct Lower<'a, 'b> {
     subst: Vec<(u32, Ty)>,
     b: FunctionBuilder<'b>,
     ctx: ir::Value,
+    /// This call's recursion depth, passed on to callees.
+    depth: ir::Value,
     locals: Vec<(Variable, Scalar)>,
     ret: Scalar,
     ret_var: Variable,
@@ -58,7 +61,9 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
     b.switch_to_block(entry);
     b.seal_block(entry);
     let ctx = b.block_params(entry)[0];
-    let args: Vec<ir::Value> = b.block_params(entry)[1..].to_vec();
+    let caller_depth = b.block_params(entry)[1];
+    let args: Vec<ir::Value> = b.block_params(entry)[2..].to_vec();
+    let depth = b.ins().iadd_imm_s(caller_depth, 1);
 
     let mut locals = Vec::with_capacity(func.locals.len());
     for (i, local) in func.locals.iter().enumerate() {
@@ -75,11 +80,8 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
 
     let exit = b.create_block();
     let fail = b.create_block();
-    let mut l = Lower { c, prog, batch, subst, b, ctx, locals, ret, ret_var, exit, fail, loops: Vec::new(), refs: HashMap::new() };
+    let mut l = Lower { c, prog, batch, subst, b, ctx, depth, locals, ret, ret_var, exit, fail, loops: Vec::new(), refs: HashMap::new() };
 
-    let depth = l.b.ins().load(types::I64, MemFlagsData::trusted(), ctx, DEPTH_OFFSET);
-    let depth = l.b.ins().iadd_imm_s(depth, 1);
-    l.b.ins().store(MemFlagsData::trusted(), depth, ctx, DEPTH_OFFSET);
     let too_deep = l.b.ins().icmp_imm_s(IntCC::UnsignedGreaterThan, depth, MAX_DEPTH as i64);
     l.fail_if(too_deep, code::DEPTH, func_span(func))?;
 
@@ -90,9 +92,6 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
 
     for (block, value) in [(l.exit, None), (l.fail, Some(()))] {
         l.b.switch_to_block(block);
-        let depth = l.b.ins().load(types::I64, MemFlagsData::trusted(), ctx, DEPTH_OFFSET);
-        let depth = l.b.ins().iadd_imm_s(depth, -1);
-        l.b.ins().store(MemFlagsData::trusted(), depth, ctx, DEPTH_OFFSET);
         let result = match value {
             None => l.b.use_var(l.ret_var),
             Some(()) => zero(&mut l.b, l.ret),
@@ -475,7 +474,7 @@ impl Lower<'_, '_> {
                     return Err("calls a function whose types are not known".into());
                 }
                 let (id, params, ret) = self.c.request(self.prog, &(*func, inst), self.batch)?;
-                let mut vals = vec![self.ctx];
+                let mut vals = vec![self.ctx, self.depth];
                 for (a, p) in args.iter().zip(&params) {
                     let (v, s) = self.expr(a)?;
                     vals.push(self.convert(v, s, *p)?);
