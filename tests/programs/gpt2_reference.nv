@@ -1,0 +1,21 @@
+# The GPT-2 example must match Hugging Face transformers on a small random model.
+
+use "../../examples/gpt2/gpt2.nv"
+use json
+use fs
+
+dir = "tests/fixtures/gpt2-tiny"
+reference = json.parse(fs.read_file(dir + "/reference.json"))
+model = gpt2.load(dir)
+ids: List[Int] = reference.ids
+
+logits = model.forward(ids)
+show logits.shape()
+show (logits.argmax(1).to_list() select int(it)) == reference.argmax
+worst = 0.0
+expected: List[Float] = reference.last_logits
+for i, value in enumerate(expected):
+    worst = max(worst, abs(logits[-1][i].item() - value))
+show worst < 1e-4
+generated = model.generate(ids, 12)
+show generated == reference.generated
