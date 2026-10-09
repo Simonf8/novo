@@ -1,4 +1,3 @@
-# engines: next
 function counter_from(n):
     count = n
     function next():

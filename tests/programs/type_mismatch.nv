@@ -1,5 +1,4 @@
 # expect-error: expected `List[Int]`, found `List[String]`
-# xfail: vm ast
 function test() -> List[Int]:
     x: List[Int] = ["hello"]
     return x

@@ -302,8 +302,8 @@ impl<'a> Parser<'a> {
 
     fn function_def(&mut self) -> PResult<FunctionDef> {
         let lo = self.span();
-        let is_task = self.bump().tok == Tok::Task;
-        let name = self.ident(if is_task { "for the task" } else { "for the function" })?;
+        self.bump();
+        let name = self.ident("for the function")?;
         self.expect(&Tok::LParen, "to start the parameter list")?;
         let mut params = Vec::new();
         while !self.at(&Tok::RParen) {
@@ -326,7 +326,7 @@ impl<'a> Parser<'a> {
         } else {
             self.block()?
         };
-        Ok(FunctionDef { name, params, ret, body, is_task, span: lo.to(self.prev_span()) })
+        Ok(FunctionDef { name, params, ret, body, span: lo.to(self.prev_span()) })
     }
 
     fn class_def(&mut self) -> PResult<Stmt> {

@@ -1,3 +1,2 @@
-# engines: next
 # expect-error: `break` outside of a loop
 break

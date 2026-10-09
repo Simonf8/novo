@@ -1,4 +1,3 @@
-# engines: next
 # expect-error: an `if` condition must be a `Bool`
 x = 5
 if x:

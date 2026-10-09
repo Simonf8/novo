@@ -1,4 +1,3 @@
-# engines: next
 pi = 3.14159
 show f"{pi:.2f}"
 show f"[{42:>6}]"

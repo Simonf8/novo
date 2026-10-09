@@ -1,4 +1,3 @@
-# xfail: vm ast
 multiply = |x, y| x * y
 show multiply(5, 4)
 

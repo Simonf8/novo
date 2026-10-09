@@ -1,4 +1,3 @@
-# xfail: vm ast
 try:
     result = 10 / 0
 catch e:

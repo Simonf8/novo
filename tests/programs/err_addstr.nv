@@ -1,3 +1,2 @@
-# engines: next
 # expect-error: cannot apply `+` to `Int` and `String`
 show 1 + "a"

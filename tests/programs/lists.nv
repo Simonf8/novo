@@ -1,4 +1,3 @@
-# xfail: vm ast
 xs = [5, 3, 8]
 xs.push(1)
 show xs

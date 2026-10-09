@@ -52,7 +52,6 @@ pub struct FunctionDef {
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
     pub body: Block,
-    pub is_task: bool,
     pub span: Span,
 }
 
@@ -132,10 +131,6 @@ impl BinOp {
             BinOp::Or => "or",
             BinOp::In => "in",
         }
-    }
-
-    pub fn is_comparison(self) -> bool {
-        matches!(self, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
     }
 }
 

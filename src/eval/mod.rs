@@ -502,7 +502,7 @@ impl Interp {
             }
             ExprKind::Slice { target, start, end } => {
                 let obj = self.eval(target, frame)?;
-                let mut bound = |b: &Option<Box<hir::Expr>>, frame: &mut Frame| -> Result<Option<i64>, RtError> {
+                let bound = |b: &Option<Box<hir::Expr>>, frame: &mut Frame| -> Result<Option<i64>, RtError> {
                     match b {
                         None => Ok(None),
                         Some(e) => match self.eval(e, frame)? {

@@ -4,7 +4,6 @@ use std::fmt::Write;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
-    Warning,
 }
 
 #[derive(Debug, Clone)]
@@ -19,10 +18,6 @@ pub struct Diagnostic {
 impl Diagnostic {
     pub fn error(span: Span, message: impl Into<String>) -> Self {
         Diagnostic { severity: Severity::Error, message: message.into(), span, label: None, help: None }
-    }
-
-    pub fn warning(span: Span, message: impl Into<String>) -> Self {
-        Diagnostic { severity: Severity::Warning, message: message.into(), span, label: None, help: None }
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
@@ -41,7 +36,6 @@ impl Diagnostic {
         let (end_line, end_col) = file.line_col(self.span.hi as usize);
         let (kind, tint) = match self.severity {
             Severity::Error => ("error", "\x1b[1;31m"),
-            Severity::Warning => ("warning", "\x1b[1;33m"),
         };
         let paint = |text: &str, code: &str| {
             if color { format!("{code}{text}\x1b[0m") } else { text.to_string() }
@@ -73,7 +67,6 @@ impl Diagnostic {
         let (end_line, end_col) = file.line_col(self.span.hi as usize);
         let severity = match self.severity {
             Severity::Error => "error",
-            Severity::Warning => "warning",
         };
         let opt = |s: &Option<String>| s.as_deref().map(json_string).unwrap_or_else(|| "null".into());
         format!(

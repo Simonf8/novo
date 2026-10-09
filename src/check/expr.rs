@@ -93,7 +93,7 @@ impl<'s> Checker<'s> {
                 let inner = self.infer_expr(inner);
                 let ty = inner.ty.clone();
                 let block = vec![hir::Stmt { span: inner.span, kind: hir::StmtKind::Return(Some(inner)) }];
-                let closure = self.finish_closure("<task>", 0, Ty::func(vec![], ty.clone()), block, true, span);
+                let closure = self.finish_closure("<task>", 0, Ty::func(vec![], ty.clone()), block, span);
                 expr(ExprKind::Together(Box::new(closure)), Ty::task(ty), span)
             }
             ast::ExprKind::Await(inner) => {
@@ -602,11 +602,11 @@ impl<'s> Checker<'s> {
         let ret = body.ty.clone();
         let body_span = body.span;
         let block = vec![hir::Stmt { kind: hir::StmtKind::Return(Some(body)), span: body_span }];
-        self.finish_closure("<closure>", params.len(), Ty::func(param_tys, ret), block, false, span)
+        self.finish_closure("<closure>", params.len(), Ty::func(param_tys, ret), block, span)
     }
 
     /// Pops a closure context and returns the expression that creates the closure.
-    pub(super) fn finish_closure(&mut self, name: &str, params: usize, ty: Ty, body: hir::Block, is_task: bool, span: Span) -> hir::Expr {
+    pub(super) fn finish_closure(&mut self, name: &str, params: usize, ty: Ty, body: hir::Block, span: Span) -> hir::Expr {
         let ctx = self.stack.pop().expect("closure context");
         self.ctx().pending.extend(ctx.pending);
         let module = super::hir::ModuleId(ctx.module);
@@ -629,8 +629,6 @@ impl<'s> Checker<'s> {
             locals: ctx.locals,
             body,
             ty: ty.clone(),
-            is_task,
-            span,
         });
         expr(ExprKind::Closure { func, captures }, ty, span)
     }

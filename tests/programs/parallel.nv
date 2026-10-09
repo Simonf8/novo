@@ -1,4 +1,3 @@
-# engines: next
 task square(n):
     return n * n
 

@@ -3,16 +3,17 @@
 //! files from the VM's output.
 //!
 //! Leading comment directives:
-//!   `# engines: vm ast`     engines to run (default: all)
+//!   `# engines: interp`     engines to run (default: all)
 //!   `# requires: python`    skip unless built with `--features python`
 //!   `# expect-error: text`  must exit non-zero with `text` in stderr
-//!   `# xfail: vm`           known to fail on these engines
+//!   `# xfail: interp`       known to fail on these engines
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const ENGINES: &[&str] = &["vm", "ast", "next"];
+/// Engines and the extra `novo run` flags that select them.
+const ENGINES: &[(&str, &[&str])] = &[("interp", &[])];
 
 #[derive(Default)]
 struct Directives {
@@ -64,7 +65,7 @@ fn check(path: &Path, bless: bool) -> Result<(), String> {
         return Ok(());
     }
     let expected_path = path.with_extension("out");
-    let engines: Vec<String> = d.engines.clone().unwrap_or_else(|| ENGINES.iter().map(|e| e.to_string()).collect());
+    let engines: Vec<String> = d.engines.clone().unwrap_or_else(|| ENGINES.iter().map(|(name, _)| name.to_string()).collect());
 
     let mut errors = Vec::new();
     for engine in &engines {
@@ -80,8 +81,10 @@ fn check(path: &Path, bless: bool) -> Result<(), String> {
 }
 
 fn run_engine(path: &Path, engine: &str, d: &Directives, bless: bool, expected_path: &Path) -> Result<(), String> {
+    let flags = ENGINES.iter().find(|(name, _)| *name == engine).map(|(_, f)| *f).ok_or_else(|| format!("unknown engine `{engine}`"))?;
     let output = Command::new(env!("CARGO_BIN_EXE_novo"))
-        .args(["run", &format!("--engine={engine}")])
+        .arg("run")
+        .args(flags)
         .arg(path)
         .output()
         .map_err(|e| e.to_string())?;
@@ -127,4 +130,17 @@ fn golden_programs() {
         })
         .collect();
     assert!(failures.is_empty(), "{} golden program(s) failed:\n\n{}", failures.len(), failures.join("\n\n"));
+}
+
+#[test]
+fn examples_type_check() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    for entry in fs::read_dir(dir).expect("examples exists") {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "nv") {
+            continue;
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_novo")).arg("check").arg(&path).output().unwrap();
+        assert!(output.status.success(), "{} does not type-check:\n{}", path.display(), String::from_utf8_lossy(&output.stderr));
+    }
 }

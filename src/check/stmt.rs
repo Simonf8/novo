@@ -355,6 +355,6 @@ impl<'s> Checker<'s> {
         self.stack.push(ctx);
         let body = self.check_function_body(&def.body, def.name.span, &def.name.name);
         self.solve_pending();
-        self.finish_closure(&def.name.name, def.params.len(), fty, body, def.is_task, def.span)
+        self.finish_closure(&def.name.name, def.params.len(), fty, body, def.span)
     }
 }

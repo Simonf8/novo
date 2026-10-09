@@ -1,3 +1,2 @@
-# engines: next
 # expect-error: expected `]` to close the list
 show [1, 2

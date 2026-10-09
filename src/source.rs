@@ -70,8 +70,4 @@ impl SourceMap {
     pub fn get(&self, id: FileId) -> &SourceFile {
         &self.files[id.0 as usize]
     }
-
-    pub fn find(&self, path: &Path) -> Option<FileId> {
-        self.files.iter().position(|f| f.path == path).map(|i| FileId(i as u32))
-    }
 }

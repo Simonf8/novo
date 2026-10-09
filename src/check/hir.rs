@@ -28,15 +28,8 @@ pub struct Program {
     pub entry: ModuleId,
 }
 
-impl Program {
-    pub fn class_names(&self) -> Vec<String> {
-        self.classes.iter().map(|c| c.name.clone()).collect()
-    }
-}
-
 #[derive(Debug)]
 pub struct Module {
-    pub path: std::path::PathBuf,
     pub init: FuncId,
 }
 
@@ -64,8 +57,6 @@ pub struct Func {
     pub locals: Vec<Local>,
     pub body: Block,
     pub ty: Ty,
-    pub is_task: bool,
-    pub span: Span,
 }
 
 #[derive(Debug)]
@@ -88,7 +79,6 @@ impl Class {
 #[derive(Debug)]
 pub struct Field {
     pub name: String,
-    pub ty: Ty,
 }
 
 pub type Block = Vec<Stmt>;

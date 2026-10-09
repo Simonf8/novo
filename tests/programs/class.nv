@@ -1,4 +1,3 @@
-# xfail: vm ast
 class Counter:
     value: Int = 0
     step = 1

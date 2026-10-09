@@ -74,7 +74,6 @@ struct FuncSlot {
 
 struct ClassSlot {
     name: String,
-    module: ModuleId,
     fields: Vec<FieldSlot>,
     methods: Vec<(String, FuncId)>,
 }
@@ -88,7 +87,6 @@ struct FieldSlot {
 #[derive(Default)]
 struct FnCtx {
     module: u32,
-    func: Option<FuncId>,
     locals: Vec<hir::Local>,
     names: HashMap<String, LocalId>,
     scopes: Vec<(String, LocalId)>,
@@ -255,7 +253,7 @@ impl<'s> Checker<'s> {
                 }
                 ast::StmtKind::Class(def) => {
                     let cid = ClassId(self.classes.len() as u32);
-                    self.classes.push(ClassSlot { name: def.name.name.clone(), module: id, fields: Vec::new(), methods: Vec::new() });
+                    self.classes.push(ClassSlot { name: def.name.name.clone(), fields: Vec::new(), methods: Vec::new() });
                     self.define(id, &def.name, Item::Class(cid));
                     classes.push((cid, def.clone()));
                 }
@@ -354,7 +352,7 @@ impl<'s> Checker<'s> {
     fn check_module(&mut self, id: ModuleId, module: ast::Module) {
         let init = self.add_func("<module>", id, None, None);
         self.modules[id.0 as usize].init = Some(init);
-        self.stack.push(FnCtx { module: id.0, func: Some(init), is_toplevel: true, ..FnCtx::default() });
+        self.stack.push(FnCtx { module: id.0, is_toplevel: true, ..FnCtx::default() });
         let body = self.check_block(&module.stmts);
         self.solve_pending();
         let ctx = self.stack.pop().unwrap();
@@ -367,8 +365,6 @@ impl<'s> Checker<'s> {
             locals: ctx.locals,
             body,
             ty: Ty::func(vec![], Ty::None),
-            is_task: false,
-            span: Span::default(),
         });
         self.funcs[init.0 as usize].state = FnState::Done(Scheme { vars: vec![], ty: Ty::func(vec![], Ty::None), constraints: vec![] });
 
@@ -393,7 +389,7 @@ impl<'s> Checker<'s> {
         let def = self.funcs[id.0 as usize].def.clone().expect("function source");
         let module = self.funcs[id.0 as usize].module;
         let class = self.funcs[id.0 as usize].class;
-        let mut ctx = FnCtx { module: module.0, func: Some(id), ..FnCtx::default() };
+        let mut ctx = FnCtx { module: module.0, ..FnCtx::default() };
 
         let mut param_tys = Vec::new();
         if let Some(cid) = class {
@@ -452,8 +448,6 @@ impl<'s> Checker<'s> {
             locals: ctx.locals,
             body,
             ty: fty,
-            is_task: def.is_task,
-            span: def.span,
         });
         self.funcs[id.0 as usize].state = FnState::Done(scheme.clone());
         scheme
@@ -702,7 +696,7 @@ impl<'s> Checker<'s> {
             .into_iter()
             .map(|c| hir::Class {
                 name: c.name,
-                fields: c.fields.into_iter().map(|f| hir::Field { name: f.name, ty: infer.zonk(&f.ty) }).collect(),
+                fields: c.fields.into_iter().map(|f| hir::Field { name: f.name }).collect(),
                 methods: c.methods,
             })
             .collect();
@@ -710,7 +704,7 @@ impl<'s> Checker<'s> {
         let modules = self
             .modules
             .into_iter()
-            .map(|m| hir::Module { path: m.path, init: m.init.expect("module init") })
+            .map(|m| hir::Module { init: m.init.expect("module init") })
             .collect();
         Ok(hir::Program { funcs, classes, globals, modules, entry })
     }

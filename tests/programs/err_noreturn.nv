@@ -1,4 +1,3 @@
-# engines: next
 # expect-error: can reach its end without returning a value
 function f(x):
     if x > 0:

@@ -1,4 +1,3 @@
-# engines: next
 # expect-error: `P` has no field `y`
 class P:
     x = 0

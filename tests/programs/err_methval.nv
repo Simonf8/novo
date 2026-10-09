@@ -1,4 +1,3 @@
-# engines: next
 # expect-error: call it with `length()`
 xs = [1,2]
 show xs.length

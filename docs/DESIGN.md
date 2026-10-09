@@ -111,7 +111,7 @@ it requires building with `--features python`.
 
 ## Concurrency
 
-- `task` marks a function as safe to run in the background.
+- `task` is another spelling of `function`, for code meant to run in the background.
 - `together expr` starts `expr` on another thread and returns a `Task[T]`;
   `await t` waits for it and returns the `T`.
 - `run [a, b, c] in parallel` and `[a, b, c] together` evaluate every element

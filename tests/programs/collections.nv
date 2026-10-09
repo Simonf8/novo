@@ -1,4 +1,3 @@
-# engines: next
 xs = [5, 1, 4]
 xs.sort()
 show xs

@@ -1,0 +1,35 @@
+# Logistic regression with scikit-learn, called from Novo.
+# Needs `cargo build --features python` and `pip install numpy scikit-learn`.
+
+use python numpy as np
+use python sklearn.linear_model as lm
+
+# Features: [Hours Studied, Attendance Rate %]
+# Labels: Passed (1) or Failed (0)
+X = np.array([
+    [1.0, 40.0],
+    [2.0, 50.0],
+    [3.0, 55.0],
+    [4.0, 70.0],
+    [6.0, 80.0],
+    [7.0, 85.0],
+    [8.0, 90.0],
+    [9.0, 95.0]
+])
+y = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+
+# Train model directly through interop
+clf = lm.LogisticRegression()
+clf.fit(X, y)
+
+# Predict new student outcomes:
+# Student A: 2 hours studied, 60% attendance
+# Student B: 8 hours studied, 88% attendance
+test_students = np.array([
+    [2.0, 60.0],
+    [8.0, 88.0]
+])
+
+predictions = clf.predict(test_students)
+show "Predictions (0 = Fail, 1 = Pass):"
+show predictions.tolist()
