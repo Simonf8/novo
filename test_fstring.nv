@@ -1,5 +1,0 @@
-
-name = "Novo"
-version = 1.0
-msg = f"Welcome to {name} version {version}!"
-show msg

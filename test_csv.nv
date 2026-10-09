@@ -1,3 +1,0 @@
-data = read "users_large.csv" as csv
-len = data.length()
-show len

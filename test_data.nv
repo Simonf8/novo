@@ -1,5 +1,0 @@
-my_list = [10, 20, 30]
-show my_list[1]
-
-my_map = {"name": "novo", "speed": 100}
-show my_map["speed"]

@@ -1,2 +1,0 @@
-use python sys
-show sys.executable

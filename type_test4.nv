@@ -1,7 +1,0 @@
-
-data: List[Int] = [1, 2, 3]
-subset = data where item > 1
-mapped = subset select item * 2.0
-result: List[Float] = mapped
-bad_result: List[Int] = mapped
-

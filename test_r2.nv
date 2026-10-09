@@ -1,5 +1,0 @@
-use python random
-r = []
-repeat 10 times:
-    r = r + [random.random() * 100]
-show r
