@@ -28,6 +28,19 @@ thread_local! {
 pub struct RtError {
     pub message: String,
     pub span: Span,
+    /// Calls the error passed through, innermost first: the function and where it was called.
+    pub trace: Vec<(String, Span)>,
+}
+
+const MAX_TRACE: usize = 24;
+
+impl RtError {
+    fn through(mut self, function: &str, call: Span) -> RtError {
+        if self.trace.len() < MAX_TRACE {
+            self.trace.push((function.to_string(), call));
+        }
+        self
+    }
 }
 
 type Eval = Result<Value, RtError>;
@@ -81,11 +94,11 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
             result
         })
         .expect("spawn the main thread");
-    handle.join().unwrap_or_else(|_| Err(RtError { message: "the interpreter panicked".into(), span: Span::default() }))
+    handle.join().unwrap_or_else(|_| Err(RtError { message: "the interpreter panicked".into(), span: Span::default(), trace: Vec::new() }))
 }
 
 fn fail<T>(message: impl Into<String>, span: Span) -> Result<T, RtError> {
-    Err(RtError { message: message.into(), span })
+    Err(RtError { message: message.into(), span, trace: Vec::new() })
 }
 
 trait At<T> {
@@ -94,7 +107,7 @@ trait At<T> {
 
 impl<T> At<T> for Result<T, String> {
     fn at(self, span: Span) -> Result<T, RtError> {
-        self.map_err(|message| RtError { message, span })
+        self.map_err(|message| RtError { message, span, trace: Vec::new() })
     }
 }
 
@@ -157,9 +170,11 @@ impl Interp {
             }
         }
         let mut frame = Frame { locals, closure };
-        match self.exec_block(&f.body, &mut frame)? {
-            Flow::Return(v) => Ok(v),
-            _ => Ok(Value::None),
+        match self.exec_block(&f.body, &mut frame) {
+            Ok(Flow::Return(v)) => Ok(v),
+            Ok(_) => Ok(Value::None),
+            Err(e) if f.name == "<module>" => Err(e),
+            Err(e) => Err(e.through(&f.name, span)),
         }
     }
 
@@ -176,7 +191,8 @@ impl Interp {
             });
         }
         let depth = DEPTH.with(Cell::get);
-        let word = entry.call(&words, depth, &self.out).map_err(|(message, span)| RtError { message, span })?;
+        let name = &self.prog.funcs[func.0 as usize].name;
+        let word = entry.call(&words, depth, &self.out).map_err(|(message, inner)| RtError { message, span: inner, trace: Vec::new() }.through(name, span))?;
         Ok(match entry.ret {
             Scalar::Int => Value::Int(word as i64),
             Scalar::Float => Value::Float(f64::from_bits(word)),

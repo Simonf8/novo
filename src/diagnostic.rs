@@ -13,11 +13,12 @@ pub struct Diagnostic {
     pub span: Span,
     pub label: Option<String>,
     pub help: Option<String>,
+    pub notes: Vec<String>,
 }
 
 impl Diagnostic {
     pub fn error(span: Span, message: impl Into<String>) -> Self {
-        Diagnostic { severity: Severity::Error, message: message.into(), span, label: None, help: None }
+        Diagnostic { severity: Severity::Error, message: message.into(), span, label: None, help: None, notes: Vec::new() }
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
@@ -27,6 +28,11 @@ impl Diagnostic {
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
         self
     }
 
@@ -57,6 +63,9 @@ impl Diagnostic {
 
         if let Some(help) = &self.help {
             let _ = writeln!(out, "{pad} {} {}: {help}", paint("=", "\x1b[1;34m"), paint("help", "\x1b[1m"));
+        }
+        for note in &self.notes {
+            let _ = writeln!(out, "{pad} {} {}: {note}", paint("=", "\x1b[1;34m"), paint("note", "\x1b[1m"));
         }
         out
     }

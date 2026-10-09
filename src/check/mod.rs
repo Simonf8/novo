@@ -193,8 +193,8 @@ impl<'s> Checker<'s> {
 
     // ---- modules -------------------------------------------------------------------------
 
-    fn load_module(&mut self, path: &Path, from: Option<Span>) -> Option<ModuleId> {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    fn load_module(&mut self, display: &Path, from: Option<Span>) -> Option<ModuleId> {
+        let path = std::fs::canonicalize(display).unwrap_or_else(|_| display.to_path_buf());
         if let Some(i) = self.modules.iter().position(|m| m.path == path) {
             if !self.modules[i].loaded {
                 let span = from.unwrap_or_default();
@@ -214,7 +214,7 @@ impl<'s> Checker<'s> {
                 return None;
             }
         };
-        let file = self.sources.add(&path, text);
+        let file = self.sources.add(display, text);
         let module = match syntax::parse(file, &self.sources.get(file).text.clone()) {
             Ok(m) => m,
             Err(d) => {
@@ -224,7 +224,7 @@ impl<'s> Checker<'s> {
         };
         let id = ModuleId(self.modules.len() as u32);
         self.modules.push(ModuleSlot { path: path.clone(), names: HashMap::new(), init: None, loaded: false });
-        self.declare_module(id, &module, &path);
+        self.declare_module(id, &module, display);
         self.check_module(id, module);
         self.modules[id.0 as usize].loaded = true;
         Some(id)

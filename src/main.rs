@@ -86,7 +86,13 @@ fn cmd_run(args: &[String]) -> i32 {
     match eval::run(program, program_args, native) {
         Ok(()) => 0,
         Err(e) => {
-            render(&sources, &[Diagnostic::error(e.span, e.message)]);
+            let mut diag = Diagnostic::error(e.span, e.message);
+            for (function, call) in &e.trace {
+                let file = sources.get(call.file);
+                let (line, col) = file.line_col(call.lo as usize);
+                diag = diag.with_note(format!("in `{function}`, called from {}:{line}:{col}", file.path.display()));
+            }
+            render(&sources, &[diag]);
             1
         }
     }
