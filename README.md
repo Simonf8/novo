@@ -25,13 +25,23 @@ Novo is statically typed with full type inference: no annotations are
 required, every program is checked before it runs, and errors point at the
 exact source with a suggested fix. Functions are generic by default.
 
-> **Status:** early development. The front end, type checker and reference
-> interpreter are complete and tested. Native compilation, which is where
-> the speed comes from, is the next milestone; see the [roadmap](#roadmap).
+Functions that work on numbers compile to machine code with
+[Cranelift](https://cranelift.dev) the first time they are called;
+everything else runs on the interpreter.
+
+| Benchmark (`benches/`) | Rust `-O` | Novo | CPython 3.13 |
+|------------------------|----------:|-----:|-------------:|
+| `fib(32)`              | 0.013 s   | 0.054 s | 0.322 s |
+| nested integer loops   | 0.100 s   | 0.123 s | 1.585 s |
+| Mandelbrot 600×600     | 0.090 s   | 0.101 s | 3.445 s |
+
+> **Status:** early development. Native code currently covers functions
+> whose values are all `Int`, `Float`, `Bool` or `None`; lists, strings and
+> classes are next. See the [roadmap](#roadmap).
 
 ## Building
 
-Requires Rust 1.85 or newer.
+Requires Rust 1.96 or newer.
 
 ```bash
 cargo build --release
@@ -48,6 +58,7 @@ cargo build --release --features python
 
 ```text
 novo run <file.nv> [args...]     Check and run a program
+         [--interp]              (without compiling anything to native code)
 novo check <file.nv> [--json]    Type-check without running
 novo test [path]                 Run test_*.nv and *_test.nv files
 novo bench <file.nv> [-n N]      Time repeated runs of a program
@@ -111,8 +122,9 @@ The precise rules (numbers, scoping, classes, error handling, display) are in
 ## How it works
 
 ```text
-source ──► lexer ──► parser ──► type checker ──► typed HIR ──► interpreter
-           src/syntax           src/check                      src/eval
+                                                          ┌──► interpreter   (src/eval)
+source ──► lexer/parser ──► type checker ──► typed HIR ───┤
+           (src/syntax)     (src/check)                   └──► native code   (src/native)
 ```
 
 - **`src/syntax`**: an indentation-aware lexer and a recursive-descent parser
@@ -124,6 +136,12 @@ source ──► lexer ──► parser ──► type checker ──► typed H
 - **`src/eval`**: the reference interpreter over the typed HIR. Integer
   arithmetic is overflow-checked, maps keep insertion order, and
   `together` and parallel queries run on OS threads.
+- **`src/native`**: a JIT built on Cranelift. Each call site records the
+  concrete types it instantiates a generic function with, so `fib(n)` called
+  with an `Int` compiles to an `Int`-only function. Compiled code checks
+  overflow, division by zero and recursion depth, and reports errors exactly
+  as the interpreter does. Set `NOVO_NATIVE_LOG=1` to see what compiles and
+  why anything does not.
 - **`src/diagnostic.rs`**: error rendering with source snippets, labels and
   help text, plus JSON output.
 
@@ -133,17 +151,17 @@ source ──► lexer ──► parser ──► type checker ──► typed H
 cargo test
 ```
 
-`tests/programs` holds golden programs: each `.nv` file runs and its output
-is compared with the matching `.out` file. Leading comments mark expected
+`tests/programs` holds golden programs: each `.nv` file runs both natively
+and with `--interp`, and both outputs are compared with the matching `.out`
+file. Leading comments mark expected
 errors (`# expect-error: ...`) and required features
 (`# requires: python`). After an intentional output change, regenerate with
 `NOVO_BLESS=1 cargo test`.
 
 ## Roadmap
 
-1. **Native code generation.** Lower the typed HIR to Cranelift with unboxed
-   `Int`, `Float` and `Bool`, and monomorphized generics. The goal is
-   numeric code within a small factor of Rust.
+1. **More native code.** Lists, strings, classes and closures in compiled
+   functions, cheaper calls, and ahead-of-time executables.
 2. **Tensors and autograd.** A built-in `Tensor` type, `@` for matrix
    multiplication, and reverse-mode differentiation for training models.
 3. **Shapes in types.** Catch tensor dimension mismatches at check time.
