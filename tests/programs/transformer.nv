@@ -1,0 +1,125 @@
+# A smaller copy of examples/tiny_gpt.nv that checks training makes progress.
+
+use nn
+use random
+
+random.seed(1337)
+
+text = """
+the quick brown fox jumps over the lazy dog.
+a journey of a thousand miles begins with a single step.
+all that glitters is not gold.
+the early bird catches the worm.
+"""
+
+chars: List[String] = []
+for c in text:
+    if not (c in chars):
+        chars.push(c)
+chars.sort()
+ids: Map[String, Int] = {}
+for i in range(len(chars)):
+    ids[chars[i]] = i
+data = text.chars() select ids[it]
+
+vocab = len(chars)
+context = 8
+width = 16
+heads = 2
+depth = 1
+
+function weight(rows: Int, cols: Int) -> Tensor:
+    return nn.param(nn.randn([rows, cols]) * 0.02)
+
+function ones(n: Int) -> Tensor:
+    return nn.param(nn.ones([n]))
+
+function zeros(n: Int) -> Tensor:
+    return nn.param(nn.zeros([n]))
+
+class Block:
+    norm1_w: Tensor
+    norm1_b: Tensor
+    qkv: Tensor
+    proj: Tensor
+    norm2_w: Tensor
+    norm2_b: Tensor
+    up: Tensor
+    down: Tensor
+
+    function forward(x: Tensor, blocked: Tensor) -> Tensor:
+        shape = x.shape()
+        batch = shape[0]
+        steps = shape[1]
+        size = width // heads
+        parts = (x.layer_norm(self.norm1_w, self.norm1_b) @ self.qkv).chunk(3, 2)
+        q = parts[0].reshape([batch, steps, heads, size]).transpose(1, 2)
+        k = parts[1].reshape([batch, steps, heads, size]).transpose(1, 2)
+        v = parts[2].reshape([batch, steps, heads, size]).transpose(1, 2)
+        scores = (q @ k.transpose(2, 3)) * (1.0 / size ** 0.5)
+        attention = scores.masked_fill(blocked, -1e9).softmax(3)
+        mixed = (attention @ v).transpose(1, 2).reshape([batch, steps, width])
+        x = x + mixed @ self.proj
+        hidden = (x.layer_norm(self.norm2_w, self.norm2_b) @ self.up).gelu()
+        return x + hidden @ self.down
+
+    function params() -> List[Tensor]:
+        return [self.norm1_w, self.norm1_b, self.qkv, self.proj, self.norm2_w, self.norm2_b, self.up, self.down]
+
+function block() -> Block:
+    return Block(ones(width), zeros(width), weight(width, 3 * width), weight(width, width), ones(width), zeros(width), weight(width, 4 * width), weight(4 * width, width))
+
+class GPT:
+    tokens: Tensor
+    positions: Tensor
+    blocks: List[Block]
+    norm_w: Tensor
+    norm_b: Tensor
+    head: Tensor
+
+    function forward(idx: Tensor) -> Tensor:
+        steps = idx.shape()[1]
+        blocked = 1 - nn.tril(steps)
+        x = self.tokens.embed(idx) + self.positions.narrow(0, 0, steps)
+        for b in self.blocks:
+            x = b.forward(x, blocked)
+        return x.layer_norm(self.norm_w, self.norm_b) @ self.head
+
+    function params() -> List[Tensor]:
+        all = [self.tokens, self.positions, self.norm_w, self.norm_b, self.head]
+        for b in self.blocks:
+            all.extend(b.params())
+        return all
+
+model = GPT(weight(vocab, width), weight(context, width), range(depth) select block(), ones(width), zeros(width), weight(width, vocab))
+optimizer = nn.adam(model.params(), 0.02)
+
+function batch(size: Int) -> List[Tensor]:
+    inputs: List[List[Int]] = []
+    targets: List[List[Int]] = []
+    repeat size times:
+        start = random.int(0, len(data) - context - 1)
+        inputs.push(data[start:start + context])
+        targets.push(data[start + 1:start + context + 1])
+    return [nn.tensor(inputs), nn.tensor(targets)]
+
+function loss_on(pair: List[Tensor]) -> Tensor:
+    logits = model.forward(pair[0])
+    return nn.cross_entropy(logits.reshape([-1, vocab]), pair[1].reshape([-1]))
+
+first_loss = loss_on(batch(16)).item()
+for step in range(1, 61):
+    loss = loss_on(batch(16))
+    optimizer.step(loss)
+show "learned:", loss_on(batch(16)).item() < first_loss / 2
+
+function generate(prompt: String, count: Int) -> String:
+    out = prompt.chars() select ids[it]
+    repeat count times:
+        window = out[-context:]
+        logits = model.forward(nn.tensor([window]))
+        probs = logits[0][len(window) - 1].softmax(0)
+        out.push(probs.sample())
+    return (out select chars[it]).join("")
+
+show len(generate("the ", 20))

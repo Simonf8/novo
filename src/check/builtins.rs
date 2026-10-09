@@ -57,6 +57,15 @@ pub enum Builtin {
     NnMse,
     NnCrossEntropy,
     NnStack,
+    NnCat,
+    NnTril,
+    NnSave,
+    NnLoad,
+    RandomSeed,
+    RandomInt,
+    RandomFloat,
+    RandomChoice,
+    RandomShuffle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +76,7 @@ pub enum StdModule {
     Fs,
     Env,
     Nn,
+    Random,
 }
 
 impl StdModule {
@@ -78,6 +88,7 @@ impl StdModule {
             "fs" => StdModule::Fs,
             "env" => StdModule::Env,
             "nn" => StdModule::Nn,
+            "random" => StdModule::Random,
             _ => return None,
         })
     }
@@ -129,6 +140,15 @@ impl StdModule {
             (StdModule::Nn, "mse") => NnMse,
             (StdModule::Nn, "cross_entropy") => NnCrossEntropy,
             (StdModule::Nn, "stack") => NnStack,
+            (StdModule::Nn, "cat") => NnCat,
+            (StdModule::Nn, "tril") => NnTril,
+            (StdModule::Nn, "save") => NnSave,
+            (StdModule::Nn, "load") => NnLoad,
+            (StdModule::Random, "seed") => RandomSeed,
+            (StdModule::Random, "int") => RandomInt,
+            (StdModule::Random, "float") => RandomFloat,
+            (StdModule::Random, "choice") => RandomChoice,
+            (StdModule::Random, "shuffle") => RandomShuffle,
             _ => return None,
         })
     }
@@ -219,6 +239,15 @@ impl Builtin {
             NnMse => "nn.mse",
             NnCrossEntropy => "nn.cross_entropy",
             NnStack => "nn.stack",
+            NnCat => "nn.cat",
+            NnTril => "nn.tril",
+            NnSave => "nn.save",
+            NnLoad => "nn.load",
+            RandomSeed => "random.seed",
+            RandomInt => "random.int",
+            RandomFloat => "random.float",
+            RandomChoice => "random.choice",
+            RandomShuffle => "random.shuffle",
         }
     }
 
@@ -253,7 +282,13 @@ impl Builtin {
             NnSeed => (vec![Ty::Int], 1, Ty::None),
             NnSgd | NnAdam => (vec![Ty::list(Ty::Tensor), f()], 2, Ty::Optimizer),
             NnMse | NnCrossEntropy => (vec![Ty::Tensor, Ty::Tensor], 2, Ty::Tensor),
-            NnStack => (vec![Ty::list(Ty::Tensor), Ty::Int], 1, Ty::Tensor),
+            NnStack | NnCat => (vec![Ty::list(Ty::Tensor), Ty::Int], 1, Ty::Tensor),
+            NnTril => (vec![Ty::Int], 1, Ty::Tensor),
+            NnSave => (vec![Ty::map(s(), Ty::Tensor), s()], 2, Ty::None),
+            NnLoad => (vec![s()], 1, Ty::map(s(), Ty::Tensor)),
+            RandomSeed => (vec![Ty::Int], 1, Ty::None),
+            RandomInt => (vec![Ty::Int, Ty::Int], 2, Ty::Int),
+            RandomFloat => (vec![], 0, f()),
             _ => return None,
         })
     }
@@ -321,8 +356,15 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
                 "rank" | "size" => (vec![], 0, i()),
                 "item" => (vec![], 0, Ty::Float),
                 "to_list" => (vec![], 0, Ty::Any),
-                "sum" | "mean" => (vec![i()], 0, t()),
-                "max" | "min" | "argmax" | "argmin" | "softmax" | "log_softmax" | "squeeze" | "unsqueeze" => (vec![i()], 1, t()),
+                "sum" | "mean" => (vec![i(), Ty::Bool], 0, t()),
+                "max" | "min" => (vec![i(), Ty::Bool], 1, t()),
+                "argmax" | "argmin" | "softmax" | "log_softmax" | "squeeze" | "unsqueeze" => (vec![i()], 1, t()),
+                "narrow" => (vec![i(), i(), i()], 3, t()),
+                "chunk" => (vec![i(), i()], 1, Ty::list(t())),
+                "embed" => (vec![t()], 1, t()),
+                "masked_fill" => (vec![t(), Ty::Float], 2, t()),
+                "layer_norm" => (vec![t(), t(), Ty::Float], 2, t()),
+                "sample" => (vec![], 0, i()),
                 "relu" | "sigmoid" | "tanh" | "exp" | "log" | "sqrt" | "abs" | "gelu" | "silu" | "square" | "t" | "flatten" | "detach"
                 | "grad" | "copy" => (vec![], 0, t()),
                 "reshape" => (vec![Ty::list(i())], 1, t()),

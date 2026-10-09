@@ -1,0 +1,43 @@
+use nn
+use random
+use fs
+
+a = nn.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+show a.narrow(1, 1, 2), a.chunk(3, 1)[2], nn.cat([a, a], 0).shape()
+show a.sum(1, true).shape(), a.mean(0, true), a.max(1, true)
+show nn.tril(3), 1 - nn.tril(2)
+show a.masked_fill(nn.tensor([[1, 0, 0], [0, 0, 1]]), -1.0)
+table = nn.tensor([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+show table.embed(nn.tensor([[2, 0], [1, 1]]))
+normed = a.layer_norm(nn.ones([3]), nn.zeros([3]))
+show f"{normed[0][0].item():.4f} {normed[0][2].item():.4f}"
+show a.reshape([-1]).shape(), a.reshape([3, -1]).shape()
+show nn.tensor([0.0, 0.0, 1.0]).sample()
+
+weights = {"a": a, "eye": nn.eye(2)}
+nn.save(weights, "tensor_ops_test.safetensors")
+loaded = nn.load("tensor_ops_test.safetensors")
+fs.delete_file("tensor_ops_test.safetensors")
+show loaded.keys(), loaded["a"], loaded["eye"]
+
+random.seed(3)
+xs = [1, 2, 3, 4, 5]
+random.shuffle(xs)
+show xs.length(), xs select it sum
+pick = random.choice(["only"])
+show pick
+n = random.int(5, 6)
+show n, random.float() < 1.0
+
+try:
+    show a.narrow(1, 2, 5)
+catch e:
+    show e
+try:
+    show a.reshape([4, -1])
+catch e:
+    show e
+try:
+    show random.int(3, 3)
+catch e:
+    show e

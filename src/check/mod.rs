@@ -273,7 +273,7 @@ impl<'s> Checker<'s> {
                     Some(m) => self.define(id, alias.as_ref().unwrap_or(name), Item::Std(m)),
                     None => {
                         let msg = format!("unknown module `{}`", name.name);
-                        let help = format!("standard modules are math, time, json, fs, env and nn; to load a file write `use \"{}.nv\"`", name.name);
+                        let help = format!("standard modules are math, time, json, fs, env, nn and random; to load a file write `use \"{}.nv\"`", name.name);
                         self.error(Diagnostic::error(name.span, msg).with_help(help));
                     }
                 },

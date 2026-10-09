@@ -126,8 +126,9 @@ it requires building with `--features python`.
 `use nn` brings in tensors, built on candle:
 
 - Creation: `nn.tensor(nested_lists)`, `nn.zeros(shape)`, `nn.ones(shape)`,
-  `nn.randn(shape)`, `nn.rand(shape)`, `nn.arange(n)`, `nn.eye(n)` and
-  `nn.stack(tensors, dim)`. `nn.seed(n)` makes random tensors reproducible.
+  `nn.randn(shape)`, `nn.rand(shape)`, `nn.arange(n)`, `nn.eye(n)`,
+  `nn.tril(n)`, `nn.stack(tensors, dim)` and `nn.cat(tensors, dim)`.
+  `nn.seed(n)` makes random tensors reproducible.
 - Operators: `+ - * /` broadcast between tensors and with numbers, `**` takes
   a number exponent, `@` is matrix multiplication (vectors are treated as rows
   or columns as needed), and unary `-` negates. Comparisons are not operators;
@@ -135,10 +136,17 @@ it requires building with `--features python`.
 - Indexing: `t[i]` selects along the first dimension and `t[a:b]` narrows it.
   `len(t)`, `for row in t` and queries (`t select ...`) work on rows.
 - Methods: `shape`, `rank`, `size`, `item`, `to_list`, `sum`/`mean` (over
-  everything or one dimension), `max`, `min`, `argmax`, `argmin`, `softmax`,
-  `log_softmax`, `relu`, `sigmoid`, `tanh`, `gelu`, `silu`, `exp`, `log`,
-  `sqrt`, `abs`, `square`, `pow`, `clamp`, `reshape`, `flatten`, `t`,
-  `transpose`, `squeeze`, `unsqueeze`, `matmul`, `eq`, `detach` and `copy`.
+  everything or one dimension, optionally keeping it), `max`, `min`, `argmax`,
+  `argmin`, `softmax`, `log_softmax`, `relu`, `sigmoid`, `tanh`, `gelu`,
+  `silu`, `exp`, `log`, `sqrt`, `abs`, `square`, `pow`, `clamp`, `reshape`
+  (one dimension may be `-1`), `flatten`, `t`, `transpose`, `squeeze`,
+  `unsqueeze`, `narrow`, `chunk`, `matmul`, `eq`, `detach` and `copy`.
+- Model building blocks: `table.embed(ids)` looks up rows by index,
+  `x.masked_fill(mask, value)` replaces entries where the mask is non-zero,
+  `x.layer_norm(weight, bias)` normalizes over the last dimension, and
+  `probs.sample()` draws an index from a vector of weights.
+- Weights: `nn.save(map_of_tensors, path)` and `nn.load(path)` read and write
+  the safetensors format.
 - Training: `nn.param(t)` marks a tensor as trainable. `loss.backward()`
   computes gradients, readable with `p.grad()`. `nn.sgd(params, lr)` and
   `nn.adam(params, lr)` create optimizers whose `step(loss)` runs backward and
@@ -146,6 +154,10 @@ it requires building with `--features python`.
   cross-entropy takes class indices as a tensor of whole numbers.
 
 Shape errors are run-time errors that name both shapes.
+
+`use random` gives `random.int(low, high)` (high excluded), `random.float()`,
+`random.choice(list)`, `random.shuffle(list)` and `random.seed(n)`. It shares
+one generator with `nn`, so a single seed makes a training run reproducible.
 
 ## Display
 

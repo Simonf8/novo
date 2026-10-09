@@ -132,10 +132,13 @@ show f"w = {w.item():.3f}, b = {b.item():.3f}"     # w = 3.000, b = 2.000
 ```
 
 [examples/xor_mlp.nv](examples/xor_mlp.nv) trains a small neural network
-written as a Novo class.
+written as a Novo class, and [examples/tiny_gpt.nv](examples/tiny_gpt.nv) is a
+character-level GPT (embeddings, causal multi-head self-attention, layer norm,
+MLP blocks) that trains from scratch and generates text in a few seconds.
 
 Modules: `use "path/to/file.nv" as m` loads another file; `use math`,
-`use json`, `use time`, `use fs`, `use env` and `use nn` bring in the standard library;
+`use json`, `use time`, `use fs`, `use env`, `use random` and `use nn` bring in
+the standard library;
 `use python numpy as np` imports a Python module when built with the
 `python` feature.
 

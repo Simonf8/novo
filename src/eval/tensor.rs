@@ -1,6 +1,6 @@
 //! Tensors, gradients and optimizers, backed by candle on the CPU.
 
-use super::value::Value;
+use super::value::{Dict, Key, Value};
 use crate::check::builtins::Builtin;
 use crate::syntax::ast::BinOp;
 use candle_core::backprop::GradStore;
@@ -101,6 +101,27 @@ fn shape_arg(v: &Value) -> R<Vec<usize>> {
         .collect()
 }
 
+/// A target shape where one dimension may be `-1`, inferred from the element count.
+fn reshape_arg(v: &Value, from: &[usize]) -> R<Vec<usize>> {
+    let Value::List(items) = v else { return Err("a shape must be a list of Ints".into()) };
+    let dims: Vec<i64> = items.read().iter().map(int_arg).collect::<R<_>>()?;
+    let total: usize = from.iter().product();
+    let known: i64 = dims.iter().filter(|d| **d != -1).product();
+    let holes = dims.iter().filter(|d| **d == -1).count();
+    let bad = || format!("cannot reshape a tensor of shape {from:?} into {dims:?}");
+    if holes > 1 || dims.iter().any(|d| *d < -1) {
+        return Err(bad());
+    }
+    let shape: Vec<usize> = dims
+        .iter()
+        .map(|d| if *d == -1 { if known == 0 { 0 } else { total / known as usize } } else { *d as usize })
+        .collect();
+    if shape.iter().product::<usize>() != total {
+        return Err(bad());
+    }
+    Ok(shape)
+}
+
 fn tensor_arg(v: &Value) -> R<Tensor> {
     match v {
         Value::Tensor(t) => Ok(t.get()),
@@ -190,8 +211,34 @@ impl State {
                 let var = Var::from_tensor(&tensor_arg(&args[0])?).map_err(err)?;
                 return Ok(Value::Tensor(Arc::new(NTensor { tensor: var.as_tensor().clone(), var: Some(var) })));
             }
-            Builtin::NnSeed => {
+            Builtin::NnSeed | Builtin::RandomSeed => {
                 *self.rng.lock() = Rng::new(int_arg(&args[0])? as u64);
+                return Ok(Value::None);
+            }
+            Builtin::RandomInt => {
+                let (lo, hi) = (int_arg(&args[0])?, int_arg(&args[1])?);
+                if lo >= hi {
+                    return Err(format!("`random.int` needs low < high, got {lo} and {hi}"));
+                }
+                let span = hi.wrapping_sub(lo) as u64;
+                return Ok(Value::Int(lo.wrapping_add((self.rng.lock().next() % span) as i64)));
+            }
+            Builtin::RandomFloat => return Ok(Value::Float(self.rng.lock().uniform())),
+            Builtin::RandomChoice | Builtin::RandomShuffle => {
+                let Value::List(items) = &args[0] else { return Err("expected a list".into()) };
+                let mut rng = self.rng.lock();
+                if b == Builtin::RandomChoice {
+                    let items = items.read();
+                    if items.is_empty() {
+                        return Err("`random.choice` of an empty list".into());
+                    }
+                    return Ok(items[(rng.next() % items.len() as u64) as usize].clone());
+                }
+                let mut items = items.write();
+                for i in (1..items.len()).rev() {
+                    let j = (rng.next() % (i as u64 + 1)) as usize;
+                    items.swap(i, j);
+                }
                 return Ok(Value::None);
             }
             Builtin::NnSgd | Builtin::NnAdam => {
@@ -220,17 +267,42 @@ impl State {
                 let targets = tensor_arg(&args[1])?.to_dtype(DType::U32).map_err(err)?;
                 candle_nn::loss::cross_entropy(&tensor_arg(&args[0])?, &targets).map_err(err)?
             }
-            Builtin::NnStack => {
-                let Value::List(items) = &args[0] else { return Err("`nn.stack` takes a list of tensors".into()) };
+            Builtin::NnStack | Builtin::NnCat => {
+                let name = if b == Builtin::NnStack { "nn.stack" } else { "nn.cat" };
+                let Value::List(items) = &args[0] else { return Err(format!("`{name}` takes a list of tensors")) };
                 let tensors = items.read().iter().map(tensor_arg).collect::<R<Vec<_>>>()?;
                 if tensors.is_empty() {
-                    return Err("`nn.stack` needs at least one tensor".into());
+                    return Err(format!("`{name}` needs at least one tensor"));
                 }
+                let rank = tensors[0].rank() + usize::from(b == Builtin::NnStack);
                 let dim = match args.get(1) {
-                    Some(d) => dim(int_arg(d)?, tensors[0].rank() + 1)?,
+                    Some(d) => dim(int_arg(d)?, rank)?,
                     None => 0,
                 };
-                Tensor::stack(&tensors, dim).map_err(err)?
+                if b == Builtin::NnStack { Tensor::stack(&tensors, dim) } else { Tensor::cat(&tensors, dim) }.map_err(err)?
+            }
+            Builtin::NnTril => Tensor::tril2(int_arg(&args[0])?.max(0) as usize, DType::F32, cpu).map_err(err)?,
+            Builtin::NnSave => {
+                let Value::Map(map) = &args[0] else { return Err("`nn.save` takes a map of tensors".into()) };
+                let mut named = std::collections::HashMap::new();
+                for (k, v) in map.read().iter() {
+                    let Key::Str(name) = k else { return Err("tensor names must be strings".into()) };
+                    named.insert(name.to_string(), tensor_arg(v)?.contiguous().map_err(err)?);
+                }
+                let Value::Str(path) = &args[1] else { return Err("`nn.save` needs a file path".into()) };
+                candle_core::safetensors::save(&named, &**path).map_err(err)?;
+                return Ok(Value::None);
+            }
+            Builtin::NnLoad => {
+                let Value::Str(path) = &args[0] else { return Err("`nn.load` needs a file path".into()) };
+                let mut named: Vec<(String, Tensor)> = candle_core::safetensors::load(&**path, cpu).map_err(err)?.into_iter().collect();
+                named.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut dict = Dict::default();
+                for (name, t) in named {
+                    let t = if t.dtype() == DType::F32 { t } else { t.to_dtype(DType::F32).map_err(err)? };
+                    dict.insert(Key::Str(name.into()), wrap(t));
+                }
+                return Ok(Value::map(dict));
             }
             _ => unreachable!("not a tensor builtin"),
         };
@@ -245,6 +317,7 @@ impl State {
                 None => Ok(None),
             }
         };
+        let keepdim = matches!(args.get(1), Some(Value::Bool(true)));
         let out = match name {
             "shape" => return Ok(Value::list(t.dims().iter().map(|d| Value::Int(*d as i64)).collect())),
             "rank" => return Ok(Value::Int(t.rank() as i64)),
@@ -268,17 +341,79 @@ impl State {
                 g.clone()
             }
             "sum" => match arg_dim(0)? {
+                Some(d) if keepdim => t.sum_keepdim(d),
                 Some(d) => t.sum(d),
                 None => t.sum_all(),
             }
             .map_err(err)?,
             "mean" => match arg_dim(0)? {
+                Some(d) if keepdim => t.mean_keepdim(d),
                 Some(d) => t.mean(d),
                 None => t.mean_all(),
             }
             .map_err(err)?,
+            "max" if keepdim => t.max_keepdim(arg_dim(0)?.unwrap()).map_err(err)?,
+            "min" if keepdim => t.min_keepdim(arg_dim(0)?.unwrap()).map_err(err)?,
             "max" => t.max(arg_dim(0)?.unwrap()).map_err(err)?,
             "min" => t.min(arg_dim(0)?.unwrap()).map_err(err)?,
+            "narrow" => {
+                let d = dim(int_arg(&args[0])?, t.rank())?;
+                let (start, len) = (int_arg(&args[1])?, int_arg(&args[2])?);
+                let size = t.dims()[d] as i64;
+                if start < 0 || len < 0 || start + len > size {
+                    return Err(format!("cannot take {len} items from {start} in a dimension of size {size}"));
+                }
+                t.narrow(d, start as usize, len as usize).map_err(err)?
+            }
+            "chunk" => {
+                let n = int_arg(&args[0])?;
+                if n <= 0 {
+                    return Err("`chunk` needs a positive number of chunks".into());
+                }
+                let d = match args.get(1) {
+                    Some(v) => dim(int_arg(v)?, t.rank())?,
+                    None => 0,
+                };
+                let parts = t.chunk(n as usize, d).map_err(err)?;
+                return Ok(Value::list(parts.into_iter().map(wrap).collect()));
+            }
+            "embed" => {
+                let ids = tensor_arg(&args[0])?;
+                let mut shape = ids.dims().to_vec();
+                shape.push(*t.dims().last().ok_or("`embed` needs a table with at least one dimension")?);
+                let flat = ids.flatten_all().and_then(|i| i.to_dtype(DType::U32)).map_err(err)?;
+                t.index_select(&flat, 0).and_then(|rows| rows.reshape(shape)).map_err(err)?
+            }
+            "masked_fill" => {
+                let mask = tensor_arg(&args[0])?.broadcast_as(t.dims()).map_err(err)?;
+                let fill = Tensor::full(float_arg(&args[1])? as f32, t.dims(), &Device::Cpu).map_err(err)?;
+                mask.ne(0f32).and_then(|m| m.where_cond(&fill, &t)).map_err(err)?
+            }
+            "layer_norm" => {
+                let (weight, bias) = (tensor_arg(&args[0])?, tensor_arg(&args[1])?);
+                let eps = match args.get(2) {
+                    Some(v) => float_arg(v)?,
+                    None => 1e-5,
+                };
+                layer_norm(&t, &weight, &bias, eps).map_err(err)?
+            }
+            "sample" => {
+                let probs = values(&t)?;
+                let total: f64 = probs.iter().map(|p| f64::from(*p)).sum();
+                if t.rank() != 1 || !(total > 0.0) {
+                    return Err("`sample` needs a one-dimensional tensor of non-negative weights".into());
+                }
+                let mut target = self.rng.lock().uniform() * total;
+                let mut pick = probs.len() - 1;
+                for (i, p) in probs.iter().enumerate() {
+                    target -= f64::from(*p);
+                    if target < 0.0 {
+                        pick = i;
+                        break;
+                    }
+                }
+                return Ok(Value::Int(pick as i64));
+            }
             "argmax" => t.argmax(arg_dim(0)?.unwrap()).and_then(|a| a.to_dtype(DType::F32)).map_err(err)?,
             "argmin" => t.argmin(arg_dim(0)?.unwrap()).and_then(|a| a.to_dtype(DType::F32)).map_err(err)?,
             "softmax" => candle_nn::ops::softmax(&t, arg_dim(0)?.unwrap()).map_err(err)?,
@@ -306,11 +441,7 @@ impl State {
             "detach" => t.detach(),
             "copy" => t.copy().map_err(err)?,
             "reshape" => {
-                let shape = shape_arg(&args[0])?;
-                let n: usize = shape.iter().product();
-                if n != t.elem_count() {
-                    return Err(format!("cannot reshape a tensor of shape {:?} into {:?}", t.dims(), shape));
-                }
+                let shape = reshape_arg(&args[0], t.dims())?;
                 t.reshape(shape).map_err(err)?
             }
             "matmul" => matmul(&t, &tensor_arg(&args[0])?)?,
@@ -351,6 +482,15 @@ pub fn optimizer_method(opt: &Mutex<Opt>, name: &str, args: &[Value]) -> R<Value
     }
 }
 
+fn layer_norm(x: &Tensor, weight: &Tensor, bias: &Tensor, eps: f64) -> candle_core::Result<Tensor> {
+    let last = D::Minus1;
+    let mean = x.mean_keepdim(last)?;
+    let centered = x.broadcast_sub(&mean)?;
+    let var = centered.sqr()?.mean_keepdim(last)?;
+    let normed = centered.broadcast_div(&(var + eps)?.sqrt()?)?;
+    normed.broadcast_mul(weight)?.broadcast_add(bias)
+}
+
 fn dim(d: i64, rank: usize) -> R<usize> {
     let resolved = if d < 0 { d + rank as i64 } else { d };
     if resolved < 0 || resolved >= rank as i64 {
@@ -370,6 +510,7 @@ fn matmul(a: &Tensor, b: &Tensor) -> R<Tensor> {
     if ka != kb {
         return Err(format!("cannot multiply shapes {:?} and {:?}: inner dimensions {ka} and {kb} differ", a.dims(), b.dims()));
     }
+    let (a2, b2) = (a2.contiguous().map_err(err)?, b2.contiguous().map_err(err)?);
     let out = if a2.rank() == b2.rank() { a2.matmul(&b2) } else { a2.broadcast_matmul(&b2) }.map_err(err)?;
     let out = if ar == 1 { out.squeeze(out.rank() - 2).map_err(err)? } else { out };
     if br == 1 { out.squeeze(D::Minus1).map_err(err) } else { Ok(out) }

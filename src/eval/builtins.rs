@@ -235,7 +235,16 @@ impl Interp {
             | Builtin::NnAdam
             | Builtin::NnMse
             | Builtin::NnCrossEntropy
-            | Builtin::NnStack => self.tensors.builtin(b, &args)?,
+            | Builtin::NnStack
+            | Builtin::NnCat
+            | Builtin::NnTril
+            | Builtin::NnSave
+            | Builtin::NnLoad
+            | Builtin::RandomSeed
+            | Builtin::RandomInt
+            | Builtin::RandomFloat
+            | Builtin::RandomChoice
+            | Builtin::RandomShuffle => self.tensors.builtin(b, &args)?,
         })
     }
 

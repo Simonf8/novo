@@ -575,6 +575,14 @@ impl<'s> Checker<'s> {
                 }
                 Ty::None
             }
+            Builtin::RandomChoice | Builtin::RandomShuffle => {
+                if !arity(self, 1, 1) {
+                    return error_expr(span);
+                }
+                let item = self.infer.fresh();
+                self.unify_at(args[0].span, &Ty::list(item.clone()), &args[0].ty);
+                if b == Builtin::RandomChoice { item } else { Ty::None }
+            }
             Builtin::Fail => {
                 if !arity(self, 1, 1) {
                     return error_expr(span);
