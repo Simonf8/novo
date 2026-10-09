@@ -3,6 +3,7 @@ use crate::check::types::ClassId;
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -87,11 +88,49 @@ impl Key {
     }
 }
 
+/// FxHash: a fast non-cryptographic hash, ample for map keys.
+#[derive(Default)]
+pub struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.add(u64::from(n));
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.add(n);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl FxHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
 /// An insertion-ordered map.
 #[derive(Debug, Clone, Default)]
 pub struct Dict {
     entries: Vec<(Key, Value)>,
-    index: HashMap<Key, usize>,
+    index: FxMap<Key, usize>,
 }
 
 impl Dict {

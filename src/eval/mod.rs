@@ -136,6 +136,8 @@ impl Interp {
         self.call_func(init, Vec::new(), None, span).map(|_| ())
     }
 
+    /// Calls a function; `args` becomes its locals, so callers may pass a vector
+    /// with spare capacity to avoid reallocating.
     fn call_func(&self, fid: FuncId, args: Vec<Value>, closure: Option<Arc<Closure>>, span: Span) -> Eval {
         let f = &self.prog.funcs[fid.0 as usize];
         let depth = DEPTH.with(|d| {
@@ -149,11 +151,9 @@ impl Interp {
         if args.len() > f.params {
             return fail(format!("`{}` takes at most {} arguments but {} were given", f.name, f.params, args.len()), span);
         }
-        let mut locals = vec![Value::None; f.locals.len()];
         let given = args.len();
-        for (slot, a) in locals.iter_mut().zip(args) {
-            *slot = a;
-        }
+        let mut locals = args;
+        locals.resize(f.locals.len(), Value::None);
         let first_default = f.params - f.defaults.len();
         for i in given..f.params {
             match f.defaults.get(i.wrapping_sub(first_default)).and_then(Option::as_ref) {
@@ -270,6 +270,36 @@ impl Interp {
                 while self.cond(cond, frame)? {
                     if let Some(flow) = self.loop_body(body, frame)? {
                         return Ok(flow);
+                    }
+                }
+            }
+            StmtKind::For { var, iter, body } if is_range(iter) => {
+                let ExprKind::CallBuiltin { args, .. } = &iter.kind else { unreachable!() };
+                let bounds: Vec<i64> = self
+                    .eval_all(args, frame)?
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(i) => *i,
+                        _ => 0,
+                    })
+                    .collect();
+                let (mut i, end, step) = match bounds.as_slice() {
+                    [end] => (0, *end, 1),
+                    [start, end] => (*start, *end, 1),
+                    [start, end, step] => (*start, *end, *step),
+                    _ => unreachable!("range takes one to three arguments"),
+                };
+                if step == 0 {
+                    return fail("`range` step cannot be zero", iter.span);
+                }
+                while (step > 0 && i < end) || (step < 0 && i > end) {
+                    self.store(var, Value::Int(i), frame)?;
+                    if let Some(flow) = self.loop_body(body, frame)? {
+                        return Ok(flow);
+                    }
+                    match i.checked_add(step) {
+                        Some(next) => i = next,
+                        None => break,
                     }
                 }
             }
@@ -531,7 +561,11 @@ impl Interp {
                 self.call_value(&f, args, span)?
             }
             ExprKind::CallFunc { func, args, inst, native } => {
-                let args = self.eval_all(args, frame)?;
+                let mut values = Vec::with_capacity(self.prog.funcs[func.0 as usize].locals.len());
+                for a in args {
+                    values.push(self.eval(a, frame)?);
+                }
+                let args = values;
                 let entry = self.native.as_ref().and_then(|n| native.0.get_or_init(|| n.entry(*func, inst)).as_ref());
                 match entry {
                     Some(entry) => self.call_native(entry, args, *func, span)?,
@@ -741,7 +775,11 @@ impl Interp {
 }
 
 fn is_map_method(name: &str) -> bool {
-    crate::check::builtins::method_signature(&Ty::map(Ty::Any, Ty::Any), name).is_some()
+    matches!(name, "length" | "len" | "has" | "contains" | "keys" | "values" | "items" | "get" | "remove" | "clear" | "copy" | "clone" | "is_empty")
+}
+
+fn is_range(e: &hir::Expr) -> bool {
+    matches!(e.kind, ExprKind::CallBuiltin { builtin: crate::check::builtins::Builtin::Range, .. })
 }
 
 struct DepthGuard;
