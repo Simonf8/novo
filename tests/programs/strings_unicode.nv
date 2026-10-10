@@ -1,0 +1,7 @@
+show ord("A"), chr(97), chr(26481), ord("東")
+show "héllo".bytes(), from_bytes([104, 195, 169]), from_bytes([255])
+show "abc".is_alpha(), "123".is_digit(), " \t".is_space(), "a1".is_alnum(), "ABC".is_upper(), "abc".is_lower(), "".is_alpha()
+try:
+    show ord("ab")
+catch e:
+    show e

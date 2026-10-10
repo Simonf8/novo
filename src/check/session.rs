@@ -1,0 +1,134 @@
+//! Incremental checking for the interactive prompt: each input is checked as
+//! more top-level code of one growing module.
+
+use super::hir::{self, FuncId, ModuleId};
+use super::{Checker, ModuleSlot};
+use crate::diagnostic::Diagnostic;
+use crate::source::SourceMap;
+use crate::syntax;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+pub struct Session {
+    checker: Checker,
+    module: ModuleId,
+    inputs: u32,
+}
+
+/// A checked input: the whole program so far, and the function holding the input's code.
+pub struct Input {
+    pub program: hir::Program,
+    pub run: FuncId,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        let mut checker = Checker::new(SourceMap::default());
+        checker.redefine = true;
+        checker.modules.push(ModuleSlot {
+            path: PathBuf::from("<repl>"),
+            names: HashMap::new(),
+            init: None,
+            loaded: true,
+        });
+        Session {
+            checker,
+            module: ModuleId(0),
+            inputs: 0,
+        }
+    }
+}
+
+impl Session {
+    pub fn sources(&self) -> &SourceMap {
+        &self.checker.sources
+    }
+
+    /// Checks `text`. On failure everything it declared is forgotten.
+    pub fn submit(&mut self, text: &str) -> Result<Input, Vec<Diagnostic>> {
+        self.inputs += 1;
+        let file = self
+            .checker
+            .sources
+            .add(format!("<input {}>", self.inputs), text.to_string());
+        let source = self.checker.sources.get(file).text.clone();
+        let module = syntax::parse(file, &source).map_err(|d| vec![d])?;
+
+        let c = &mut self.checker;
+        let mark = Mark::of(c, self.module);
+        c.declare_module(
+            self.module,
+            &module,
+            &std::env::current_dir().unwrap_or_default().join("<repl>"),
+        );
+        let run = c.check_top_level(self.module, &module.stmts);
+        c.check_conformance();
+        c.solve_deferred();
+        if !c.diags.is_empty() {
+            mark.rollback(c, self.module);
+            return Err(std::mem::take(&mut c.diags));
+        }
+        c.modules[self.module.0 as usize].init = Some(run);
+        let mut program = c.snapshot(self.module);
+        // Globals from earlier inputs were assigned when those inputs ran.
+        let unassigned = c.unassigned_reads(&program, |g| g.0 as usize >= mark.globals);
+        if !unassigned.is_empty() {
+            mark.rollback(c, self.module);
+            return Err(unassigned);
+        }
+        echo_last_value(&mut program.funcs[run.0 as usize].body);
+        Ok(Input { program, run })
+    }
+}
+
+/// How far the checker's tables reached before an input, to forget the input if it fails.
+struct Mark {
+    funcs: usize,
+    classes: usize,
+    globals: usize,
+    modules: usize,
+    deferred: usize,
+    names: HashMap<String, super::Item>,
+    init: Option<FuncId>,
+}
+
+impl Mark {
+    fn of(c: &Checker, module: ModuleId) -> Mark {
+        let m = &c.modules[module.0 as usize];
+        Mark {
+            funcs: c.funcs.len(),
+            classes: c.classes.len(),
+            globals: c.globals.len(),
+            modules: c.modules.len(),
+            deferred: c.deferred.len(),
+            names: m.names.clone(),
+            init: m.init,
+        }
+    }
+
+    fn rollback(self, c: &mut Checker, module: ModuleId) {
+        c.funcs.truncate(self.funcs);
+        c.classes.truncate(self.classes);
+        c.globals.truncate(self.globals);
+        c.modules.truncate(self.modules);
+        c.deferred.truncate(self.deferred);
+        let m = &mut c.modules[module.0 as usize];
+        m.names = self.names;
+        m.init = self.init;
+    }
+}
+
+/// Shows the value of a final bare expression, as interactive prompts do.
+fn echo_last_value(body: &mut hir::Block) {
+    let Some(last) = body.last_mut() else { return };
+    let hir::StmtKind::Expr(e) = &last.kind else {
+        return;
+    };
+    if e.ty == super::types::Ty::None || matches!(e.ty, super::types::Ty::Var(_)) {
+        return;
+    }
+    let hir::StmtKind::Expr(e) = std::mem::replace(&mut last.kind, hir::StmtKind::Break) else {
+        unreachable!()
+    };
+    last.kind = hir::StmtKind::Show(vec![e]);
+}

@@ -1,0 +1,13 @@
+multiply = |x, y| x * y
+show multiply(5, 4)
+
+function apply(f, v):
+    return f(v)
+
+show apply(|n| n + 1, 41)
+
+function make_adder(n):
+    return |x| x + n
+
+add5 = make_adder(5)
+show add5(10)

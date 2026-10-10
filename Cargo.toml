@@ -1,8 +1,33 @@
 [package]
 name = "novo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.96"
+
+[features]
+python = ["dep:pyo3"]
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal"]
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
+mkl = ["candle-core/mkl", "candle-nn/mkl"]
 
 [dependencies]
+candle-core = "0.11.0"
+candle-nn = "0.11.0"
+cranelift-codegen = "0.136.2"
+cranelift-frontend = "0.136.2"
+cranelift-jit = "0.136.2"
+cranelift-module = "0.136.2"
+cranelift-native = "0.136.2"
 parking_lot = "0.12.5"
-pyo3 = { version = "=0.20.0", features = ["auto-initialize"] }
+pyo3 = { version = "=0.20.0", features = ["auto-initialize"], optional = true }
+rayon = "1.12.0"
+serde_json = "1.0.151"
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+
+# Builds for published releases: slower to compile, smaller and faster to run.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = true

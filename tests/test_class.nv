@@ -1,8 +1,0 @@
-class Counter:
-    function increment():
-        show "incrementing"
-
-c = Counter()
-c.value = 10
-show c.value
-c.increment()

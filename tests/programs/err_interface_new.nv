@@ -1,0 +1,5 @@
+# expect-error: `Animal` is an interface and cannot be created
+interface Animal:
+    function speak() -> String
+
+a = Animal()

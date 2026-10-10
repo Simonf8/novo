@@ -1,0 +1,7 @@
+# expect-error: expected `Tensor[32, 784]`, found `Tensor[32, 100]`
+use nn
+
+function classify(images: Tensor[B, 784]) -> Tensor[B, 10]:
+    return images @ nn.zeros([784, 10])
+
+show classify(nn.zeros([32, 100]))

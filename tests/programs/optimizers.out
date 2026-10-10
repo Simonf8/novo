@@ -1,0 +1,4 @@
+[0.5, 1.0, 0.868, 0.55, 0.232, 0.1]
+<AdamW optimizer> 7.6954
+0.05 true
+parameter 0 has shape [3] but the file holds [2, 2]

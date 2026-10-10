@@ -1,0 +1,15 @@
+tensor([[2.0, 3.0], [5.0, 6.0]]) tensor([[3.0], [6.0]]) [4, 3]
+[2, 1] tensor([[2.5, 3.5, 4.5]]) tensor([[3.0], [6.0]])
+tensor([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]]) tensor([[0.0, 1.0], [0.0, 0.0]])
+tensor([[-1.0, 2.0, 3.0], [4.0, 5.0, -1.0]])
+tensor([[[2.0, 2.0], [0.0, 0.0]], [[1.0, 1.0], [1.0, 1.0]]])
+-1.2247 1.2247
+[6] [3, 2]
+2
+[a, eye] tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]) tensor([[1.0, 0.0], [0.0, 1.0]])
+5 15
+only
+5 true
+cannot take 5 items from 2 in a dimension of size 3
+cannot reshape a tensor of shape [2, 3] into [4, -1]
+`random.int` needs low < high, got 3 and 3

@@ -1,0 +1,95 @@
+# A tiny character-level GPT: token and position embeddings, causal
+# self-attention blocks, and a language-model head, trained from scratch.
+
+use layers
+use nn
+use random
+
+random.seed(1337)
+
+text = """
+the quick brown fox jumps over the lazy dog.
+a journey of a thousand miles begins with a single step.
+all that glitters is not gold.
+the early bird catches the worm.
+"""
+
+chars: List[String] = []
+for c in text:
+    if not (c in chars):
+        chars.push(c)
+chars.sort()
+ids: Map[String, Int] = {}
+for i in range(len(chars)):
+    ids[chars[i]] = i
+data = text.chars() select ids[it]
+
+vocab = len(chars)
+context = 16
+width = 32
+heads = 4
+depth = 2
+
+class GPT:
+    tokens: layers.Embedding
+    positions: layers.Embedding
+    blocks: List[layers.TransformerBlock]
+    norm: layers.LayerNorm
+    head: layers.Linear
+
+    function forward(idx: Tensor) -> Tensor:
+        steps = idx.shape()[1]
+        x = self.tokens.forward(idx) + self.positions.forward(nn.arange(steps))
+        for b in self.blocks:
+            x = b.forward(x)
+        return self.head.forward(self.norm.forward(x))
+
+    function params() -> List[Tensor]:
+        all = self.tokens.params()
+        all.extend(self.positions.params())
+        for b in self.blocks:
+            all.extend(b.params())
+        all.extend(self.norm.params())
+        all.extend(self.head.params())
+        return all
+
+model = GPT(
+    layers.embedding(vocab, width),
+    layers.embedding(context, width),
+    range(depth) select layers.transformer_block(width, heads),
+    layers.layer_norm(width),
+    layers.linear(width, vocab)
+)
+optimizer = nn.adam(model.params(), 0.01)
+
+function batch(size: Int) -> List[Tensor]:
+    inputs: List[List[Int]] = []
+    targets: List[List[Int]] = []
+    repeat size times:
+        start = random.int(0, len(data) - context - 1)
+        inputs.push(data[start:start + context])
+        targets.push(data[start + 1:start + context + 1])
+    return [nn.tensor(inputs), nn.tensor(targets)]
+
+function loss_on(pair: List[Tensor]) -> Tensor:
+    logits = model.forward(pair[0])
+    return nn.cross_entropy(logits.reshape([-1, vocab]), pair[1].reshape([-1]))
+
+first_loss = loss_on(batch(16)).item()
+for step in range(1, 301):
+    loss = loss_on(batch(16))
+    optimizer.step(loss)
+    if step % 100 == 0:
+        show f"step {step}  loss {loss.item():.3f}"
+show "learned:", loss_on(batch(16)).item() < first_loss / 2
+
+function generate(prompt: String, count: Int) -> String:
+    out = prompt.chars() select ids[it]
+    repeat count times:
+        window = out[-context:]
+        logits = model.forward(nn.tensor([window]))
+        probs = logits[0][len(window) - 1].softmax(0)
+        out.push(probs.sample())
+    return (out select chars[it]).join("")
+
+show generate("the ", 60)

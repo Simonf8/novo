@@ -1,0 +1,39 @@
+use nn
+
+# Warmup then cosine decay.
+show (range(0, 12, 2) select round(nn.cosine_lr(it, 2, 10, 1.0, 0.1), 3))
+
+function train(steps: Int, w: Tensor, opt: Optimizer) -> Float:
+    x = nn.tensor([[1.0, 2.0], [3.0, -1.0]])
+    y = nn.tensor([[0.0, 1.0], [1.0, 0.0]])
+    repeat steps times:
+        opt.step(nn.mse(x @ w, y))
+    return nn.mse(x @ w, y).item()
+
+# Gradient clipping reports the norm before clipping.
+w = nn.param(nn.tensor([[0.5, -1.0], [2.0, 0.25]]))
+opt = nn.adamw([w], 0.1, 0.1)
+opt.clip(0.5)
+train(1, w, opt)
+show opt, round(opt.grad_norm(), 4)
+
+# Training 6 steps straight equals 3 steps, a checkpoint, and 3 more.
+straight = nn.param(nn.tensor([[0.5, -1.0], [2.0, 0.25]]))
+full = train(6, straight, nn.adam([straight], 0.05))
+
+first = nn.param(nn.tensor([[0.5, -1.0], [2.0, 0.25]]))
+opt = nn.adam([first], 0.05)
+train(3, first, opt)
+nn.save_params([first], "target/novo-test-params.safetensors")
+opt.save("target/novo-test-optimizer.safetensors")
+
+resumed = nn.param(nn.zeros([2, 2]))
+opt = nn.adam([resumed], 0.5)
+nn.load_params([resumed], "target/novo-test-params.safetensors")
+opt.load("target/novo-test-optimizer.safetensors")
+show opt.lr(), abs(train(3, resumed, opt) - full) < 1e-6
+
+try:
+    nn.load_params([nn.param(nn.zeros([3]))], "target/novo-test-params.safetensors")
+catch e:
+    show e

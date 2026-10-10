@@ -1,0 +1,16 @@
+task calc(n):
+    return n * 3
+
+# Test run in parallel with task calls
+res = run [calc(1), calc(2), calc(3), calc(4)] in parallel
+show res
+
+# Test postfix together with select query
+nums = [10, 20, 30]
+mapped = (nums select (it * 2)) together
+show mapped
+
+# Test prefix together with await
+p = together calc(5)
+single_res = await p
+show single_res

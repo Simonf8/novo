@@ -1,0 +1,9 @@
+data = [1, 2, 3, 4, 5, 6]
+evens = data where |x| x % 2 == 0
+show evens
+doubled = evens select |x| x * 2
+show doubled
+show doubled sum
+show data min
+show data max
+show data average

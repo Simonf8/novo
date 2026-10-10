@@ -1,0 +1,3 @@
+# expect-error: missing argument `b` in call to `f`
+function f(a, b) => a + b
+show f(1)

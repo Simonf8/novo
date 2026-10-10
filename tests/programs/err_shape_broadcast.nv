@@ -1,0 +1,6 @@
+# expect-error: cannot broadcast shapes Tensor[4, 3] and Tensor[4]
+use nn
+
+scores = nn.ones([4, 3])
+bias = nn.ones([4])
+show scores + bias

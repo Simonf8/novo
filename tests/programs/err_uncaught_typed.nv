@@ -1,0 +1,8 @@
+# expect-error: Oops(code: 7)
+class Oops:
+    code: Int
+
+function go():
+    fail(Oops(7))
+
+go()

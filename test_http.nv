@@ -1,3 +1,0 @@
-
-content = read "test_http.nv"
-show content

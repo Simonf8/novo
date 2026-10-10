@@ -1,0 +1,9 @@
+# expect-error: `Cat.speak` has type `() -> String`, but `Animal` requires `(Int) -> String`
+interface Animal:
+    function speak(times: Int) -> String
+
+class Cat(Animal):
+    function speak() -> String:
+        return "meow"
+
+show Cat().speak()

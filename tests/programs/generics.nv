@@ -1,0 +1,28 @@
+function apply(f, x):
+    return f(x)
+
+function twice(f, x) => f(f(x))
+
+show apply(|n| n * 2, 21)
+show apply(|s| s + "!", "hi")
+show twice(|n| n + 1, 5)
+
+function add(a, b) => a + b
+show add(1, 2)
+show add(1.5, 2)
+show add("a", "b")
+show add([1], [2, 3])
+
+function first(xs) => xs[0]
+show first([7, 8])
+show first(["x"])
+
+function biggest(xs):
+    best = xs[0]
+    for x in xs:
+        if x > best:
+            best = x
+    return best
+
+show biggest([3, 9, 2])
+show biggest(["pear", "apple", "zoo"])

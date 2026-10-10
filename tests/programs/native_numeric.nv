@@ -1,0 +1,119 @@
+# Scalar functions run as native code; the interpreter must agree exactly.
+
+function divmod_table(a: Int, b: Int):
+    show a // b, a % b, a / b
+
+divmod_table(7, 2)
+divmod_table(-7, 2)
+divmod_table(7, -2)
+divmod_table(-7, -2)
+divmod_table(-9223372036854775807 - 1, 3)
+
+function fmath(x: Float, y: Float):
+    show x // y, x % y, x ** y, -x
+
+fmath(7.5, 2.0)
+fmath(-7.5, 2.0)
+
+function mixed(i: Int, f: Float) -> Float:
+    return i + f * 2 - i / 4
+
+show mixed(3, 0.25)
+
+function power(base, exp) => base ** exp
+show power(2, 62), power(2.0, 0.5), power(10, 0)
+
+function collatz(n: Int) -> Int:
+    steps = 0
+    while n != 1:
+        if n % 2 == 0:
+            n = n // 2
+        otherwise:
+            n = 3 * n + 1
+        steps += 1
+    return steps
+
+show collatz(27)
+
+function loops(n: Int) -> Int:
+    total = 0
+    for i in range(n):
+        if i % 3 == 0:
+            continue
+        if i > 20:
+            break
+        total += i
+    for j in range(10, 0, -4):
+        total += j
+    repeat 3 times:
+        total += it
+    return total
+
+show loops(100)
+
+function count_down(n: Int):
+    for i in range(n, 0, -1):
+        show i, i * 1.5, i > 1 and i < 3, not (i == 2) or false
+
+count_down(3)
+
+function conversions(x: Float):
+    show int(x), float(int(x)), round(x), round(x, 1), abs(-x), bool(x), min(x, 1.0), max(2, 3)
+
+conversions(2.75)
+conversions(-2.5)
+
+function deep(n: Int) -> Int:
+    if n == 0:
+        return 0
+    return 1 + deep(n - 1)
+
+show deep(5000)
+
+function overflow(n: Int) -> Int:
+    return n * n
+
+try:
+    show overflow(4000000000)
+catch e:
+    show "caught:", e
+
+function zero_div(a: Int, b: Int) -> Int:
+    return a // b
+
+try:
+    show zero_div(1, 0)
+catch e:
+    show "caught:", e
+
+try:
+    show deep(20000)
+catch e:
+    show "caught:", e
+
+function step_zero(n: Int) -> Int:
+    total = 0
+    for i in range(0, n, 0):
+        total += i
+    return total
+
+try:
+    show step_zero(5)
+catch e:
+    show "caught:", e
+
+function check(n: Int) -> Int:
+    assert(n > 0, "n must be positive")
+    return n
+
+try:
+    show check(1)
+    show check(-1)
+catch e:
+    show "caught:", e
+
+use math
+function geometry(r: Float) -> Float:
+    return math.pi * r ** 2 + math.sqrt(r) + math.floor(r) + math.sin(0.0)
+
+show geometry(4.0)

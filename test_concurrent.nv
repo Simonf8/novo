@@ -1,6 +1,0 @@
-
-function compute() -> Int:
-    return 42
-
-prom = concurrent compute()
-val = await prom

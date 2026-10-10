@@ -1,0 +1,13 @@
+# The GPT-2 tokenizer example must match transformers' GPT2Tokenizer.
+
+use "../../examples/gpt2/tokenizer.nv"
+use json
+use fs
+
+dir = "tests/fixtures/gpt2-tokenizer"
+tok = tokenizer.load(dir)
+cases = json.parse(fs.read_file(dir + "/reference.json"))
+for case in cases:
+    text: String = case.text
+    ids = tok.encode(text)
+    show ids == case.ids, tok.decode(ids) == text

@@ -1,0 +1,10 @@
+function compose(f, g) => |x| f(g(x))
+inc = |x: Int| x + 1
+double = |x: Int| x * 2
+h = compose(inc, double)
+total = 0
+for i in range(1000):
+    total += h(i)
+show total
+xs = range(2000) select it * 3 where it % 2 == 0
+show len(xs), (xs select |v| v + 1) sum

@@ -1,0 +1,15 @@
+show 1 + 2 * 3
+show (1 + 2) * 3
+show 10 - 4 - 3
+show 7 / 2
+show 7.0 / 2
+show 7 % 3
+show -5 + 2
+show 2.5 * 4
+show 1 + 2.5
+show 10 > 3
+show 3 >= 3
+show 2 != 2
+show true and false
+show true or false
+show not true

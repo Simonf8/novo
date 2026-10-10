@@ -1,0 +1,52 @@
+class ParseError:
+    line: Int
+    reason: String
+
+enum IoError:
+    NotFound(path: String)
+    Denied
+
+function parse(text: String) -> Int:
+    if text == "":
+        fail(ParseError(1, "empty input"))
+    if text == "?":
+        fail(IoError.NotFound("input.txt"))
+    if text == "!":
+        fail("plain failure")
+    return int(text)
+
+function attempt(text: String) -> String:
+    try:
+        return f"parsed {parse(text)}"
+    catch ParseError as e:
+        return f"parse error on line {e.line}: {e.reason}"
+    catch IoError as e:
+        match e:
+            NotFound(path):
+                return f"missing {path}"
+            Denied:
+                return "denied"
+    catch message:
+        return f"other: {message}"
+
+for text in ["42", "", "?", "!", "x"]:
+    show attempt(text)
+
+# A typed catch lets other errors through to an outer one.
+function inner() -> String:
+    try:
+        parse("!")
+    catch ParseError as e:
+        return "inner caught"
+    return "unreachable"
+
+try:
+    show inner()
+catch e:
+    show "outer caught:", e
+
+# Uncaught typed errors display their value.
+try:
+    parse("")
+catch e:
+    show e

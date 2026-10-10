@@ -1,9 +1,0 @@
-function calculate():
-    x = 10
-    x = x
-    unused_var = 42
-    return x * 2
-    dead_code = 99
-    show dead_code
-
-calculate()

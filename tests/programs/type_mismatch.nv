@@ -1,0 +1,6 @@
+# expect-error: expected `List[Int]`, found `List[String]`
+function test() -> List[Int]:
+    x: List[Int] = ["hello"]
+    return x
+
+test()

@@ -1,0 +1,35 @@
+use fs
+use nn
+
+# Token ids saved as a binary file, then sampled in training windows.
+nn.save_tokens(range(100), "target/novo-test-tokens.bin")
+tokens = nn.load_tokens("target/novo-test-tokens.bin")
+show tokens.shape(), tokens[42].item()
+nn.seed(1)
+x, y = nn.sample_windows(tokens, 4, 8)
+show x.shape(), y.shape()
+# Each target window is its input shifted by one token.
+show ((y - x - 1.0).abs().sum().item() == 0.0)
+
+# Large text files are read a few lines at a time.
+fs.write_file("target/novo-test-lines.txt", "{\"a\": 1}\n{\"a\": 2}\r\n{\"a\": 3}\n")
+offset = 0
+chunks = 0
+done = false
+while not done:
+    lines, offset = fs.read_lines_from("target/novo-test-lines.txt", offset, 2)
+    if len(lines) == 0:
+        done = true
+    else:
+        chunks += 1
+        show lines
+show chunks, offset
+
+try:
+    nn.sample_windows(tokens, 2, 100)
+catch e:
+    show e
+try:
+    nn.save_tokens([-1], "target/novo-test-bad.bin")
+catch e:
+    show e

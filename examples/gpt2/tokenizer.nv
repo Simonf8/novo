@@ -1,0 +1,135 @@
+# GPT-2's byte-level BPE tokenizer, reading the published vocab.json and merges.txt.
+
+use json
+use fs
+
+# GPT-2 maps every byte to a printable character so tokens are always valid text.
+function byte_characters() -> List[String]:
+    printable: List[Int] = []
+    for b in range(33, 127):
+        printable.push(b)
+    for b in range(161, 173):
+        printable.push(b)
+    for b in range(174, 256):
+        printable.push(b)
+    table: List[String] = []
+    extra = 0
+    for b in range(256):
+        if b in printable:
+            table.push(chr(b))
+        otherwise:
+            table.push(chr(256 + extra))
+            extra += 1
+    return table
+
+function kind(c: String) -> String:
+    if c.is_alpha():
+        return "letter"
+    if c.is_digit():
+        return "digit"
+    if c.is_space():
+        return "space"
+    return "other"
+
+# Splits text the way GPT-2's pattern does: contractions, then runs of letters,
+# digits or symbols with an optional leading space, then whitespace.
+function pretokenize(text: String) -> List[String]:
+    chars = text.chars()
+    n = len(chars)
+    pieces: List[String] = []
+    i = 0
+    while i < n:
+        if chars[i] == "'":
+            matched = ""
+            for suffix in ["s", "t", "re", "ve", "m", "ll", "d"]:
+                if matched == "" and text.slice(i + 1, i + 1 + len(suffix)) == suffix:
+                    matched = suffix
+            if matched != "":
+                pieces.push("'" + matched)
+                i += 1 + len(matched)
+                continue
+        start = i
+        j = i
+        if chars[j] == " " and j + 1 < n and kind(chars[j + 1]) != "space":
+            j += 1
+        k = kind(chars[j])
+        if k != "space":
+            while j < n and kind(chars[j]) == k:
+                j += 1
+            pieces.push(text.slice(start, j))
+            i = j
+            continue
+        while j < n and kind(chars[j]) == "space":
+            j += 1
+        if j < n and j - start > 1:
+            j -= 1
+        pieces.push(text.slice(start, j))
+        i = j
+    return pieces
+
+class Tokenizer:
+    vocab: Map[String, Int]
+    tokens: List[String]
+    ranks: Map[String, Int]
+    encoder: List[String]
+    decoder: Map[String, Int]
+
+    # Repeatedly merges the adjacent pair with the lowest rank.
+    function bpe(word: String) -> List[String]:
+        parts = word.chars()
+        while len(parts) > 1:
+            best = -1
+            best_rank = 0
+            for i in range(len(parts) - 1):
+                rank = self.ranks.get(parts[i] + " " + parts[i + 1], -1)
+                if rank >= 0 and (best < 0 or rank < best_rank):
+                    best = i
+                    best_rank = rank
+            if best < 0:
+                break
+            first = parts[best]
+            second = parts[best + 1]
+            merged: List[String] = []
+            i = 0
+            while i < len(parts):
+                if i < len(parts) - 1 and parts[i] == first and parts[i + 1] == second:
+                    merged.push(first + second)
+                    i += 2
+                otherwise:
+                    merged.push(parts[i])
+                    i += 1
+            parts = merged
+        return parts
+
+    function encode(text: String) -> List[Int]:
+        ids: List[Int] = []
+        for piece in pretokenize(text):
+            word = "".join(piece.bytes() select self.encoder[it])
+            for part in self.bpe(word):
+                ids.push(self.vocab[part])
+        return ids
+
+    function decode(ids: List[Int]) -> String:
+        text = "".join(ids select self.tokens[it])
+        return from_bytes(text.chars() select self.decoder[it])
+
+# Loads vocab.json and merges.txt from a model directory.
+function load(dir: String) -> Tokenizer:
+    raw = json.parse(fs.read_file(dir + "/vocab.json"))
+    vocab: Map[String, Int] = {}
+    size = 0
+    for token in raw:
+        vocab[token] = raw[token]
+        size = max(size, vocab[token] + 1)
+    tokens: List[String] = range(size) select ""
+    for token, id in vocab.items():
+        tokens[id] = token
+    ranks: Map[String, Int] = {}
+    for line in fs.read_file(dir + "/merges.txt").lines():
+        if line != "" and not line.starts_with("#version"):
+            ranks[line] = len(ranks)
+    encoder = byte_characters()
+    decoder: Map[String, Int] = {}
+    for b, c in enumerate(encoder):
+        decoder[c] = b
+    return Tokenizer(vocab, tokens, ranks, encoder, decoder)

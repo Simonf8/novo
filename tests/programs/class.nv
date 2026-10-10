@@ -1,0 +1,14 @@
+class Counter:
+    value: Int = 0
+    step = 1
+
+    function increment():
+        self.value += self.step
+        show "incrementing"
+
+c = Counter()
+c.value = 10
+show c.value
+c.increment()
+show c.value
+show Counter(step=5)

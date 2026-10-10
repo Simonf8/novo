@@ -1,0 +1,17 @@
+for c in "abc":
+    show c
+for k in {"x": 1, "y": 2}:
+    show k
+total = 0
+for i in range(5):
+    total += i
+show total
+for i in range(10, 0, -3):
+    show i
+for i in range(3):
+    for j in range(3):
+        if j == 1:
+            continue
+        if i == 2:
+            break
+        show i, j

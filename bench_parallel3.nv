@@ -1,7 +1,0 @@
-use python time
-
-start = time.time()
-items = [1, 2, 3, 4, 5]
-results = (items select (time.sleep(1))) together
-end = time.time()
-show end - start

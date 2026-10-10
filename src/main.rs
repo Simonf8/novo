@@ -1,845 +1,535 @@
-mod ast;
-mod interpreter;
-mod lexer;
-mod parser;
-mod vm;
-#[allow(dead_code)]
-mod compiler;
-mod type_checker;
-mod ir;
-mod ir_builder;
-mod ir_ssa;
-mod ir_opt;
-mod ir_backend;
-mod linter;
-mod formatter;
-pub mod stdlib;
-pub mod jit;
+mod bundle;
+mod check;
+mod diagnostic;
+mod eval;
+mod lsp;
+mod native;
+mod python;
+mod source;
+mod syntax;
 
-use std::env;
-use std::fs;
+use diagnostic::Diagnostic;
+use source::SourceMap;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Instant;
 
-fn print_usage() {
-    println!("Novo — Fast, intent-driven general-purpose programming language\n");
-    println!("Usage:");
-    println!("    novo [command] [options] <file.nv>\n");
-    println!("Commands:");
-    println!("    run <file.nv>             Execute a Novo program (default)");
-    println!("    check <file.nv>           Validate syntax, types, and IR generation without executing");
-    println!("    test [dir|file]           Discover and run test suite with differential verification");
-    println!("    bench <file.nv>           Run repeated microbenchmark measurements");
-    println!("    fmt <file|dir> [-w]       Format Novo source code to canonical style");
-    println!("    lint <file|dir>           Run static analysis and linter for code health");
-    println!("    new <project_name>        Scaffold a new Novo project");
-    println!("    ir <file.nv>              Emit optimized SSA intermediate representation\n");
-    println!("Options:");
-    println!("    --write, -w                Write formatted code directly to file (for fmt)");
-    println!("    --engine=<vm|ast|diff|jit> Execution engine (default: vm)");
-    println!("    --iterations=<N>, -n <N>   Benchmark iterations (default: 5)");
-    println!("    --help, -h                 Show this help message");
-    println!("    --version, -v              Show version information");
-}
+const USAGE: &str = "\
+Novo: a fast, statically typed language that reads like Python.
+
+Usage:
+    novo run <file.nv> [args...]     Check and run a program
+             [--interp]              (without compiling anything to native code)
+    novo check <file.nv> [--json]    Type-check without running
+    novo test [path]                 Run test_*.nv and *_test.nv files
+    novo bench <file.nv> [-n N]      Time repeated runs of a program
+               [--interp]            (in the interpreter)
+    novo new <name>                  Create a project
+    novo build <file.nv> [-o out]    Make a standalone executable
+    novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
+    novo [repl]                      Start the interactive prompt
+    novo lsp                         Run the language server on stdio
+
+Options:
+    -h, --help       Show this help
+    -V, --version    Show the version
+";
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        print_usage();
-        return;
+    // candle otherwise re-reads /proc/cpuinfo to count cores on every matrix multiply.
+    if std::env::var_os("RAYON_NUM_THREADS").is_none()
+        && let Ok(n) = std::thread::available_parallelism()
+    {
+        // SAFETY: no other threads exist yet.
+        unsafe { std::env::set_var("RAYON_NUM_THREADS", n.to_string()) };
     }
-
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_usage();
-        return;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(program) = bundle::current() {
+        std::process::exit(run_bundle(program, args));
     }
+    let code = match args.first().map(String::as_str) {
+        None | Some("repl") => cmd_repl(),
+        Some("-h" | "--help" | "help") => {
+            print!("{USAGE}");
+            0
+        }
+        Some("-V" | "--version" | "version") => {
+            println!("novo {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
+        Some("run") => cmd_run(&args[1..]),
+        Some("check") => cmd_check(&args[1..]),
+        Some("test") => cmd_test(&args[1..]),
+        Some("bench") => cmd_bench(&args[1..]),
+        Some("new") => cmd_new(&args[1..]),
+        Some("fmt") => cmd_fmt(&args[1..]),
+        Some("build") => cmd_build(&args[1..]),
+        Some("lsp") => lsp::serve(),
+        Some(file) if file.ends_with(".nv") => cmd_run(&args),
+        Some(other) => {
+            eprintln!("error: unknown command `{other}`\n\n{USAGE}");
+            2
+        }
+    };
+    std::process::exit(code);
+}
 
-    if args.iter().any(|a| a == "--version" || a == "-v") {
-        println!("novo 0.1.0");
-        return;
-    }
-
-    let mut command = "run";
-    let mut target = String::new();
-    let mut engine = "vm";
-    let mut iterations = 5usize;
-    let mut write_in_place = false;
-
-    let mut arg_idx = 1;
-    let first = &args[1];
-    if !first.starts_with('-') && !first.ends_with(".nv") {
-        command = first.as_str();
-        arg_idx = 2;
-    }
-
-    let mut i = arg_idx;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg.starts_with("--engine=") {
-            engine = &arg[9..];
-        } else if arg.starts_with("--iterations=") {
-            if let Ok(n) = arg[13..].parse::<usize>() {
-                iterations = n.max(1);
-            }
-        } else if (arg == "-n" || arg == "--iterations") && i + 1 < args.len() {
-            i += 1;
-            if let Ok(n) = args[i].parse::<usize>() {
-                iterations = n.max(1);
-            }
-        } else if arg == "--write" || arg == "-w" {
-            write_in_place = true;
-        } else if !arg.starts_with('-') {
-            target = arg.clone();
-        }
-        i += 1;
-    }
-
-    match command {
-        "run" => {
-            if target.is_empty() {
-                eprintln!("Error: 'run' requires a .nv file path.");
-                std::process::exit(1);
-            }
-            execute_run(&target, engine);
-        }
-        "check" => {
-            if target.is_empty() {
-                eprintln!("Error: 'check' requires a .nv file path.");
-                std::process::exit(1);
-            }
-            execute_check(&target);
-        }
-        "ir" => {
-            if target.is_empty() {
-                eprintln!("Error: 'ir' requires a .nv file path.");
-                std::process::exit(1);
-            }
-            execute_ir(&target);
-        }
-        "test" => {
-            let test_target = if target.is_empty() { "tests".to_string() } else { target };
-            execute_test(&test_target, engine);
-        }
-        "bench" => {
-            if target.is_empty() {
-                eprintln!("Error: 'bench' requires a .nv file path.");
-                std::process::exit(1);
-            }
-            execute_bench(&target, iterations, engine);
-        }
-        "fmt" => {
-            if target.is_empty() {
-                eprintln!("Error: 'fmt' requires a .nv file or directory path.");
-                std::process::exit(1);
-            }
-            execute_fmt(&target, write_in_place);
-        }
-        "lint" => {
-            if target.is_empty() {
-                eprintln!("Error: 'lint' requires a .nv file or directory path.");
-                std::process::exit(1);
-            }
-            execute_lint(&target);
-        }
-        "new" => {
-            if target.is_empty() {
-                eprintln!("Error: 'new' requires a project name.");
-                std::process::exit(1);
-            }
-            execute_new(&target);
-        }
-        other => {
-            eprintln!("Unknown command: '{}'. Run 'novo --help' for available commands.", other);
-            std::process::exit(1);
-        }
+fn render(sources: &SourceMap, diags: &[Diagnostic]) {
+    let color = std::io::stderr().is_terminal();
+    for d in diags {
+        eprint!("{}", d.render(sources, color));
     }
 }
 
-fn execute_run(filename: &str, engine: &str) {
-    let source = match fs::read_to_string(filename) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading '{}': {}", filename, e);
-            std::process::exit(1);
-        }
-    };
+fn file_arg<'a>(args: &'a [String], command: &str) -> Result<&'a String, i32> {
+    args.iter().find(|a| !a.starts_with('-')).ok_or_else(|| {
+        eprintln!("error: `novo {command}` needs a .nv file");
+        2
+    })
+}
 
-    let mut lexer = lexer::Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            print_error(&source, &e, "Lexer error");
-            std::process::exit(1);
-        }
+fn cmd_run(args: &[String]) -> i32 {
+    let file = match file_arg(args, "run") {
+        Ok(f) => f,
+        Err(code) => return code,
     };
-
-    let mut parser = parser::Parser::new(tokens);
-    let ast = match parser.parse() {
+    let program_args: Vec<String> = args.iter().skip_while(|a| *a != file).cloned().collect();
+    let native = !args
+        .iter()
+        .take_while(|a| *a != file)
+        .any(|a| a == "--interp");
+    let mut sources = SourceMap::default();
+    let program = match check::check(&mut sources, Path::new(file)) {
         Ok(p) => p,
-        Err(e) => {
-            print_error(&source, &e, "Syntax error");
-            std::process::exit(1);
+        Err(diags) => {
+            render(&sources, &diags);
+            return 1;
         }
     };
-
-    let mut type_checker = type_checker::TypeChecker::new();
-    if let Err(e) = type_checker.check_program(&ast) {
-        print_error(&source, &e, "Type error");
-        std::process::exit(1);
-    }
-
-    if engine == "jit" {
-        let builder = ir_builder::IRBuilder::new();
-        let ir = match builder.build(&ast) {
-            Ok(ir) => ir,
-            Err(e) => {
-                print_error(&source, &e, "IR Compilation error");
-                std::process::exit(1);
-            }
-        };
-
-        if let Ok(mut jit) = jit::JitEngine::new() {
-            for (i, func) in ir.iter().enumerate() {
-                if jit::JitEngine::can_compile(func) {
-                    let _ = jit.compile_function(i, func);
-                }
-            }
-        }
-
-        let backend = ir_backend::IRBackend::new(ir);
-        match backend.generate() {
-            Ok(chunk) => {
-                let mut vm = vm::VM::new();
-                match vm.interpret(chunk) {
-                    vm::InterpretResult::Ok => {}
-                    vm::InterpretResult::RuntimeError(e) => {
-                        eprintln!("VM Runtime Error: {}", e);
-                        print_error(&source, &e, "VM Runtime Error");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            Err(e) => {
-                print_error(&source, &e, "Compiler error");
-                std::process::exit(1);
-            }
-        }
-    } else if engine == "vm" {
-        let builder = ir_builder::IRBuilder::new();
-        let ir = match builder.build(&ast) {
-            Ok(ir) => ir,
-            Err(e) => {
-                print_error(&source, &e, "IR Compilation error");
-                std::process::exit(1);
-            }
-        };
-
-        let backend = ir_backend::IRBackend::new(ir);
-        match backend.generate() {
-            Ok(chunk) => {
-                let mut vm = vm::VM::new();
-                match vm.interpret(chunk) {
-                    vm::InterpretResult::Ok => {}
-                    vm::InterpretResult::RuntimeError(e) => {
-                        eprintln!("VM Runtime Error: {}", e);
-                        print_error(&source, &e, "VM Runtime Error");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            Err(e) => {
-                print_error(&source, &e, "Compiler error");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        let mut interpreter = interpreter::Interpreter::new();
-        if let Err(e) = interpreter.interpret(&ast) {
-            print_error(&source, &e, "Runtime error");
-            std::process::exit(1);
+    match eval::run(program, program_args, native) {
+        Ok(()) => 0,
+        Err(e) => {
+            render_runtime_error(&sources, e);
+            1
         }
     }
 }
 
-fn execute_check(filename: &str) {
-    let source = match fs::read_to_string(filename) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading '{}': {}", filename, e);
-            std::process::exit(1);
-        }
-    };
-
-    let mut lexer = lexer::Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            print_error(&source, &e, "Lexer error");
-            std::process::exit(1);
-        }
-    };
-
-    let mut parser = parser::Parser::new(tokens);
-    let ast = match parser.parse() {
+/// Runs the program bundled into this executable, passing it every argument.
+fn run_bundle(program: bundle::Bundle, args: Vec<String>) -> i32 {
+    let mut sources = SourceMap::default();
+    let name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let checked = check::check_with(&mut sources, &program.entry, program.files);
+    let program = match checked {
         Ok(p) => p,
-        Err(e) => {
-            print_error(&source, &e, "Syntax error");
-            std::process::exit(1);
+        Err(diags) => {
+            render(&sources, &diags);
+            return 1;
         }
     };
-
-    let mut type_checker = type_checker::TypeChecker::new();
-    if let Err(e) = type_checker.check_program(&ast) {
-        print_error(&source, &e, "Type error");
-        std::process::exit(1);
-    }
-
-    let builder = ir_builder::IRBuilder::new();
-    let ir = match builder.build(&ast) {
-        Ok(ir) => ir,
+    let program_args = std::iter::once(name).chain(args).collect();
+    match eval::run(program, program_args, true) {
+        Ok(()) => 0,
         Err(e) => {
-            print_error(&source, &e, "IR Compilation error");
-            std::process::exit(1);
+            render_runtime_error(&sources, e);
+            1
         }
-    };
-
-    let num_funcs = ir.len();
-    let num_blocks: usize = ir.iter().map(|f| f.blocks.len()).sum();
-    let num_insts: usize = ir.iter().map(|f| f.blocks.values().map(|b| b.instructions.len()).sum::<usize>()).sum();
-
-    let backend = ir_backend::IRBackend::new(ir);
-    if let Err(e) = backend.generate() {
-        print_error(&source, &e, "Codegen error");
-        std::process::exit(1);
     }
-
-    println!("Check passed: '{}' (AST: {} statements, IR: {} functions, {} blocks, {} instructions).",
-             filename, ast.statements.len(), num_funcs, num_blocks, num_insts);
 }
 
-fn execute_ir(filename: &str) {
-    let source = match fs::read_to_string(filename) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading '{}': {}", filename, e);
-            std::process::exit(1);
-        }
+/// Writes a standalone executable: this `novo` with the program's source files appended.
+fn cmd_build(args: &[String]) -> i32 {
+    let file = match file_arg(args, "build") {
+        Ok(f) => f,
+        Err(code) => return code,
     };
-
-    let mut lexer = lexer::Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            print_error(&source, &e, "Lexer error");
-            std::process::exit(1);
-        }
-    };
-
-    let mut parser = parser::Parser::new(tokens);
-    let ast = match parser.parse() {
-        Ok(p) => p,
-        Err(e) => {
-            print_error(&source, &e, "Syntax error");
-            std::process::exit(1);
-        }
-    };
-
-    let builder = ir_builder::IRBuilder::new();
-    match builder.build(&ast) {
-        Ok(functions) => {
-            for f in functions {
-                print!("{}", f);
+    let mut sources = SourceMap::default();
+    if let Err(diags) = check::check(&mut sources, Path::new(file)) {
+        render(&sources, &diags);
+        return 1;
+    }
+    let loaded: Vec<(PathBuf, String)> = sources
+        .files()
+        .filter(|f| !f.path.starts_with("<"))
+        .map(|f| {
+            (
+                std::fs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()),
+                f.text.clone(),
+            )
+        })
+        .collect();
+    let paths: Vec<PathBuf> = loaded.iter().map(|(p, _)| p.clone()).collect();
+    let relative = bundle::relative_paths(&paths);
+    let files: Vec<(String, String)> = relative
+        .iter()
+        .cloned()
+        .zip(loaded.into_iter().map(|(_, t)| t))
+        .collect();
+    let stem = Path::new(file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "program".into());
+    let out = match args.iter().position(|a| a == "-o") {
+        Some(i) => match args.get(i + 1) {
+            Some(o) => PathBuf::from(o),
+            None => {
+                eprintln!("error: `-o` needs a file name");
+                return 2;
             }
+        },
+        None => PathBuf::from(if cfg!(windows) {
+            format!("{stem}.exe")
+        } else {
+            stem
+        }),
+    };
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: cannot find the novo executable: {e}");
+            return 1;
+        }
+    };
+    match bundle::write(&exe, &out, &relative[0], &files) {
+        Ok(()) => {
+            println!("wrote {}", out.display());
+            0
         }
         Err(e) => {
-            print_error(&source, &e, "IR build error");
-            std::process::exit(1);
+            eprintln!("error: cannot write {}: {e}", out.display());
+            1
         }
     }
 }
 
-fn discover_tests(target: &str) -> Vec<PathBuf> {
-    let p = Path::new(target);
+fn render_runtime_error(sources: &SourceMap, e: eval::RtError) {
+    let mut diag = Diagnostic::error(e.span, e.message);
+    for (function, call) in &e.trace {
+        let file = sources.get(call.file);
+        let (line, col) = file.line_col(call.lo as usize);
+        diag = diag.with_note(format!(
+            "in `{function}`, called from {}:{line}:{col}",
+            file.path.display()
+        ));
+    }
+    render(sources, &[diag]);
+}
+
+fn cmd_fmt(args: &[String]) -> i32 {
+    let check = args.iter().any(|a| a == "--check");
+    let mut paths: Vec<PathBuf> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(PathBuf::from)
+        .collect();
+    if paths.is_empty() {
+        paths.push(PathBuf::from("."));
+    }
     let mut files = Vec::new();
-
-    if p.is_file() {
-        if target.ends_with(".nv") {
-            files.push(p.to_path_buf());
-        }
-        return files;
+    for p in paths {
+        collect_files(&p, &mut files, |p| p.extension().is_some_and(|e| e == "nv"));
     }
-
-    if let Ok(entries) = fs::read_dir(p) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("nv") {
-                files.push(path);
+    let mut sources = SourceMap::default();
+    let mut code = 0;
+    for path in files {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {e}", path.display());
+                code = 1;
+                continue;
+            }
+        };
+        let file = sources.add(path.display().to_string(), text.clone());
+        match syntax::format::format(file, &text) {
+            Ok(formatted) if formatted == text => {}
+            Ok(_) if check => {
+                println!("{}", path.display());
+                code = 1;
+            }
+            Ok(formatted) => {
+                if let Err(e) = std::fs::write(&path, formatted) {
+                    eprintln!("error: cannot write {}: {e}", path.display());
+                    code = 1;
+                }
+            }
+            Err(d) => {
+                render(&sources, &[d]);
+                code = 1;
             }
         }
     }
-
-    files.sort();
-    files
+    code
 }
 
-fn execute_test(target: &str, engine_mode: &str) {
-    let test_files = discover_tests(target);
-    if test_files.is_empty() {
-        eprintln!("No .nv test files found in target '{}'.", target);
-        std::process::exit(1);
+/// Reads inputs from stdin and runs each against the state the earlier ones left.
+fn cmd_repl() -> i32 {
+    let interactive = std::io::stdin().is_terminal();
+    if interactive {
+        println!(
+            "Novo {} interactive prompt. Enter :quit or press Ctrl-D to leave.",
+            env!("CARGO_PKG_VERSION")
+        );
     }
+    let mut checker = check::session::Session::default();
+    let mut runner = eval::Session::default();
+    let mut lines = std::io::stdin().lines();
+    loop {
+        let Some(input) = read_input(&mut lines, interactive) else {
+            return 0;
+        };
+        match input.trim() {
+            "" => continue,
+            ":quit" | ":q" | "exit" => return 0,
+            _ => {}
+        }
+        match checker.submit(&input) {
+            Ok(snippet) => {
+                if let Err(e) = runner.run(snippet.program, snippet.run) {
+                    render_runtime_error(checker.sources(), e);
+                }
+            }
+            Err(diags) => render(checker.sources(), &diags),
+        }
+    }
+}
 
-    let current_exe = env::current_exe().expect("Failed to locate current executable");
+/// Reads one input: a line, or a block that continues until a blank line
+/// when the first line opens one or leaves brackets unclosed.
+fn read_input(
+    lines: &mut impl Iterator<Item = std::io::Result<String>>,
+    interactive: bool,
+) -> Option<String> {
+    use std::io::Write;
+    let prompt = |p: &str| {
+        if interactive {
+            print!("{p}");
+            let _ = std::io::stdout().flush();
+        }
+    };
+    prompt(">>> ");
+    let first = lines.next()?.ok()?;
+    let mut text = first.clone() + "\n";
+    let mut depth = bracket_depth(&first);
+    let block = first.trim_end().ends_with(':');
+    if depth > 0 || block {
+        loop {
+            prompt("... ");
+            let Some(Ok(line)) = lines.next() else { break };
+            if line.trim().is_empty() && depth <= 0 {
+                break;
+            }
+            depth += bracket_depth(&line);
+            text.push_str(&line);
+            text.push('\n');
+            if depth <= 0 && !block {
+                break;
+            }
+        }
+    }
+    Some(text)
+}
 
-    println!("Running {} test(s) in '{}' (mode: {})...\n", test_files.len(), target, engine_mode);
+fn bracket_depth(line: &str) -> i32 {
+    let mut depth = 0;
+    let mut quote = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                chars.next();
+            }
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '#') => break,
+            (None, '(' | '[' | '{') => depth += 1,
+            (None, ')' | ']' | '}') => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
 
-    let mut passed = 0;
+fn cmd_check(args: &[String]) -> i32 {
+    let file = match file_arg(args, "check") {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let json = args.iter().any(|a| a == "--json");
+    let mut sources = SourceMap::default();
+    match check::check(&mut sources, Path::new(file)) {
+        Ok(_) => {
+            if !json {
+                println!("{file}: ok");
+            }
+            0
+        }
+        Err(diags) => {
+            if json {
+                for d in &diags {
+                    println!("{}", d.to_json(&sources));
+                }
+            } else {
+                render(&sources, &diags);
+            }
+            1
+        }
+    }
+}
+
+fn is_test_file(path: &Path) -> bool {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    path.extension().is_some_and(|e| e == "nv")
+        && (stem.starts_with("test_") || stem.ends_with("_test"))
+}
+
+/// Collects matching files under `path`, skipping hidden directories and build output.
+fn collect_files(path: &Path, out: &mut Vec<PathBuf>, wanted: fn(&Path) -> bool) {
+    if !path.is_dir() {
+        out.push(path.to_path_buf());
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+    entries.sort();
+    for entry in entries {
+        let name = entry.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if entry.is_dir() {
+            if !name.starts_with('.') && name != "target" {
+                collect_files(&entry, out, wanted);
+            }
+        } else if wanted(&entry) {
+            out.push(entry);
+        }
+    }
+}
+
+fn cmd_test(args: &[String]) -> i32 {
+    let target = PathBuf::from(
+        args.iter()
+            .find(|a| !a.starts_with('-'))
+            .map(String::as_str)
+            .unwrap_or("tests"),
+    );
+    let mut files = Vec::new();
+    collect_files(&target, &mut files, is_test_file);
+    if files.is_empty() {
+        eprintln!(
+            "error: no test files (test_*.nv or *_test.nv) under {}",
+            target.display()
+        );
+        return 1;
+    }
+    let exe = std::env::current_exe().expect("current executable");
     let mut failed = 0;
-    let suite_start = Instant::now();
-
-    for file in &test_files {
-        let display_name = file.display().to_string();
-        print!("test {:<40} ... ", display_name);
-
+    for file in &files {
         let start = Instant::now();
-
-        if engine_mode == "diff" {
-            let ast_res = Command::new(&current_exe)
-                .arg("run")
-                .arg(file)
-                .arg("--engine=ast")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output();
-
-            let vm_res = Command::new(&current_exe)
-                .arg("run")
-                .arg(file)
-                .arg("--engine=vm")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output();
-
-            let elapsed = start.elapsed();
-
-            match (ast_res, vm_res) {
-                (Ok(ast_out), Ok(vm_out)) => {
-                    let ast_exit = ast_out.status.code().unwrap_or(-1);
-                    let vm_exit = vm_out.status.code().unwrap_or(-1);
-
-                    let ast_stdout = String::from_utf8_lossy(&ast_out.stdout).trim().to_string();
-                    let vm_stdout = String::from_utf8_lossy(&vm_out.stdout).trim().to_string();
-
-                    if ast_exit != vm_exit {
-                        println!("FAILED (exit code mismatch: AST={}, VM={}) [{} ms]",
-                                 ast_exit, vm_exit, elapsed.as_millis());
-                        failed += 1;
-                    } else if ast_stdout != vm_stdout {
-                        println!("FAILED (output mismatch) [{} ms]", elapsed.as_millis());
-                        eprintln!("  --- AST stdout ---\n{}", ast_stdout);
-                        eprintln!("  --- VM  stdout ---\n{}", vm_stdout);
-                        failed += 1;
-                    } else {
-                        println!("ok [{} ms]", elapsed.as_millis());
-                        passed += 1;
-                    }
-                }
-                (Err(e), _) | (_, Err(e)) => {
-                    println!("FAILED (process execution error: {})", e);
-                    failed += 1;
-                }
+        let output = Command::new(&exe).arg("run").arg(file).output();
+        let ms = start.elapsed().as_millis();
+        match output {
+            Ok(out) if out.status.success() => println!("PASS {} ({ms} ms)", file.display()),
+            Ok(out) => {
+                failed += 1;
+                println!("FAIL {} ({ms} ms)", file.display());
+                eprint!("{}", String::from_utf8_lossy(&out.stderr));
             }
-        } else {
-            let res = Command::new(&current_exe)
-                .arg("run")
-                .arg(file)
-                .arg(format!("--engine={}", engine_mode))
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output();
-
-            let elapsed = start.elapsed();
-
-            match res {
-                Ok(out) => {
-                    let is_error_test = display_name.contains("error");
-                    let success = if is_error_test {
-                        !out.status.success()
-                    } else {
-                        out.status.success()
-                    };
-
-                    if success {
-                        println!("ok [{} ms]", elapsed.as_millis());
-                        passed += 1;
-                    } else {
-                        let err_msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        if is_error_test {
-                            println!("FAILED (expected error, but succeeded) [{} ms]", elapsed.as_millis());
-                        } else {
-                            println!("FAILED (exit code: {}) [{} ms]",
-                                     out.status.code().unwrap_or(-1), elapsed.as_millis());
-                            if !err_msg.is_empty() {
-                                eprintln!("  {}", err_msg);
-                            }
-                        }
-                        failed += 1;
-                    }
-                }
-                Err(e) => {
-                    println!("FAILED (failed to execute: {})", e);
-                    failed += 1;
-                }
+            Err(e) => {
+                failed += 1;
+                println!("FAIL {}: {e}", file.display());
             }
         }
     }
-
-    let total_elapsed = suite_start.elapsed();
-    println!("\nTest result: {} passed, {} failed in {:.2}s", passed, failed, total_elapsed.as_secs_f64());
-
-    if failed > 0 {
-        std::process::exit(1);
-    }
+    println!("\n{} passed, {failed} failed", files.len() - failed);
+    i32::from(failed > 0)
 }
 
-fn execute_bench(filename: &str, iterations: usize, engine: &str) {
-    let source = match fs::read_to_string(filename) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading '{}': {}", filename, e);
-            std::process::exit(1);
-        }
+fn cmd_bench(args: &[String]) -> i32 {
+    let file = match file_arg(args, "bench") {
+        Ok(f) => f,
+        Err(code) => return code,
     };
-
-    println!("Novo Benchmark: '{}' (engine: {}, iterations: {})", filename, engine, iterations);
-    println!("{:-<60}", "");
-
-    // 1. Measure compilation overhead
-    let compile_start = Instant::now();
-    let mut lexer = lexer::Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(e) => {
-            print_error(&source, &e, "Lexer error");
-            std::process::exit(1);
-        }
-    };
-    let mut parser = parser::Parser::new(tokens);
-    let ast = match parser.parse() {
-        Ok(p) => p,
-        Err(e) => {
-            print_error(&source, &e, "Syntax error");
-            std::process::exit(1);
-        }
-    };
-    let mut type_checker = type_checker::TypeChecker::new();
-    if let Err(e) = type_checker.check_program(&ast) {
-        print_error(&source, &e, "Type error");
-        std::process::exit(1);
-    }
-
-    let compile_duration = compile_start.elapsed();
-    println!("Compilation Time:       {:.3} ms", compile_duration.as_secs_f64() * 1000.0);
-
-    // 2. Measure execution iterations
-    let current_exe = env::current_exe().expect("Failed to locate current executable");
-    let mut durations: Vec<f64> = Vec::with_capacity(iterations);
-
-    for iter in 1..=iterations {
-        let run_start = Instant::now();
-        let status = Command::new(&current_exe)
+    let runs = args
+        .iter()
+        .position(|a| a == "-n")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(5)
+        .max(1);
+    let exe = std::env::current_exe().expect("current executable");
+    let mut times = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let start = Instant::now();
+        let status = Command::new(&exe)
             .arg("run")
-            .arg(filename)
-            .arg(format!("--engine={}", engine))
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .arg(file)
+            .args(args.iter().filter(|a| *a == "--interp"))
+            .stdout(std::process::Stdio::null())
             .status();
-
-        let elapsed_ms = run_start.elapsed().as_secs_f64() * 1000.0;
-
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
         match status {
-            Ok(s) if s.success() => {
-                durations.push(elapsed_ms);
-            }
-            Ok(s) => {
-                eprintln!("Iteration {} failed with exit code {}", iter, s.code().unwrap_or(-1));
-                std::process::exit(1);
-            }
-            Err(e) => {
-                eprintln!("Iteration {} failed to run: {}", iter, e);
-                std::process::exit(1);
+            Ok(s) if s.success() => times.push(elapsed),
+            _ => {
+                eprintln!("error: `{file}` failed; run it with `novo run` to see why");
+                return 1;
             }
         }
     }
+    let mean = times.iter().sum::<f64>() / runs as f64;
+    let min = times.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = times.iter().copied().fold(0.0, f64::max);
+    let sd = (times.iter().map(|t| (t - mean).powi(2)).sum::<f64>() / runs as f64).sqrt();
+    println!(
+        "{file}: {runs} runs, mean {mean:.2} ms, min {min:.2} ms, max {max:.2} ms, std dev {sd:.2} ms"
+    );
+    0
+}
 
-    durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-    let count = durations.len() as f64;
-    let min = durations.first().copied().unwrap_or(0.0);
-    let max = durations.last().copied().unwrap_or(0.0);
-    let sum: f64 = durations.iter().sum();
-    let mean = sum / count;
-
-    let median = if durations.len() % 2 == 1 {
-        durations[durations.len() / 2]
-    } else {
-        (durations[durations.len() / 2 - 1] + durations[durations.len() / 2]) / 2.0
+fn cmd_new(args: &[String]) -> i32 {
+    let Some(name) = args.iter().find(|a| !a.starts_with('-')) else {
+        eprintln!("error: `novo new` needs a project name");
+        return 2;
     };
-
-    let variance = durations.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / count;
-    let std_dev = variance.sqrt();
-
-    println!("Execution Statistics ({} runs):", iterations);
-    println!("  Mean:                 {:.3} ms (±{:.3} ms)", mean, std_dev);
-    println!("  Median:               {:.3} ms", median);
-    println!("  Min:                  {:.3} ms", min);
-    println!("  Max:                  {:.3} ms", max);
-    println!("{:-<60}", "");
-}
-
-fn print_error(source: &str, error: &str, error_type: &str) {
-    if let Some(pos) = error.rfind(" at line ") {
-        let msg = &error[..pos];
-        let rest = &error[pos + 9..];
-        if let Some(comma_pos) = rest.find(", col ") {
-            let line_str = &rest[..comma_pos];
-            let rest_after_col = &rest[comma_pos + 6..];
-            
-            let (col_str, len_str) = if let Some(len_pos) = rest_after_col.find(", len ") {
-                (&rest_after_col[..len_pos], Some(&rest_after_col[len_pos + 6..]))
-            } else {
-                (rest_after_col, None)
-            };
-            
-            if let (Ok(line), Ok(col)) = (line_str.parse::<usize>(), col_str.parse::<usize>()) {
-                let len = len_str.and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
-                let lines: Vec<&str> = source.lines().collect();
-                if line > 0 && line <= lines.len() {
-                    let type_prefix = if error_type.is_empty() { "ERROR".to_string() } else { error_type.to_uppercase() };
-                    eprintln!("\n{}: {}\n", type_prefix, msg);
-                    let line_text = lines[line - 1];
-                    eprintln!("    {}", line_text);
-                    let padding = " ".repeat(col.saturating_sub(1));
-                    let carets = "^".repeat(len.max(1));
-                    eprintln!("    {}{}", padding, carets);
-                    return;
-                }
-            }
+    let root = Path::new(name);
+    if root.exists() {
+        eprintln!("error: `{name}` already exists");
+        return 1;
+    }
+    let files = [
+        (
+            "src/greeting.nv",
+            "function greet(name: String) -> String:\n    return f\"Hello, {name}!\"\n".to_string(),
+        ),
+        (
+            "src/main.nv",
+            "use \"greeting.nv\"\n\nshow greeting.greet(\"Novo\")\n".to_string(),
+        ),
+        (
+            "tests/greeting_test.nv",
+            "use \"../src/greeting.nv\"\n\nassert_eq(greeting.greet(\"Ada\"), \"Hello, Ada!\")\n"
+                .to_string(),
+        ),
+        (
+            "novo.toml",
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"src/main.nv\"\n"),
+        ),
+        (".gitignore", "target/\n".to_string()),
+    ];
+    for (path, text) in &files {
+        let path = root.join(path);
+        let written = std::fs::create_dir_all(path.parent().expect("file has a parent"))
+            .and_then(|_| std::fs::write(&path, text));
+        if let Err(e) = written {
+            eprintln!("error: cannot write {}: {e}", path.display());
+            return 1;
         }
     }
-    eprintln!("{}: {}", error_type, error);
+    println!("Created {name}/. Try:\n    cd {name}\n    novo run src/main.nv\n    novo test");
+    0
 }
-
-fn execute_fmt(target: &str, write_in_place: bool) {
-    let files = discover_tests(target);
-    if files.is_empty() {
-        eprintln!("Error: No .nv files found in '{}'", target);
-        std::process::exit(1);
-    }
-
-    let mut formatted_count = 0;
-    let mut unchanged_count = 0;
-
-    for file in &files {
-        let filename = file.display().to_string();
-        let source = match fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error reading '{}': {}", filename, e);
-                continue;
-            }
-        };
-
-        let mut lexer = lexer::Lexer::new(&source);
-        let tokens = match lexer.tokenize() {
-            Ok(t) => t,
-            Err(e) => {
-                print_error(&source, &e, "Lexer error");
-                continue;
-            }
-        };
-
-        let mut parser = parser::Parser::new(tokens);
-        let ast = match parser.parse() {
-            Ok(p) => p,
-            Err(e) => {
-                print_error(&source, &e, "Syntax error");
-                continue;
-            }
-        };
-
-        let formatted = formatter::Formatter::new().format_program(&ast);
-
-        if write_in_place {
-            if formatted.trim() != source.trim() {
-                if let Err(e) = fs::write(file, &formatted) {
-                    eprintln!("Error writing '{}': {}", filename, e);
-                } else {
-                    println!("Formatted: {}", filename);
-                    formatted_count += 1;
-                }
-            } else {
-                unchanged_count += 1;
-            }
-        } else if files.len() == 1 {
-            print!("{}", formatted);
-        } else if formatted.trim() != source.trim() {
-            println!("Needs formatting: {}", filename);
-            formatted_count += 1;
-        } else {
-            unchanged_count += 1;
-        }
-    }
-
-    if write_in_place || files.len() > 1 {
-        println!("Fmt complete: {} formatted, {} unchanged.", formatted_count, unchanged_count);
-    }
-}
-
-fn execute_lint(target: &str) {
-    let files = discover_tests(target);
-    if files.is_empty() {
-        eprintln!("Error: No .nv files found in '{}'", target);
-        std::process::exit(1);
-    }
-
-    let mut total_warnings = 0;
-    let mut total_errors = 0;
-
-    for file in &files {
-        let filename = file.display().to_string();
-        let source = match fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error reading '{}': {}", filename, e);
-                continue;
-            }
-        };
-
-        let mut lexer = lexer::Lexer::new(&source);
-        let tokens = match lexer.tokenize() {
-            Ok(t) => t,
-            Err(e) => {
-                print_error(&source, &e, "Lexer error");
-                total_errors += 1;
-                continue;
-            }
-        };
-
-        let mut parser = parser::Parser::new(tokens);
-        let ast = match parser.parse() {
-            Ok(p) => p,
-            Err(e) => {
-                print_error(&source, &e, "Syntax error");
-                total_errors += 1;
-                continue;
-            }
-        };
-
-        let mut linter = linter::Linter::new();
-        let diagnostics = linter.lint_program(&ast);
-
-        if !diagnostics.is_empty() {
-            let lines: Vec<&str> = source.lines().collect();
-            for diag in &diagnostics {
-                let sev_str = match diag.severity {
-                    linter::LintSeverity::Warning => {
-                        total_warnings += 1;
-                        "warning"
-                    }
-                    linter::LintSeverity::Error => {
-                        total_errors += 1;
-                        "error"
-                    }
-                    linter::LintSeverity::Hint => "hint",
-                };
-
-                println!("{}:{}:{}: {}: {}", filename, diag.span.line, diag.span.column, sev_str, diag.message);
-                if diag.span.line > 0 && diag.span.line <= lines.len() {
-                    let line_content = lines[diag.span.line - 1];
-                    println!("    {}", line_content);
-                    let padding = " ".repeat(diag.span.column.saturating_sub(1));
-                    let carets = "^".repeat(diag.span.length.max(1));
-                    println!("    {}{}", padding, carets);
-                }
-                if let Some(ref sug) = diag.suggestion {
-                    println!("    Help: {}\n", sug);
-                }
-            }
-        }
-    }
-
-    if total_warnings == 0 && total_errors == 0 {
-        println!("All clean! No lint issues found in {} file(s).", files.len());
-    } else {
-        println!("Lint finished with {} warning(s), {} error(s).", total_warnings, total_errors);
-        if total_errors > 0 {
-            std::process::exit(1);
-        }
-    }
-}
-
-fn execute_new(project_name: &str) {
-    let p = Path::new(project_name);
-    if p.exists() {
-        eprintln!("Error: Directory '{}' already exists.", project_name);
-        std::process::exit(1);
-    }
-
-    let src_dir = p.join("src");
-    let tests_dir = p.join("tests");
-
-    if let Err(e) = fs::create_dir_all(&src_dir) {
-        eprintln!("Failed to create '{}/src': {}", project_name, e);
-        std::process::exit(1);
-    }
-    if let Err(e) = fs::create_dir_all(&tests_dir) {
-        eprintln!("Failed to create '{}/tests': {}", project_name, e);
-        std::process::exit(1);
-    }
-
-    let toml_content = format!(
-r#"[package]
-name = "{}"
-version = "0.1.0"
-description = "A modern Novo application"
-entry = "src/main.nv"
-
-[dependencies]
-"#, project_name);
-
-    let main_nv = r#"# Main entry point for the Novo application
-
-function main():
-    show "Hello, Novo!"
-
-main()
-"#;
-
-    let test_nv = r#"# Starter test suite
-
-function test_example():
-    val = 21 * 2
-    show val
-
-test_example()
-"#;
-
-    let gitignore = r#"target/
-*.log
-"#;
-
-    let _ = fs::write(p.join("novo.toml"), toml_content);
-    let _ = fs::write(src_dir.join("main.nv"), main_nv);
-    let _ = fs::write(tests_dir.join("main_test.nv"), test_nv);
-    let _ = fs::write(p.join(".gitignore"), gitignore);
-
-    println!("Created new Novo project '{}':", project_name);
-    println!("    {}/novo.toml", project_name);
-    println!("    {}/src/main.nv", project_name);
-    println!("    {}/tests/main_test.nv", project_name);
-    println!("    {}/.gitignore", project_name);
-    println!("\nTo get started:\n    cd {}\n    novo run src/main.nv\n    novo test tests", project_name);
-}
-

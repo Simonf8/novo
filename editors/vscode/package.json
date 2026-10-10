@@ -1,0 +1,44 @@
+{
+  "name": "novo",
+  "displayName": "Novo",
+  "description": "Novo language support: highlighting, errors as you type, hover types and formatting",
+  "version": "0.1.0",
+  "publisher": "novo-lang",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": { "type": "git", "url": "https://github.com/Simonf8/novo" },
+  "engines": { "vscode": "^1.82.0" },
+  "categories": ["Programming Languages", "Formatters"],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "novo",
+        "aliases": ["Novo", "novo"],
+        "extensions": [".nv"],
+        "configuration": "./language-configuration.json",
+        "icon": { "light": "./icon.png", "dark": "./icon.png" }
+      }
+    ],
+    "grammars": [
+      { "language": "novo", "scopeName": "source.novo", "path": "./syntaxes/novo.tmLanguage.json" }
+    ],
+    "configuration": {
+      "title": "Novo",
+      "properties": {
+        "novo.path": {
+          "type": "string",
+          "default": "novo",
+          "description": "The novo executable used to run the language server."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[novo]": { "editor.tabSize": 4, "editor.insertSpaces": true }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

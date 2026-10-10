@@ -1,0 +1,24 @@
+xs = [5, 1, 4]
+xs.sort()
+show xs
+show xs[-1], xs[1:], xs[:2]
+show xs.contains(4), 9 in xs
+ys = xs.copy()
+ys.push(0)
+show xs, ys
+m = {"b": 2, "a": 1}
+m["c"] = 3
+show m
+show m.keys(), m.values()
+show m.get("z", 0)
+show "a" in m
+show m.remove("b"), m
+empty: List[Int] = []
+show empty, len(empty)
+show [[1, 2], [3]] select len(it)
+nums = [1.5, 2.5]
+show nums sum, nums average
+show [3, 1, 2] min, ["b", "a"] max
+words = ["apple", "fig", "banana"]
+show words where it.length() > 3 select it.to_upper()
+show words max len(it)

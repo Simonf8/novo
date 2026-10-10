@@ -1,0 +1,23 @@
+# Generates text with GPT-2.
+#
+#   novo run examples/gpt2/generate.nv <model-dir> "<prompt>" [tokens]
+#
+# <model-dir> holds config.json, model.safetensors, vocab.json and merges.txt,
+# as published at https://huggingface.co/openai-community/gpt2.
+
+use "gpt2.nv"
+use "tokenizer.nv"
+use env
+
+args = env.args()
+if len(args) < 3:
+    fail("usage: novo run examples/gpt2/generate.nv <model-dir> \"<prompt>\" [tokens]")
+dir = args[1]
+count = 20
+if len(args) > 3:
+    count = int(args[3])
+
+tok = tokenizer.load(dir)
+model = gpt2.load(dir)
+ids = model.generate(tok.encode(args[2]), count)
+show tok.decode(ids)

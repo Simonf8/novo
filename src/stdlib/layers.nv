@@ -1,0 +1,127 @@
+# Neural network building blocks. Every layer has `forward`, which applies it,
+# and `params`, the tensors an optimizer should train.
+
+use math
+use nn
+
+# Weights drawn uniformly from [-bound, bound].
+function uniform(shape: List[Int], bound: Float) -> Tensor:
+    return nn.param((nn.rand(shape) * 2.0 - 1.0) * bound)
+
+class Linear:
+    weight: Tensor
+    bias: Tensor
+
+    function forward(x: Tensor) -> Tensor:
+        return x @ self.weight + self.bias
+
+    function params() -> List[Tensor]:
+        return [self.weight, self.bias]
+
+# A fully connected layer, initialized as in PyTorch.
+function linear(inputs: Int, outputs: Int) -> Linear:
+    bound = 1.0 / math.sqrt(float(inputs))
+    return Linear(uniform([inputs, outputs], bound), uniform([outputs], bound))
+
+class Embedding:
+    table: Tensor
+
+    function forward(ids: Tensor) -> Tensor:
+        return self.table.embed(ids)
+
+    function params() -> List[Tensor]:
+        return [self.table]
+
+function embedding(count: Int, width: Int) -> Embedding:
+    return Embedding(nn.param(nn.randn([count, width]) * 0.02))
+
+class LayerNorm:
+    weight: Tensor
+    bias: Tensor
+
+    function forward(x: Tensor) -> Tensor:
+        return x.layer_norm(self.weight, self.bias)
+
+    function params() -> List[Tensor]:
+        return [self.weight, self.bias]
+
+function layer_norm(width: Int) -> LayerNorm:
+    return LayerNorm(nn.param(nn.ones([width])), nn.param(nn.zeros([width])))
+
+# Two linear layers with a GELU between them.
+class MLP:
+    up: Linear
+    down: Linear
+
+    function forward(x: Tensor) -> Tensor:
+        return self.down.forward(self.up.forward(x).gelu())
+
+    function params() -> List[Tensor]:
+        all = self.up.params()
+        all.extend(self.down.params())
+        return all
+
+function mlp(width: Int, hidden: Int) -> MLP:
+    return MLP(linear(width, hidden), linear(hidden, width))
+
+# Ones above the diagonal: the positions a token may not attend to.
+function causal_mask(steps: Int) -> Tensor:
+    return 1.0 - nn.tril(steps)
+
+# Multi-head self-attention over [batch, steps, width] inputs, where each
+# position attends only to itself and earlier positions.
+class CausalSelfAttention:
+    qkv: Linear
+    proj: Linear
+    heads: Int
+
+    function forward(x: Tensor) -> Tensor:
+        shape = x.shape()
+        batch = shape[0]
+        steps = shape[1]
+        width = shape[2]
+        size = width // self.heads
+        parts = self.qkv.forward(x).chunk(3, 2)
+        q = parts[0].reshape([batch, steps, self.heads, size]).transpose(1, 2)
+        k = parts[1].reshape([batch, steps, self.heads, size]).transpose(1, 2)
+        v = parts[2].reshape([batch, steps, self.heads, size]).transpose(1, 2)
+        scores = (q @ k.transpose(2, 3)) * (1.0 / math.sqrt(float(size)))
+        weights = scores.masked_fill(causal_mask(steps), -1e9).softmax(3)
+        mixed = (weights @ v).transpose(1, 2).reshape([batch, steps, width])
+        return self.proj.forward(mixed)
+
+    function params() -> List[Tensor]:
+        all = self.qkv.params()
+        all.extend(self.proj.params())
+        return all
+
+function attention(width: Int, heads: Int) -> CausalSelfAttention:
+    if width % heads != 0:
+        fail(f"attention width {width} is not divisible by {heads} heads")
+    return CausalSelfAttention(linear(width, 3 * width), linear(width, width), heads)
+
+# A pre-norm transformer block: attention then an MLP, each added back to its input.
+class TransformerBlock:
+    norm1: LayerNorm
+    attention: CausalSelfAttention
+    norm2: LayerNorm
+    mlp: MLP
+
+    function forward(x: Tensor) -> Tensor:
+        h = x + self.attention.forward(self.norm1.forward(x))
+        return h + self.mlp.forward(self.norm2.forward(h))
+
+    function params() -> List[Tensor]:
+        all = self.norm1.params()
+        all.extend(self.attention.params())
+        all.extend(self.norm2.params())
+        all.extend(self.mlp.params())
+        return all
+
+function transformer_block(width: Int, heads: Int) -> TransformerBlock:
+    return TransformerBlock(
+        layer_norm(width),
+        attention(width, heads),
+        layer_norm(width),
+        mlp(width, 4 * width)
+    )

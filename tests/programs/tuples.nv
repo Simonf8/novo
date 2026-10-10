@@ -1,0 +1,36 @@
+function divmod(a: Int, b: Int) -> (Int, Int):
+    return a // b, a % b
+
+q, r = divmod(17, 5)
+show q, r
+pair = divmod(9, 4)
+show pair, pair[0], pair[-1], len(pair)
+
+a = 1
+b = 2
+a, b = b, a
+show a, b
+
+(x, (y, z)) = (1, ("two", 3.0))
+show x, y, z
+
+ages = {"Ada": 36, "Alan": 41}
+for name, age in ages.items():
+    show f"{name} is {age}"
+for i, word in enumerate(["zero", "one"]):
+    show i, word
+for n, letter in zip([1, 2, 3], ["a", "b"]):
+    show n, letter
+
+points = [(3, "c"), (1, "a"), (2, "b")]
+show sorted(points)
+show sorted(points, |p| p[1])
+show (1, 2) < (1, 3), (1, "a") == (1, "a"), (2,)
+show sum([1.5, 2.5]), any([false, true]), all([]), reversed("abc".chars())
+show ", ".join(["x", "y"]), "-".join(range(3) select str(it))
+
+function stats(xs: List[Float]) -> (Float, Float):
+    return xs min, xs max
+
+low, high = stats([2.5, -1.0, 4.0])
+show low, high

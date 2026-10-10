@@ -1,0 +1,22 @@
+function escape(cr: Float, ci: Float, limit: Int) -> Int:
+    zr = 0.0
+    zi = 0.0
+    n = 0
+    while n < limit and zr * zr + zi * zi <= 4.0:
+        t = zr * zr - zi * zi + cr
+        zi = 2.0 * zr * zi + ci
+        zr = t
+        n += 1
+    return n
+
+function render(size: Int, limit: Int) -> Int:
+    inside = 0
+    for y in range(size):
+        for x in range(size):
+            cr = 3.0 * x / size - 2.0
+            ci = 2.0 * y / size - 1.0
+            if escape(cr, ci, limit) == limit:
+                inside += 1
+    return inside
+
+show render(600, 200)

@@ -1,0 +1,60 @@
+# GPT-2 inference from the published safetensors weights (Hugging Face layout).
+
+use nn
+use json
+use fs
+
+class GPT2:
+    weights: Map[String, Tensor]
+    prefix: String
+    layers: Int
+    heads: Int
+
+    function w(name: String) -> Tensor:
+        return self.weights[self.prefix + name]
+
+    function linear(x: Tensor, name: String) -> Tensor:
+        return x @ self.w(name + ".weight") + self.w(name + ".bias")
+
+    function norm(x: Tensor, name: String) -> Tensor:
+        return x.layer_norm(self.w(name + ".weight"), self.w(name + ".bias"))
+
+    function attention(x: Tensor, layer: String) -> Tensor:
+        steps = x.shape()[0]
+        width = x.shape()[1]
+        size = width // self.heads
+        parts = self.linear(x, layer + ".attn.c_attn").chunk(3, 1)
+        q = parts[0].reshape([steps, self.heads, size]).transpose(0, 1)
+        k = parts[1].reshape([steps, self.heads, size]).transpose(0, 1)
+        v = parts[2].reshape([steps, self.heads, size]).transpose(0, 1)
+        scores = (q @ k.transpose(1, 2)) * (1.0 / size ** 0.5)
+        attention = scores.masked_fill(1 - nn.tril(steps), -1e9).softmax(2)
+        mixed = (attention @ v).transpose(0, 1).reshape([steps, width])
+        return self.linear(mixed, layer + ".attn.c_proj")
+
+    # Returns logits for every position: shape [len(ids), vocabulary].
+    function forward(ids: List[Int]) -> Tensor:
+        x = self.w("wte.weight").embed(nn.tensor(ids)) + self.w("wpe.weight").narrow(0, 0, len(ids))
+        for i in range(self.layers):
+            layer = f"h.{i}"
+            x = x + self.attention(self.norm(x, layer + ".ln_1"), layer)
+            hidden = self.linear(self.norm(x, layer + ".ln_2"), layer + ".mlp.c_fc").gelu()
+            x = x + self.linear(hidden, layer + ".mlp.c_proj")
+        return self.norm(x, "ln_f") @ self.w("wte.weight").t()
+
+    # Extends `ids` by `count` tokens, always taking the most likely next one.
+    function generate(ids: List[Int], count: Int) -> List[Int]:
+        out = ids.copy()
+        repeat count times:
+            logits = self.forward(out)
+            out.push(int(logits[-1].argmax(0).item()))
+        return out
+
+# Loads a model directory holding config.json and model.safetensors.
+function load(dir: String) -> GPT2:
+    config = json.parse(fs.read_file(dir + "/config.json"))
+    weights = nn.load(dir + "/model.safetensors")
+    prefix = ""
+    if weights.has("transformer.wte.weight"):
+        prefix = "transformer."
+    return GPT2(weights, prefix, config.n_layer, config.n_head)

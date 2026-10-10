@@ -1,0 +1,13 @@
+[area, rooms, price]
+6
+[5, 2] [5]
+[2, 2]
+[2, 2]
+[1, 2]
+[126.0, 75.0]
+505.0
+a,"b,c"
+"say ""hi""",
+
+csv: the quoted field starting on line 1 is never closed
+index 5 is out of range for a first dimension of size 5

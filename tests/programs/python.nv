@@ -1,0 +1,4 @@
+# requires: python
+use python math
+show math.floor(4.7)
+show math.gcd(12, 18)

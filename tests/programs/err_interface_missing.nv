@@ -1,0 +1,8 @@
+# expect-error: `Fish` does not have the method `speak` required by `Animal`
+interface Animal:
+    function speak(times: Int) -> String
+
+class Fish(Animal):
+    size: Int
+
+show Fish(1).size

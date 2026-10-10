@@ -1,0 +1,3 @@
+# expect-error: keeps the type of its first value
+n = 0
+n = 2.5

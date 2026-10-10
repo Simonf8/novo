@@ -1,0 +1,15 @@
+use nn
+show nn.device()
+a = nn.tensor([[1.5, 2.25]])
+show a.device(), a.dtype()
+h = a.to_dtype("bf16")
+show h.dtype(), h, (h * 2).to_dtype("f32")
+show a.to("cpu").device()
+try:
+    nn.device("cuda")
+catch e:
+    show e
+try:
+    show a.to_dtype("int8")
+catch e:
+    show e

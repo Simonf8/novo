@@ -1,0 +1,42 @@
+# Linear regression trained with gradient descent, in plain Novo.
+
+# Feature: House area (in 100 sq ft) -> Target: Price (in $1,000s)
+# y = 2.5 * x + 50 (with small variation)
+x_data = [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0]
+y_data = [75.0, 88.0, 102.0, 114.0, 126.0, 137.0, 152.0]
+n = x_data.length()
+
+# Initialize parameters
+weight = 0.0
+bias = 0.0
+learning_rate = 0.001
+epochs = 5000
+
+# Training Loop using natural control flow
+repeat epochs times:
+    w_grad = 0.0
+    b_grad = 0.0
+
+    i = 0
+    while i < n:
+        x_val = x_data[i]
+        y_val = y_data[i]
+
+        prediction = (weight * x_val) + bias
+        error = prediction - y_val
+
+        w_grad = w_grad + (error * x_val)
+        b_grad = b_grad + error
+        i = i + 1
+
+    weight = weight - (learning_rate * (2.0 * w_grad / float(n)))
+    bias = bias - (learning_rate * (2.0 * b_grad / float(n)))
+
+show "Trained Model Parameters:"
+show f"Weight (slope): {weight:.3f}"
+show f"Bias (intercept): {bias:.3f}"
+
+# Inference on unseen house: 28.0 (2,800 sq ft)
+test_area = 28.0
+predicted_price = (weight * test_area) + bias
+show f"Predicted price for a 2,800 sq ft house: ${predicted_price:.1f}k"

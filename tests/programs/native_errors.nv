@@ -1,0 +1,42 @@
+# Errors raised inside compiled functions reach the caller's `catch`.
+function risky(n: Int) -> Int:
+    if n > 2:
+        fail(f"too big: {n}")
+    return n
+
+function divide(a: Int, b: Int) -> Int:
+    return a // b
+
+function deep(n: Int) -> Int:
+    return risky(n) + 1
+
+function first(xs: List[Int]) -> Int:
+    return xs[0]
+
+show risky(1)
+for n in [2, 3]:
+    try:
+        show deep(n)
+    catch e:
+        show "caught:", e
+try:
+    show divide(1, 0)
+catch e:
+    show "caught:", e
+try:
+    show first([])
+catch e:
+    show "caught:", e
+
+function guarded(n: Int) -> String:
+    try:
+        return str(risky(n))
+    catch e:
+        return "fallback"
+
+show guarded(1), guarded(9)
+show f"{guarded(2)} and {guarded(9)}"
+try:
+    show "partial", risky(7)
+catch e:
+    show "the partial line is dropped"

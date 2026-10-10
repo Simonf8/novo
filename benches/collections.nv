@@ -1,0 +1,13 @@
+words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
+counts: Map[String, Int] = {}
+total = 0
+for i in range(1000000):
+    w = words[i % 8]
+    counts[w] = counts.get(w, 0) + 1
+    total += len(w)
+show total, counts["beta"]
+items: List[Int] = []
+for i in range(300000):
+    items.push(i * 7 % 1000)
+items.sort()
+show items[150000]

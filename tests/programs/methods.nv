@@ -1,0 +1,40 @@
+class Point:
+    x: Float
+    y: Float
+
+    function length() -> Float:
+        return (self.x * self.x + self.y * self.y) ** 0.5
+
+    function plus(other: Point) -> Point:
+        return Point(self.x + other.x, self.y + other.y)
+
+    function scaled(k=2.0):
+        return Point(self.x * k, self.y * k)
+
+p = Point(3, 4)
+show p
+show p.length()
+show p.plus(Point(1, 1))
+show p.scaled()
+show p.scaled(k=0.5)
+
+class Stack:
+    items: List[Int] = []
+
+    function push(x: Int):
+        self.items.push(x)
+
+    function pop() -> Int:
+        return self.items.pop()
+
+s = Stack()
+s.push(1)
+s.push(2)
+show s.pop(), s.items
+
+function describe(shape) => shape.length()
+show describe(Point(6, 8))
+
+q = p
+q.x = 0.0
+show p.x

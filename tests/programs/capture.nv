@@ -1,0 +1,24 @@
+function counter_from(n):
+    count = n
+    function next():
+        return count + 1
+    return next
+
+c = counter_from(10)
+show c()
+
+function fib(n):
+    function go(k):
+        if k < 2:
+            return k
+        return go(k - 1) + go(k - 2)
+    return go(n)
+show fib(15)
+
+x = 1
+f = |y| x + y
+x = 100
+show f(1)
+
+adders = [1, 2, 3] select |n| |x| x + n
+show adders[2](10)

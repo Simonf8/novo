@@ -1,0 +1,11 @@
+task square(n):
+    return n * n
+
+show run [square(1), square(2), square(3)] in parallel
+show [square(4), square(5)] together
+results = (range(10) select square(it)) together
+show results
+t = together square(12)
+show await t
+handles = [1, 2, 3] select together square(it)
+show handles select await it

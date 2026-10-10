@@ -1,0 +1,5 @@
+# expect-error: cannot catch errors by `Int`; name a class or enum
+try:
+    fail("x")
+catch Int as n:
+    show n

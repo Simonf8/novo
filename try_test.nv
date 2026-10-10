@@ -1,5 +1,0 @@
-try:
-    show foo
-catch e:
-    show "caught:"
-    show e

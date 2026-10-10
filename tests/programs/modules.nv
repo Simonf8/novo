@@ -1,0 +1,2 @@
+use "helpers/math_utils.nv" as mu
+show mu.double(21)

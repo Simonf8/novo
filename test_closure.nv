@@ -1,8 +1,0 @@
-
-add_one = |x| x + 1
-y = add_one(10)
-show y
-
-multiply = |a, b| a * b
-z = multiply(4, 5)
-show z

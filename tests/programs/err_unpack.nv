@@ -1,0 +1,2 @@
+# expect-error: cannot unpack a `(Int, Int, Int)` into 2 variables
+a, b = (1, 2, 3)

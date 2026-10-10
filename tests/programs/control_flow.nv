@@ -1,0 +1,25 @@
+function size(count):
+    if count > 10:
+        return "Large"
+    otherwise if count > 5:
+        return "Medium"
+    otherwise:
+        return "Small"
+
+show size(20)
+show size(7)
+show size(1)
+
+count = 0
+while count < 6:
+    count = count + 1
+    if count == 2:
+        continue
+    if count == 5:
+        break
+    show count
+
+total = 0
+repeat 4 times:
+    total = total + 10
+show total
