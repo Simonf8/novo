@@ -71,8 +71,8 @@ novo lsp                         Run the language server on stdio
 ```
 
 `novo check --json` prints one JSON object per diagnostic, for editors.
-`novo lsp` is a language server: errors as you type, hover types and
-formatting. [editors/vscode](editors/vscode) is a VS Code extension that uses
+`novo lsp` is a language server: errors as you type, hover types, go to
+definition and formatting. [editors/vscode](editors/vscode) is a VS Code extension that uses
 it and adds syntax highlighting.
 
 `novo fmt` normalizes indentation and spacing but keeps comments, blank lines
@@ -237,7 +237,7 @@ errors (`# expect-error: ...`) and required features
 1. **Faster native code.** Closures and parallel blocks in compiled code,
    unboxed lists of numbers, inlining, and ahead-of-time executables.
 2. **Models.** More pretrained architectures, and loading them into `layers`.
-3. **Tooling.** Go to definition, completion, and a package manager.
+3. **Tooling.** Completion and a package manager.
 
 ## License
 

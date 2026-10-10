@@ -124,6 +124,7 @@ struct FuncSlot {
 
 struct ClassSlot {
     name: String,
+    span: Span,
     fields: Vec<FieldSlot>,
     methods: Vec<(String, FuncId)>,
 }
@@ -155,10 +156,11 @@ struct FnCtx {
 }
 
 impl FnCtx {
-    fn add_local(&mut self, name: &str, ty: Ty) -> LocalId {
+    fn add_local(&mut self, name: &str, ty: Ty, span: Span) -> LocalId {
         self.locals.push(hir::Local {
             name: name.to_string(),
             ty,
+            span,
         });
         LocalId(self.locals.len() as u32 - 1)
     }
@@ -349,6 +351,7 @@ impl Checker {
                     let cid = ClassId(self.classes.len() as u32);
                     self.classes.push(ClassSlot {
                         name: def.name.name.clone(),
+                        span: def.name.span,
                         fields: Vec::new(),
                         methods: Vec::new(),
                     });
@@ -417,6 +420,7 @@ impl Checker {
             self.globals.push(hir::Global {
                 name: name.name.clone(),
                 ty,
+                span: name.span,
             });
             self.define(id, &name, Item::Global(gid));
         }
@@ -541,6 +545,7 @@ impl Checker {
             locals: ctx.locals,
             body,
             ty: Ty::func(vec![], Ty::None),
+            span: Span::default(),
         });
         self.funcs[init.0 as usize].state = FnState::Done(Scheme {
             vars: vec![],
@@ -591,7 +596,7 @@ impl Checker {
         let mut param_tys = Vec::new();
         if let Some(cid) = class {
             let ty = Ty::Class(cid);
-            let local = ctx.add_local("self", ty.clone());
+            let local = ctx.add_local("self", ty.clone(), def.name.span);
             ctx.names.insert("self".into(), local);
             param_tys.push(ty);
         }
@@ -623,7 +628,7 @@ impl Checker {
                     format!("parameter `{}` is declared twice", p.name.name),
                 ));
             }
-            let local = ctx.add_local(&p.name.name, ty.clone());
+            let local = ctx.add_local(&p.name.name, ty.clone(), p.name.span);
             ctx.names.insert(p.name.name.clone(), local);
             param_tys.push(ty);
             params.push(Param {
@@ -665,6 +670,7 @@ impl Checker {
             locals: ctx.locals,
             body,
             ty: fty,
+            span: def.name.span,
         });
         self.funcs[id.0 as usize].state = FnState::Done(scheme.clone());
         scheme
@@ -683,7 +689,7 @@ impl Checker {
                 continue;
             }
             let ty = self.infer.fresh();
-            let local = ctx.add_local(&name.name, ty);
+            let local = ctx.add_local(&name.name, ty, name.span);
             ctx.names.insert(name.name, local);
         }
     }
@@ -836,9 +842,10 @@ impl Checker {
         }
         match self.lookup_in(depth - 1, name)? {
             Resolved::Local(outer) => {
-                let ty = self.stack[depth - 1].locals[outer.0 as usize].ty.clone();
+                let outer_local = &self.stack[depth - 1].locals[outer.0 as usize];
+                let (ty, span) = (outer_local.ty.clone(), outer_local.span);
                 let ctx = &mut self.stack[depth];
-                let inner = ctx.add_local(name, ty);
+                let inner = ctx.add_local(name, ty, span);
                 ctx.names.insert(name.to_string(), inner);
                 ctx.captures.push((inner, outer));
                 Some(Resolved::Local(inner))
@@ -1026,6 +1033,7 @@ impl Checker {
             .iter()
             .map(|c| hir::Class {
                 name: c.name.clone(),
+                span: c.span,
                 fields: c
                     .fields
                     .iter()
@@ -1042,6 +1050,7 @@ impl Checker {
             .map(|g| hir::Global {
                 name: g.name.clone(),
                 ty: infer.zonk(&g.ty),
+                span: g.span,
             })
             .collect();
         let modules = self

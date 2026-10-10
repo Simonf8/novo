@@ -37,12 +37,16 @@ pub struct Module {
 pub struct Global {
     pub name: String,
     pub ty: Ty,
+    /// Where it is first assigned.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct Local {
     pub name: String,
     pub ty: Ty,
+    /// Where it is declared; empty for locals the checker introduces.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -59,11 +63,14 @@ pub struct Func {
     pub locals: Vec<Local>,
     pub body: Block,
     pub ty: Ty,
+    /// The function's name in its definition.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct Class {
     pub name: String,
+    pub span: Span,
     pub fields: Vec<Field>,
     pub methods: Vec<(String, FuncId)>,
 }

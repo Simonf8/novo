@@ -18,6 +18,7 @@ struct Document {
 
 struct Analysis {
     program: hir::Program,
+    sources: SourceMap,
     file: FileId,
 }
 
@@ -34,6 +35,7 @@ pub fn serve() -> i32 {
                 "capabilities": {
                     "textDocumentSync": 1,
                     "hoverProvider": true,
+                    "definitionProvider": true,
                     "documentFormattingProvider": true,
                 },
                 "serverInfo": { "name": "novo", "version": env!("CARGO_PKG_VERSION") },
@@ -84,6 +86,14 @@ pub fn serve() -> i32 {
                 Some(
                     docs.get(&uri)
                         .and_then(|doc| hover(doc, &params))
+                        .unwrap_or(Json::Null),
+                )
+            }
+            "textDocument/definition" => {
+                let uri = str_at(&params, &["textDocument", "uri"]);
+                Some(
+                    docs.get(&uri)
+                        .and_then(|doc| definition(doc, &params))
                         .unwrap_or(Json::Null),
                 )
             }
@@ -186,7 +196,11 @@ fn analyze(uri: &str, doc: &mut Document) {
         publish(&target, list);
     }
     if let (Some(program), Some(file)) = (program, file) {
-        doc.analysis = Some(Analysis { program, file });
+        doc.analysis = Some(Analysis {
+            program,
+            sources,
+            file,
+        });
     }
 }
 
@@ -256,58 +270,91 @@ fn format_edits(doc: &Document) -> Json {
     }
 }
 
-fn hover(doc: &Document, params: &Json) -> Option<Json> {
+/// The innermost expression or assignment target under the cursor, with the function holding it.
+fn node_at<'a>(
+    doc: &'a Document,
+    params: &Json,
+) -> Option<(&'a Analysis, &'a hir::Func, Node<'a>)> {
     let analysis = doc.analysis.as_ref()?;
     let pos = params.get("position")?;
     let line = pos.get("line")?.as_u64()? as usize;
     let character = pos.get("character")?.as_u64()? as usize;
     let at = offset(&doc.text, line, character) as u32;
-    let prog = &analysis.program;
-
-    let mut best: Option<(u32, String)> = None;
-    let mut consider = |span: Span, text: String| {
-        if span.file == analysis.file
-            && span.lo <= at
-            && at < span.hi.max(span.lo + 1)
-            && best.as_ref().is_none_or(|(w, _)| span.hi - span.lo < *w)
-        {
-            best = Some((span.hi - span.lo, text));
-        }
-    };
-    let classes: Vec<String> = prog.classes.iter().map(|c| c.name.clone()).collect();
-    for f in &prog.funcs {
-        let describe = |e: &hir::Expr| {
-            let ty = e.ty.display(&classes);
-            match &e.kind {
-                hir::ExprKind::Local(l) => format!("{}: {ty}", f.locals[l.0 as usize].name),
-                hir::ExprKind::Global(g) => format!("{}: {ty}", prog.globals[g.0 as usize].name),
-                hir::ExprKind::Func { func, .. } => format!(
-                    "{}: {}",
-                    prog.funcs[func.0 as usize].name,
-                    prog.funcs[func.0 as usize].ty.display(&classes)
-                ),
-                _ => ty.to_string(),
-            }
-        };
-        walk_block(&f.body, &mut |node| match node {
-            Node::Expr(e) => consider(e.span, describe(e)),
-            Node::Target(span, place) => {
-                let (name, ty) = match place {
-                    hir::Place::Local(l) => {
-                        (&f.locals[l.0 as usize].name, &f.locals[l.0 as usize].ty)
-                    }
-                    hir::Place::Global(g) => (
-                        &prog.globals[g.0 as usize].name,
-                        &prog.globals[g.0 as usize].ty,
-                    ),
-                    _ => return,
-                };
-                consider(span, format!("{name}: {}", ty.display(&classes)));
+    let mut best: Option<(u32, &hir::Func, Node)> = None;
+    for f in &analysis.program.funcs {
+        walk_block(&f.body, &mut |node| {
+            let span = match &node {
+                Node::Expr(e) => e.span,
+                Node::Target(span, _) => *span,
+            };
+            let width = span.hi - span.lo;
+            if span.file == analysis.file
+                && span.lo <= at
+                && at < span.hi.max(span.lo + 1)
+                && best.as_ref().is_none_or(|(w, ..)| width < *w)
+            {
+                best = Some((width, f, node));
             }
         });
     }
-    let (_, text) = best?;
+    best.map(|(_, f, node)| (analysis, f, node))
+}
+
+fn hover(doc: &Document, params: &Json) -> Option<Json> {
+    let (analysis, f, node) = node_at(doc, params)?;
+    let prog = &analysis.program;
+    let classes: Vec<String> = prog.classes.iter().map(|c| c.name.clone()).collect();
+    let named =
+        |name: &str, ty: &crate::check::types::Ty| format!("{name}: {}", ty.display(&classes));
+    let text = match node {
+        Node::Expr(e) => match &e.kind {
+            hir::ExprKind::Local(l) => named(&f.locals[l.0 as usize].name, &e.ty),
+            hir::ExprKind::Global(g) => named(&prog.globals[g.0 as usize].name, &e.ty),
+            hir::ExprKind::Func { func, .. } => named(
+                &prog.funcs[func.0 as usize].name,
+                &prog.funcs[func.0 as usize].ty,
+            ),
+            _ => e.ty.display(&classes).to_string(),
+        },
+        Node::Target(_, hir::Place::Local(l)) => {
+            named(&f.locals[l.0 as usize].name, &f.locals[l.0 as usize].ty)
+        }
+        Node::Target(_, hir::Place::Global(g)) => named(
+            &prog.globals[g.0 as usize].name,
+            &prog.globals[g.0 as usize].ty,
+        ),
+        Node::Target(..) => return None,
+    };
     Some(json!({ "contents": { "kind": "markdown", "value": format!("```novo\n{text}\n```") } }))
+}
+
+fn definition(doc: &Document, params: &Json) -> Option<Json> {
+    let (analysis, f, node) = node_at(doc, params)?;
+    let prog = &analysis.program;
+    let span = match node {
+        Node::Expr(e) => match &e.kind {
+            hir::ExprKind::Local(l) => f.locals[l.0 as usize].span,
+            hir::ExprKind::Global(g) => prog.globals[g.0 as usize].span,
+            hir::ExprKind::Func { func, .. }
+            | hir::ExprKind::CallFunc { func, .. }
+            | hir::ExprKind::Closure { func, .. } => prog.funcs[func.0 as usize].span,
+            hir::ExprKind::New { class, .. } => prog.classes[class.0 as usize].span,
+            _ => return None,
+        },
+        Node::Target(_, hir::Place::Local(l)) => f.locals[l.0 as usize].span,
+        Node::Target(_, hir::Place::Global(g)) => prog.globals[g.0 as usize].span,
+        Node::Target(..) => return None,
+    };
+    let file = analysis.sources.files().nth(span.file.0 as usize)?;
+    if span == Span::default() || file.path.to_string_lossy().starts_with('<') {
+        return None;
+    }
+    let uri = if span.file == analysis.file {
+        str_at(params, &["textDocument", "uri"])
+    } else {
+        path_to_uri(&file.path)
+    };
+    Some(json!({ "uri": uri, "range": range(&analysis.sources, span) }))
 }
 
 enum Node<'a> {

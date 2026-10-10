@@ -1,8 +1,8 @@
 # Novo for Visual Studio Code
 
 Syntax highlighting for `.nv` files, plus the Novo language server: type errors
-as you type, the type of whatever is under the cursor on hover, and Format
-Document.
+as you type, the type of whatever is under the cursor on hover, Go to
+Definition, and Format Document.
 
 The language server is `novo lsp`, so `novo` must be on your `PATH`, or set
 `novo.path` to the executable.

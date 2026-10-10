@@ -112,6 +112,14 @@ fn diagnostics_hover_and_formatting() {
     );
     assert_eq!(hover["contents"]["value"], "```novo\ncount: Int\n```");
 
+    let def = server.request(
+        6,
+        "textDocument/definition",
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 1, "character": 11 } }),
+    );
+    assert_eq!(def["uri"], uri);
+    assert_eq!(def["range"]["start"], json!({ "line": 0, "character": 0 }));
+
     let edits = server.request(4, "textDocument/formatting", json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 4, "insertSpaces": true } }));
     assert_eq!(edits[0]["newText"], "names = [\"a\"]\ncount = len(names)\n");
 

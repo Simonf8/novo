@@ -195,7 +195,9 @@ impl Checker {
             self.error(Diagnostic::error(value.span, msg));
             return;
         }
-        let tmp = self.ctx().add_local("<tuple>", value.ty.clone());
+        let tmp = self
+            .ctx()
+            .add_local("<tuple>", value.ty.clone(), Span::default());
         out.push(hir::Stmt {
             kind: StmtKind::Assign {
                 place: Place::Local(tmp),
@@ -345,7 +347,7 @@ impl Checker {
             ast::StmtKind::Repeat { count, body } => {
                 let count = self.infer_expr(count);
                 let count = self.coerce(count, &Ty::Int);
-                let it = self.ctx().add_local("it", Ty::Int);
+                let it = self.ctx().add_local("it", Ty::Int, Span::default());
                 self.ctx().scopes.push(("it".into(), it));
                 let body = self.in_loop(|c| c.check_block(body));
                 self.ctx().scopes.pop();
@@ -374,7 +376,9 @@ impl Checker {
                     }
                 } else {
                     let item = self.infer.fresh();
-                    let tmp = self.ctx().add_local("<item>", item.clone());
+                    let tmp = self
+                        .ctx()
+                        .add_local("<item>", item.clone(), Span::default());
                     self.add_constraint(Constraint::Iter {
                         iterable: iter.ty.clone(),
                         item: item.clone(),
@@ -581,7 +585,7 @@ impl Checker {
             }
             None => {
                 let ty = self.infer.fresh();
-                let l = self.ctx().add_local(name, ty);
+                let l = self.ctx().add_local(name, ty, span);
                 self.ctx().names.insert(name.to_string(), l);
                 Some(Place::Local(l))
             }
@@ -691,7 +695,7 @@ impl Checker {
                 Some(t) => self.resolve_type(t),
                 None => self.infer.fresh(),
             };
-            let local = ctx.add_local(&p.name.name, ty.clone());
+            let local = ctx.add_local(&p.name.name, ty.clone(), p.name.span);
             ctx.names.insert(p.name.name.clone(), local);
             param_tys.push(ty);
         }

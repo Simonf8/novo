@@ -1032,7 +1032,7 @@ impl Checker {
                 Some(t) => self.resolve_type(t),
                 None => self.infer.fresh(),
             };
-            let local = ctx.add_local(&p.name, ty.clone());
+            let local = ctx.add_local(&p.name, ty.clone(), p.span);
             ctx.names.insert(p.name.clone(), local);
             param_tys.push(ty);
         }
@@ -1089,6 +1089,7 @@ impl Checker {
             locals: ctx.locals,
             body,
             ty: ty.clone(),
+            span,
         });
         expr(ExprKind::Closure { func, captures }, ty, span)
     }
@@ -1114,7 +1115,7 @@ impl Checker {
             );
             self.error(Diagnostic::error(target.span, msg));
         }
-        let item = self.ctx().add_local("it", item_ty.clone());
+        let item = self.ctx().add_local("it", item_ty.clone(), Span::default());
         if parallel && op == QueryOp::Select {
             return self.parallel_select(target, item, item_ty, body, span);
         }
@@ -1172,7 +1173,7 @@ impl Checker {
             is_closure: true,
             ..FnCtx::default()
         };
-        let param = ctx.add_local("it", item_ty.clone());
+        let param = ctx.add_local("it", item_ty.clone(), Span::default());
         self.stack.push(ctx);
         let value = match body {
             Some(b) => self.query_body(b, param, &item_ty),
