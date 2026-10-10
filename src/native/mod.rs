@@ -110,6 +110,7 @@ impl Entry {
                         message,
                         span,
                         trace: Vec::new(),
+                        value: None,
                     });
                 }
             });

@@ -11,6 +11,7 @@ mod tensor;
 mod tokenize;
 pub mod value;
 
+use crate::check::builtins::Builtin;
 use crate::check::hir::{self, Block, ExprKind, FuncId, ModuleId, Place, Program, StmtKind};
 use crate::check::types::Ty;
 use crate::source::Span;
@@ -35,6 +36,8 @@ pub struct RtError {
     pub span: Span,
     /// Calls the error passed through, innermost first: the function and where it was called.
     pub trace: Vec<(String, Span)>,
+    /// The value given to `fail`, when it was not a message.
+    pub value: Option<Value>,
 }
 
 const MAX_TRACE: usize = 24;
@@ -127,6 +130,7 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
             message: "the interpreter panicked".into(),
             span: Span::default(),
             trace: Vec::new(),
+            value: None,
         })
     })
 }
@@ -183,6 +187,7 @@ fn fail<T>(message: impl Into<String>, span: Span) -> Result<T, RtError> {
         message: message.into(),
         span,
         trace: Vec::new(),
+        value: None,
     })
 }
 
@@ -196,6 +201,7 @@ impl<T> At<T> for Result<T, String> {
             message,
             span,
             trace: Vec::new(),
+            value: None,
         })
     }
 }
@@ -512,11 +518,18 @@ impl Interp {
             }
             StmtKind::Break => return Ok(Flow::Break),
             StmtKind::Continue => return Ok(Flow::Continue),
-            StmtKind::Try { body, var, handler } => match self.exec_block(body, frame) {
+            StmtKind::Try { body, catches } => match self.exec_block(body, frame) {
                 Ok(flow) => return Ok(flow),
                 Err(e) => {
-                    self.store(var, Value::Str(e.message.into()), frame)?;
-                    return self.exec_block(handler, frame);
+                    let Some(c) = catches.iter().find(|c| catches_error(c, &e)) else {
+                        return Err(e);
+                    };
+                    let caught = match (c.classes.is_empty(), e.value) {
+                        (false, Some(v)) => v,
+                        _ => Value::Str(e.message.into()),
+                    };
+                    self.store(&c.var, caught, frame)?;
+                    return self.exec_block(&c.body, frame);
                 }
             },
             StmtKind::InitModule(m) => self.init_module(*m, stmt.span)?,
@@ -819,7 +832,7 @@ impl Interp {
             }
             ExprKind::CallBuiltin { builtin, args } => {
                 let args = self.eval_all(args, frame)?;
-                self.call_builtin(*builtin, args).at(span)?
+                self.builtin_at(*builtin, args, span)?
             }
             ExprKind::MethodCall { recv, name, args } => {
                 let obj = self.eval(recv, frame)?;
@@ -946,6 +959,21 @@ impl Interp {
             .map_err(|e| e.to_string())
             .at(span)?;
         Ok(Value::Task(handle))
+    }
+
+    /// Calls a builtin; `fail` with an instance raises an error carrying it.
+    pub(crate) fn builtin_at(&self, b: Builtin, args: Vec<Value>, span: Span) -> Eval {
+        if b == Builtin::Fail
+            && let Some(v @ Value::Instance(_)) = args.first()
+        {
+            return Err(RtError {
+                message: v.display(&self.prog),
+                span,
+                trace: Vec::new(),
+                value: Some(v.clone()),
+            });
+        }
+        self.call_builtin(b, args).at(span)
     }
 
     pub(crate) fn call_method(
@@ -1119,6 +1147,14 @@ impl Interp {
                 self.call_builtin(b, vec![Value::list(mapped)]).at(span)?
             }
         })
+    }
+}
+
+fn catches_error(c: &hir::Catch, e: &RtError) -> bool {
+    match &e.value {
+        _ if c.classes.is_empty() => true,
+        Some(Value::Instance(i)) => c.classes.contains(&i.class),
+        _ => false,
     }
 }
 

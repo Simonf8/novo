@@ -62,6 +62,7 @@ impl Session {
             &std::env::current_dir().unwrap_or_default().join("<repl>"),
         );
         let run = c.check_top_level(self.module, &module.stmts);
+        c.check_conformance();
         c.solve_deferred();
         if !c.diags.is_empty() {
             mark.rollback(c, self.module);

@@ -30,6 +30,10 @@ A variable's type is fixed by its first assignment. Assigning a `Float` to an
 Named functions are generic: `function apply(f, x) => f(x)` works for any `f`
 and `x` that fit. Parameters and return types are inferred from use.
 
+Type parameters name the types a generic function relates, so annotations can
+say that two values share a type: `function first[T](xs: List[T]) -> T`. Each
+call picks its own `T`.
+
 `Any` is the escape hatch for data whose shape is only known at run time: JSON
 documents and Python objects. Any operation on an `Any` is checked when it
 runs, and an `Any` can be passed wherever a concrete type is expected, with a
@@ -125,6 +129,29 @@ instance from the defaults; fields can be set positionally, in declaration
 order, or by name: `Counter(value=5)`. Methods see the instance as `self`.
 Instances are shared by reference.
 
+## Interfaces
+
+An interface names methods that several classes provide:
+
+```
+interface Shape:
+    function area() -> Float
+
+class Square(Shape):
+    side: Float
+
+    function area() -> Float:
+        return self.side * self.side
+```
+
+A class lists the interfaces it implements in parentheses, and the checker
+confirms it has each method with a matching type. An instance of the class
+can be used wherever the interface is expected (`shapes: List[Shape] = []`,
+`function total(s: Shape)`), and calls through the interface go to the
+instance's own method. Interfaces cannot be created directly. Unannotated
+parameters in an interface method are `Any`, and a missing return type means
+`None`.
+
 ## Enums and match
 
 An enum lists the forms a value can take, each with its own named values:
@@ -162,6 +189,22 @@ Run-time errors (division by zero, a bad index, a failed `assert`, a call to
 `fail(message)`) unwind to the nearest `try`. In `catch e`, `e` is the error
 message as a `String`. Uncaught errors print a diagnostic and exit with
 status 1.
+
+`fail` also takes an instance of a class or enum, and `catch Type as e`
+catches only errors raised with that type, binding the instance:
+
+```
+try:
+    load(path)
+catch ParseError as e:
+    show "line", e.line
+catch e:
+    show "other error:", e
+```
+
+Clauses are tried in order; a plain `catch e` must come last. An error no
+clause handles keeps unwinding with its original location. A caught name is
+only visible inside its clause.
 
 ## Modules
 

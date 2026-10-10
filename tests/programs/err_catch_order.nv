@@ -1,0 +1,10 @@
+# expect-error: this `catch` handles every error
+class Oops:
+    code: Int
+
+try:
+    fail(Oops(1))
+catch e:
+    show e
+catch Oops as o:
+    show o.code

@@ -89,10 +89,12 @@ fn stmt(s: &hir::Stmt, out: &mut HashSet<GlobalId>) {
             block(body, out);
         }
         StmtKind::Return(Some(e)) => expr(e, out),
-        StmtKind::Try { body, var, handler } => {
+        StmtKind::Try { body, catches } => {
             block(body, out);
-            place(var, out);
-            block(handler, out);
+            for c in catches {
+                place(&c.var, out);
+                block(&c.body, out);
+            }
         }
         StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::InitModule(_) => {
         }

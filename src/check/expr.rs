@@ -761,6 +761,13 @@ impl Checker {
 
     fn construct(&mut self, c: ClassId, args: Vec<Arg>, span: Span) -> hir::Expr {
         let class = &self.classes[c.0 as usize];
+        if class.interface.is_some() {
+            let msg = format!("`{}` is an interface and cannot be created", class.name);
+            self.error(
+                Diagnostic::error(span, msg).with_help("create a class that implements it instead"),
+            );
+            return error_expr(span);
+        }
         if let Some(first) = class.variants.first() {
             let msg = format!(
                 "`{}` is an enum; create one of its variants instead",
@@ -814,7 +821,9 @@ impl Checker {
         args: Vec<Arg>,
         span: Span,
     ) -> hir::Expr {
-        if let Ty::Class(c) = self.infer.shallow(&recv.ty) {
+        if let Ty::Class(c) = self.infer.shallow(&recv.ty)
+            && self.classes[c.0 as usize].interface.is_none()
+        {
             let class = &self.classes[c.0 as usize];
             if let Some(m) = class
                 .methods
@@ -1071,7 +1080,18 @@ impl Checker {
                 if !arity(self, 1, 1) {
                     return error_expr(span);
                 }
-                self.unify_at(args[0].span, &Ty::Str, &args[0].ty);
+                match self.infer.shallow(&args[0].ty) {
+                    Ty::Class(c) if self.classes[c.0 as usize].interface.is_none() => {}
+                    t => {
+                        if !self.infer.unify(&Ty::Str, &t) {
+                            let msg = format!(
+                                "`fail` takes a message or an instance of a class or enum, not `{}`",
+                                self.show(&t)
+                            );
+                            self.error(Diagnostic::error(args[0].span, msg));
+                        }
+                    }
+                }
                 self.infer.fresh()
             }
             _ => unreachable!("builtin `{}` has a fixed signature", b.name()),

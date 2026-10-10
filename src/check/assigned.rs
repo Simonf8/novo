@@ -161,11 +161,14 @@ impl Pass<'_> {
                 None
             }
             StmtKind::Continue => None,
-            StmtKind::Try { body, var, handler } => {
-                let after_body = self.block(body, state.clone());
-                let mut caught = state;
-                Self::assign(var, &mut caught);
-                meet(after_body, self.block(handler, caught))
+            StmtKind::Try { body, catches } => {
+                let mut after = self.block(body, state.clone());
+                for c in catches {
+                    let mut caught = state.clone();
+                    Self::assign(&c.var, &mut caught);
+                    after = meet(after, self.block(&c.body, caught));
+                }
+                after
             }
             StmtKind::InitModule(_) => state,
         }

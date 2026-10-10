@@ -135,10 +135,19 @@ pub enum StmtKind {
     Continue,
     Try {
         body: Block,
-        var: Place,
-        handler: Block,
+        catches: Vec<Catch>,
     },
     InitModule(ModuleId),
+}
+
+/// A `catch` clause. With no classes it catches every error and stores its
+/// message; otherwise it catches errors raised with an instance of one of
+/// `classes` and stores that instance.
+#[derive(Debug, Clone)]
+pub struct Catch {
+    pub classes: Vec<ClassId>,
+    pub var: Place,
+    pub body: Block,
 }
 
 #[derive(Debug, Clone)]

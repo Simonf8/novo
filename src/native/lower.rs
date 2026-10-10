@@ -789,7 +789,7 @@ impl Lower<'_, '_> {
                 self.b.ins().jump(target, &[]);
                 self.after_jump();
             }
-            StmtKind::Try { body, var, handler } => {
+            StmtKind::Try { body, catches } => {
                 let catch = self.b.create_block();
                 let done = self.b.create_block();
                 let try_mark = self.c.helpers.try_mark;
@@ -801,14 +801,38 @@ impl Lower<'_, '_> {
                     self.b.ins().jump(done, &[]);
                 }
                 self.b.switch_to_block(catch);
-                let message = self.temp();
-                let take = self.c.helpers.take_error;
-                self.call(take, &[self.ctx, message, mark]);
-                self.store(var, Val::O(message, true), span)?;
-                self.block(handler)?;
-                if !self.terminated() {
-                    self.b.ins().jump(done, &[]);
+                for c in catches {
+                    let next = self.b.create_block();
+                    if !c.classes.is_empty() {
+                        let matched = self.b.create_block();
+                        let error_is = self.c.helpers.error_is;
+                        for class in &c.classes {
+                            let id = self.i32const(class.0);
+                            let is = self
+                                .call(error_is, &[self.ctx, id])
+                                .expect("returns a flag");
+                            let more = self.b.create_block();
+                            self.b.ins().brif(is, matched, &[], more, &[]);
+                            self.b.switch_to_block(more);
+                        }
+                        self.b.ins().jump(next, &[]);
+                        self.b.switch_to_block(matched);
+                    }
+                    let caught = self.temp();
+                    let take = self.c.helpers.take_error;
+                    let typed = self
+                        .b
+                        .ins()
+                        .iconst(types::I8, i64::from(!c.classes.is_empty()));
+                    self.call(take, &[self.ctx, caught, mark, typed]);
+                    self.store(&c.var, Val::O(caught, true), span)?;
+                    self.block(&c.body)?;
+                    if !self.terminated() {
+                        self.b.ins().jump(done, &[]);
+                    }
+                    self.b.switch_to_block(next);
                 }
+                self.b.ins().jump(self.fail, &[]);
                 self.b.switch_to_block(done);
             }
             StmtKind::InitModule(m) => {

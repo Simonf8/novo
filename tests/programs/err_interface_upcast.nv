@@ -1,0 +1,11 @@
+# expect-error: expected `Animal`, found `Rock`
+interface Animal:
+    function speak() -> String
+
+class Rock:
+    weight: Int
+
+function talk(a: Animal) -> String:
+    return a.speak()
+
+show talk(Rock(1))

@@ -39,10 +39,11 @@ pub(super) fn assigned_names(block: &[ast::Stmt], out: &mut Vec<ast::Ident>) {
                 }
                 assigned_names(body, out);
             }
-            ast::StmtKind::Try { body, var, handler } => {
+            ast::StmtKind::Try { body, catches } => {
                 assigned_names(body, out);
-                add(var, out);
-                assigned_names(handler, out);
+                for c in catches {
+                    assigned_names(&c.body, out);
+                }
             }
             ast::StmtKind::Match { arms, .. } => {
                 for arm in arms {
@@ -114,10 +115,11 @@ pub(super) fn count_assignments(
                 vars.iter().for_each(|v| add(&v.name, names));
                 count_assignments(body, names, returns);
             }
-            ast::StmtKind::Try { body, var, handler } => {
+            ast::StmtKind::Try { body, catches } => {
                 count_assignments(body, names, returns);
-                add(&var.name, names);
-                count_assignments(handler, names, returns);
+                for c in catches {
+                    count_assignments(&c.body, names, returns);
+                }
             }
             ast::StmtKind::Match { arms, .. } => {
                 for arm in arms {
@@ -143,7 +145,9 @@ pub(super) fn always_returns(block: &[ast::Stmt]) -> bool {
             branches,
             otherwise: Some(otherwise),
         } => branches.iter().all(|(_, b)| always_returns(b)) && always_returns(otherwise),
-        ast::StmtKind::Try { body, handler, .. } => always_returns(body) && always_returns(handler),
+        ast::StmtKind::Try { body, catches } => {
+            always_returns(body) && catches.iter().all(|c| always_returns(&c.body))
+        }
         // A match without `_` covers every case only when it matches an enum's
         // variants, which the checker requires to be exhaustive.
         ast::StmtKind::Match { arms, .. } => {
@@ -174,7 +178,9 @@ fn breaks(block: &[ast::Stmt]) -> bool {
             branches,
             otherwise,
         } => branches.iter().any(|(_, b)| breaks(b)) || otherwise.as_deref().is_some_and(breaks),
-        ast::StmtKind::Try { body, handler, .. } => breaks(body) || breaks(handler),
+        ast::StmtKind::Try { body, catches } => {
+            breaks(body) || catches.iter().any(|c| breaks(&c.body))
+        }
         _ => false,
     })
 }
@@ -480,6 +486,15 @@ impl Checker {
                 }
                 return None;
             }
+            ast::StmtKind::Interface { name, .. } => {
+                if !self.is_module_level() {
+                    self.error(Diagnostic::error(
+                        name.span,
+                        "interfaces must be defined at the top level",
+                    ));
+                }
+                return None;
+            }
             ast::StmtKind::Return(value) => {
                 let Some(ret) = self.ctx().ret.clone() else {
                     self.error(Diagnostic::error(span, "`return` outside of a function"));
@@ -526,17 +541,50 @@ impl Checker {
                 }
             }
             ast::StmtKind::Pass => return None,
-            ast::StmtKind::Try { body, var, handler } => {
+            ast::StmtKind::Try { body, catches } => {
                 let body = self.check_block(body);
-                let place = self.name_place(&var.name, var.span)?;
-                let place_ty = self.place_ty(&place, var.span);
-                self.unify_at(var.span, &Ty::Str, &place_ty);
-                let handler = self.check_block(handler);
-                StmtKind::Try {
-                    body,
-                    var: place,
-                    handler,
+                let mut out = Vec::new();
+                for (i, c) in catches.iter().enumerate() {
+                    if c.ty.is_none() && i + 1 < catches.len() {
+                        self.error(
+                            Diagnostic::error(c.var.span, "this `catch` handles every error")
+                                .with_help("put it after the `catch` clauses for specific types"),
+                        );
+                    }
+                    let (classes, ty) = match &c.ty {
+                        None => (Vec::new(), Ty::Str),
+                        Some(t) => match self.resolve_type(t) {
+                            Ty::Class(cid) if self.classes[cid.0 as usize].interface.is_none() => {
+                                let variants = &self.classes[cid.0 as usize].variants;
+                                let classes = if variants.is_empty() {
+                                    vec![cid]
+                                } else {
+                                    variants.clone()
+                                };
+                                (classes, Ty::Class(cid))
+                            }
+                            Ty::Any => (Vec::new(), Ty::Any),
+                            other => {
+                                let msg = format!(
+                                    "cannot catch errors by `{}`; name a class or enum",
+                                    self.show(&other)
+                                );
+                                self.error(Diagnostic::error(t.span, msg));
+                                (Vec::new(), Ty::Any)
+                            }
+                        },
+                    };
+                    let var = self.ctx().add_local(&c.var.name, ty, c.var.span);
+                    self.ctx().scopes.push((c.var.name.clone(), var));
+                    let body = self.check_block(&c.body);
+                    self.ctx().scopes.pop();
+                    out.push(hir::Catch {
+                        classes,
+                        var: hir::Place::Local(var),
+                        body,
+                    });
                 }
+                StmtKind::Try { body, catches: out }
             }
             ast::StmtKind::Use(u) => return self.check_use(u, span),
         };
@@ -904,6 +952,7 @@ impl Checker {
             is_closure: true,
             ..FnCtx::default()
         };
+        self.push_type_params(&def.type_params);
         let mut param_tys = Vec::new();
         for p in &def.params {
             if p.default.is_some() {
@@ -931,6 +980,7 @@ impl Checker {
         self.stack.push(ctx);
         let body = self.check_function_body(&def.body, def.name.span, &def.name.name);
         self.solve_pending();
+        self.type_names.pop();
         self.finish_closure(&def.name.name, def.params.len(), fty, body, def.span)
     }
 }

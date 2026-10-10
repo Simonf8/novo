@@ -54,6 +54,7 @@ pub fn analyze(
     let path = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
     checker.files.insert(normalize(&path), text);
     let module = checker.load_module(entry, None);
+    checker.check_conformance();
     checker.solve_deferred();
     let program = match module {
         Some(id) if checker.funcs.iter().all(|f| f.hir.is_some()) => Some(checker.snapshot(id)),
@@ -165,8 +166,27 @@ struct ClassSlot {
     variants: Vec<ClassId>,
     /// For a variant, its enum.
     parent: Option<ClassId>,
+    /// For an interface, the methods it requires and their types.
+    interface: Option<Vec<(String, Ty, Span)>>,
+    /// The interfaces the class implements.
+    implements: Vec<ClassId>,
     fields: Vec<FieldSlot>,
     methods: Vec<(String, FuncId)>,
+}
+
+impl ClassSlot {
+    fn new(name: String, span: Span) -> Self {
+        ClassSlot {
+            name,
+            span,
+            variants: Vec::new(),
+            parent: None,
+            interface: None,
+            implements: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
 }
 
 struct FieldSlot {
@@ -225,6 +245,10 @@ struct Checker {
     files: HashMap<PathBuf, String>,
     /// Named tensor dimensions such as `B` in `Tensor[B, 784]`, one scope per function.
     dim_names: Vec<HashMap<String, Ty>>,
+    /// The type parameters of the functions being checked.
+    type_names: Vec<HashMap<String, Ty>>,
+    /// Classes and the interfaces they claim to implement, waiting to be checked.
+    conformance: Vec<(ClassId, ClassId, Span)>,
     infer: Infer,
     diags: Vec<Diagnostic>,
     funcs: Vec<FuncSlot>,
@@ -242,6 +266,8 @@ impl Checker {
             redefine: false,
             files: HashMap::new(),
             dim_names: Vec::new(),
+            type_names: Vec::new(),
+            conformance: Vec::new(),
             infer: Infer::default(),
             diags: Vec::new(),
             funcs: Vec::new(),
@@ -302,8 +328,77 @@ impl Checker {
                 span,
             };
         }
+        if self.upcasts(&found, expected) {
+            return hir::Expr {
+                ty: self.infer.shallow(expected),
+                ..expr
+            };
+        }
         self.unify_at(expr.span, expected, &found);
         expr
+    }
+
+    /// Whether `found` is a class that implements the interface `expected`.
+    fn upcasts(&self, found: &Ty, expected: &Ty) -> bool {
+        match (self.infer.shallow(found), self.infer.shallow(expected)) {
+            (Ty::Class(c), Ty::Class(i)) => self.classes[c.0 as usize].implements.contains(&i),
+            _ => false,
+        }
+    }
+
+    /// An interface method's type with fresh variables for its type parameters.
+    fn fresh_signature(&mut self, sig: &Ty) -> Ty {
+        let scheme = self.generalize(sig, Vec::new());
+        self.instantiate(&scheme).0
+    }
+
+    /// Checks that each class has the methods of the interfaces it names.
+    fn check_conformance(&mut self) {
+        for (cid, iid, span) in std::mem::take(&mut self.conformance) {
+            let required = self.classes[iid.0 as usize]
+                .interface
+                .clone()
+                .unwrap_or_default();
+            for (name, sig, _) in required {
+                let sig = self.fresh_signature(&sig);
+                let class = &self.classes[cid.0 as usize];
+                let found = class
+                    .methods
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, f)| *f);
+                let Some(fid) = found else {
+                    let msg = format!(
+                        "`{}` does not have the method `{name}` required by `{}`",
+                        class.name, self.classes[iid.0 as usize].name
+                    );
+                    self.error(Diagnostic::error(span, msg));
+                    continue;
+                };
+                let scheme = self.func_scheme(fid);
+                let (fty, _) = self.instantiate(&scheme);
+                let (Ty::Func(params, ret), Ty::Func(want, want_ret)) = (&fty, &sig) else {
+                    continue;
+                };
+                let fits = params.len() == want.len() + 1
+                    && params[1..]
+                        .iter()
+                        .zip(want)
+                        .all(|(p, w)| self.infer.unify(p, w))
+                    && (self.infer.unify(ret, want_ret) || self.upcasts(ret, want_ret));
+                if !fits {
+                    let shown = Ty::func(params[1..].to_vec(), (**ret).clone());
+                    let msg = format!(
+                        "`{}.{name}` has type `{}`, but `{}` requires `{}`",
+                        self.classes[cid.0 as usize].name,
+                        self.show(&shown),
+                        self.classes[iid.0 as usize].name,
+                        self.show(&sig)
+                    );
+                    self.error(Diagnostic::error(span, msg));
+                }
+            }
+        }
     }
 
     // ---- modules -------------------------------------------------------------------------
@@ -377,6 +472,7 @@ impl Checker {
     fn declare_module(&mut self, id: ModuleId, module: &ast::Module, path: &Path) {
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let mut classes = Vec::new();
+        let mut interfaces = Vec::new();
         for stmt in &module.stmts {
             match &stmt.kind {
                 ast::StmtKind::Function(def) => {
@@ -385,27 +481,15 @@ impl Checker {
                 }
                 ast::StmtKind::Class(def) => {
                     let cid = ClassId(self.classes.len() as u32);
-                    self.classes.push(ClassSlot {
-                        name: def.name.name.clone(),
-                        span: def.name.span,
-                        variants: Vec::new(),
-                        parent: None,
-                        fields: Vec::new(),
-                        methods: Vec::new(),
-                    });
+                    self.classes
+                        .push(ClassSlot::new(def.name.name.clone(), def.name.span));
                     self.define(id, &def.name, Item::Class(cid));
                     classes.push((cid, def.clone()));
                 }
                 ast::StmtKind::Enum(def) => {
                     let eid = ClassId(self.classes.len() as u32);
-                    self.classes.push(ClassSlot {
-                        name: def.name.name.clone(),
-                        span: def.name.span,
-                        variants: Vec::new(),
-                        parent: None,
-                        fields: Vec::new(),
-                        methods: Vec::new(),
-                    });
+                    self.classes
+                        .push(ClassSlot::new(def.name.name.clone(), def.name.span));
                     self.define(id, &def.name, Item::Class(eid));
                     for v in &def.variants {
                         if self.classes[eid.0 as usize]
@@ -422,12 +506,8 @@ impl Checker {
                         }
                         let vid = ClassId(self.classes.len() as u32);
                         self.classes.push(ClassSlot {
-                            name: v.name.name.clone(),
-                            span: v.name.span,
-                            variants: Vec::new(),
                             parent: Some(eid),
-                            fields: Vec::new(),
-                            methods: Vec::new(),
+                            ..ClassSlot::new(v.name.name.clone(), v.name.span)
                         });
                         self.classes[eid.0 as usize].variants.push(vid);
                         let fields = v
@@ -443,11 +523,21 @@ impl Checker {
                             vid,
                             ast::ClassDef {
                                 name: v.name.clone(),
+                                bases: Vec::new(),
                                 fields,
                                 methods: Vec::new(),
                             },
                         ));
                     }
+                }
+                ast::StmtKind::Interface { name, methods } => {
+                    let cid = ClassId(self.classes.len() as u32);
+                    self.classes.push(ClassSlot {
+                        interface: Some(Vec::new()),
+                        ..ClassSlot::new(name.name.clone(), name.span)
+                    });
+                    self.define(id, name, Item::Class(cid));
+                    interfaces.push((cid, methods.clone()));
                 }
                 ast::StmtKind::Use(ast::Use::File { path: rel, alias }) => {
                     if let Some(mid) = self.load_module(&dir.join(rel), Some(stmt.span)) {
@@ -515,6 +605,9 @@ impl Checker {
             });
             self.define(id, &name, Item::Global(gid));
         }
+        for (cid, methods) in interfaces {
+            self.declare_interface(id, cid, &methods);
+        }
         for (cid, def) in classes {
             self.declare_class(id, cid, &def);
         }
@@ -540,6 +633,36 @@ impl Checker {
         id
     }
 
+    fn declare_interface(&mut self, module: ModuleId, cid: ClassId, defs: &[ast::FunctionDef]) {
+        self.stack.push(FnCtx {
+            module: module.0,
+            is_toplevel: true,
+            is_const: true,
+            ..FnCtx::default()
+        });
+        let mut methods: Vec<(String, Ty, Span)> = Vec::new();
+        for m in defs {
+            if methods.iter().any(|(n, ..)| *n == m.name.name) {
+                let msg = format!("`{}` is declared twice in this interface", m.name.name);
+                self.error(Diagnostic::error(m.name.span, msg));
+                continue;
+            }
+            self.dim_names.push(HashMap::new());
+            self.push_type_params(&m.type_params);
+            let params = m
+                .params
+                .iter()
+                .map(|p| p.ty.as_ref().map_or(Ty::Any, |t| self.resolve_type(t)))
+                .collect();
+            let ret = m.ret.as_ref().map_or(Ty::None, |t| self.resolve_type(t));
+            self.type_names.pop();
+            self.dim_names.pop();
+            methods.push((m.name.name.clone(), Ty::func(params, ret), m.name.span));
+        }
+        self.end_const_ctx(self.classes[cid.0 as usize].span);
+        self.classes[cid.0 as usize].interface = Some(methods);
+    }
+
     fn declare_class(&mut self, module: ModuleId, cid: ClassId, def: &ast::ClassDef) {
         self.stack.push(FnCtx {
             module: module.0,
@@ -547,6 +670,21 @@ impl Checker {
             is_const: true,
             ..FnCtx::default()
         });
+        for base in &def.bases {
+            match self.lookup(&base.name) {
+                Some(Resolved::Class(i)) if self.classes[i.0 as usize].interface.is_some() => {
+                    self.classes[cid.0 as usize].implements.push(i);
+                    self.conformance.push((cid, i, base.span));
+                }
+                _ => {
+                    let msg = format!("`{}` is not an interface", base.name);
+                    self.error(
+                        Diagnostic::error(base.span, msg)
+                            .with_help("a class can only name interfaces it implements"),
+                    );
+                }
+            }
+        }
         let mut fields: Vec<FieldSlot> = Vec::new();
         for field in &def.fields {
             if fields.iter().any(|f| f.name == field.name.name) {
@@ -684,6 +822,7 @@ impl Checker {
         };
 
         self.dim_names.push(HashMap::new());
+        self.push_type_params(&def.type_params);
         let mut param_tys = Vec::new();
         if let Some(cid) = class {
             let ty = Ty::Class(cid);
@@ -744,6 +883,7 @@ impl Checker {
         self.solve_pending();
         let ctx = self.stack.pop().unwrap();
         self.dim_names.pop();
+        self.type_names.pop();
 
         self.funcs[id.0 as usize].state = FnState::Pending;
         let scheme = self.generalize(&fty, ctx.pending);
@@ -976,6 +1116,18 @@ impl Checker {
         d
     }
 
+    /// Opens a scope where each of `params` names a fresh type variable.
+    fn push_type_params(&mut self, params: &[ast::Ident]) {
+        let mut scope = HashMap::new();
+        for p in params {
+            if scope.insert(p.name.clone(), self.infer.fresh()).is_some() {
+                let msg = format!("type parameter `{}` is declared twice", p.name);
+                self.error(Diagnostic::error(p.span, msg));
+            }
+        }
+        self.type_names.push(scope);
+    }
+
     fn resolve_type(&mut self, t: &ast::TypeExpr) -> Ty {
         let arity = |c: &mut Self, n: usize| -> bool {
             if t.args.len() != n {
@@ -989,6 +1141,16 @@ impl Checker {
             }
             true
         };
+        if let Some(ty) = self
+            .type_names
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&t.name))
+        {
+            let ty = ty.clone();
+            arity(self, 0);
+            return ty;
+        }
         let simple = match t.name.as_str() {
             "Int" | "int" => Some(Ty::Int),
             "Float" | "float" => Some(Ty::Float),
@@ -1088,6 +1250,7 @@ impl Checker {
     }
 
     fn finish(&mut self, entry: ModuleId) -> Result<hir::Program, Vec<Diagnostic>> {
+        self.check_conformance();
         self.solve_deferred();
         if !self.diags.is_empty() {
             return Err(std::mem::take(&mut self.diags));
@@ -1272,10 +1435,12 @@ impl Zonk<'_> {
                 self.block(body);
             }
             Return(Some(e)) => self.expr(e),
-            Try { body, var, handler } => {
+            Try { body, catches } => {
                 self.block(body);
-                self.place(var);
-                self.block(handler);
+                for c in catches {
+                    self.place(&mut c.var);
+                    self.block(&mut c.body);
+                }
             }
             Return(None) | Break | Continue | InitModule(_) => {}
         }

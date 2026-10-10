@@ -1,0 +1,5 @@
+# expect-error: expected `Int`, found `String`
+function same[T](a: T, b: T) -> T:
+    return a
+
+show same(1, "one")

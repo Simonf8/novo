@@ -1,0 +1,2 @@
+# expect-error: `fail` takes a message or an instance of a class or enum, not `Int`
+fail(3)

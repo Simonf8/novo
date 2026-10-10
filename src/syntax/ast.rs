@@ -53,6 +53,11 @@ pub enum StmtKind {
     Function(FunctionDef),
     Class(ClassDef),
     Enum(EnumDef),
+    /// An interface: method signatures, whose bodies are empty.
+    Interface {
+        name: Ident,
+        methods: Vec<FunctionDef>,
+    },
     Match {
         subject: Expr,
         arms: Vec<MatchArm>,
@@ -63,8 +68,7 @@ pub enum StmtKind {
     Pass,
     Try {
         body: Block,
-        var: Ident,
-        handler: Block,
+        catches: Vec<Catch>,
     },
     Use(Use),
 }
@@ -79,6 +83,8 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub name: Ident,
+    /// Declared type parameters, as in `function first[T](xs: List[T]) -> T`.
+    pub type_params: Vec<Ident>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
     pub body: Block,
@@ -104,6 +110,15 @@ pub struct VariantDef {
     pub fields: Vec<(Ident, TypeExpr)>,
 }
 
+/// `catch e:` catches every error as its message; `catch T as e:` catches
+/// only errors raised with a value of type `T`.
+#[derive(Debug, Clone)]
+pub struct Catch {
+    pub ty: Option<TypeExpr>,
+    pub var: Ident,
+    pub body: Block,
+}
+
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
@@ -123,6 +138,8 @@ pub enum Pattern {
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: Ident,
+    /// The interfaces the class implements.
+    pub bases: Vec<Ident>,
     pub fields: Vec<FieldDef>,
     pub methods: Vec<FunctionDef>,
 }

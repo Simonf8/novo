@@ -93,6 +93,7 @@ impl Ctx {
                     message,
                     span: unpack(span),
                     trace: Vec::new(),
+                    value: None,
                 });
                 None
             }
@@ -149,6 +150,7 @@ unsafe extern "C" fn novo_fail(c: *mut Ctx, code: u32, span: u64) {
         message: message(code).to_string(),
         span: unpack(span),
         trace: Vec::new(),
+        value: None,
     });
 }
 
@@ -159,6 +161,7 @@ unsafe extern "C" fn novo_fail_msg(c: *mut Ctx, ptr: *const u8, len: usize, span
         message,
         span: unpack(span),
         trace: Vec::new(),
+        value: None,
     });
 }
 
@@ -479,9 +482,9 @@ unsafe extern "C" fn novo_builtin(
     let args = unsafe { values(args, n) };
     let interp = c.interp();
     let result = Interp::at_depth(c.depth as usize, || {
-        interp.call_builtin(Builtin::ALL[id as usize], args)
+        interp.builtin_at(Builtin::ALL[id as usize], args, unpack(span))
     });
-    if let Some(v) = c.check(result, span) {
+    if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = v;
     }
 }
@@ -973,13 +976,27 @@ unsafe extern "C" fn novo_through(c: *mut Ctx, func: u32, span: u64) {
     }
 }
 
-unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value, mark: u64) {
+/// Clears the pending error and stores its message, or with `typed` set the
+/// value it was raised with.
+unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value, mark: u64, typed: u8) {
     let c = unsafe { ctx(c) };
     c.status = 0;
     c.line.truncate((mark & 0xFFFF_FFFF) as usize);
     c.fstrings.truncate((mark >> 32) as usize);
-    let message = c.error.take().map(|e| e.message).unwrap_or_default();
-    *unsafe { slot(dst) } = Value::Str(message.into());
+    let caught = match c.error.take() {
+        Some(RtError { value: Some(v), .. }) if typed != 0 => v,
+        e => Value::Str(e.map(|e| e.message).unwrap_or_default().into()),
+    };
+    *unsafe { slot(dst) } = caught;
+}
+
+/// Whether the pending error was raised with an instance of `class`.
+unsafe extern "C" fn novo_error_is(c: *mut Ctx, class: u32) -> u8 {
+    let c = unsafe { ctx(c) };
+    u8::from(matches!(
+        &c.error,
+        Some(RtError { value: Some(Value::Instance(i)), .. }) if i.class.0 == class
+    ))
 }
 
 unsafe extern "C" fn novo_init_module(c: *mut Ctx, m: u32, span: u64) {
@@ -1165,7 +1182,8 @@ helpers! {
     parallel_map = novo_parallel_map(I64, I64, I64, I64, I64);
     try_mark = novo_try_mark(I64) -> I64;
     through = novo_through(I64, I32, I64);
-    take_error = novo_take_error(I64, I64, I64);
+    take_error = novo_take_error(I64, I64, I64, I8);
+    error_is = novo_error_is(I64, I32) -> I8;
     init_module = novo_init_module(I64, I32, I64);
     eval_closed = novo_eval_closed(I64, I64, I64);
     together = novo_together(I64, I64, I64, I64);

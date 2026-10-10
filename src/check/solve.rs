@@ -224,7 +224,7 @@ impl Checker {
         if self.infer.shallow(arg) == Ty::Int && self.infer.shallow(param) == Ty::Float {
             return true;
         }
-        self.infer.unify(param, arg)
+        self.upcasts(arg, param) || self.infer.unify(param, arg)
     }
 
     fn mismatch_diag(&self, span: Span, expected: &Ty, found: &Ty) -> Diagnostic {
@@ -650,6 +650,34 @@ impl Checker {
         match &recv {
             Ty::Var(_) => Outcome::Wait,
             Ty::Any => self.settle(out, &Ty::Any, span),
+            Ty::Class(cid) if self.classes[cid.0 as usize].interface.is_some() => {
+                match self.interface_method(*cid, name) {
+                    Some(Ty::Func(params, ret)) => {
+                        if args.len() != params.len() {
+                            return Outcome::Fail(arity_error(
+                                span,
+                                name,
+                                params.len(),
+                                params.len(),
+                                args.len(),
+                            ));
+                        }
+                        for (p, a) in params.iter().zip(args) {
+                            if !self.unify_arg(p, a) {
+                                return Outcome::Fail(self.mismatch_diag(span, p, a));
+                            }
+                        }
+                        self.settle(out, &ret, span)
+                    }
+                    _ => Outcome::Fail(Diagnostic::error(
+                        span,
+                        format!(
+                            "`{}` has no method `{name}`",
+                            self.classes[cid.0 as usize].name
+                        ),
+                    )),
+                }
+            }
             Ty::Class(cid) => {
                 let class = &self.classes[cid.0 as usize];
                 if let Some((_, fid)) = class.methods.iter().find(|(m, _)| m == name) {
@@ -739,6 +767,17 @@ impl Checker {
 }
 
 impl Checker {
+    /// The type of an interface's method, fresh for one call.
+    pub(super) fn interface_method(&mut self, iid: super::ClassId, name: &str) -> Option<Ty> {
+        let sig = self.classes[iid.0 as usize]
+            .interface
+            .as_ref()?
+            .iter()
+            .find(|(n, ..)| n == name)
+            .map(|(_, t, _)| t.clone())?;
+        Some(self.fresh_signature(&sig))
+    }
+
     /// A type with tensor shapes forgotten, unless it is not yet known.
     pub(super) fn unshaped(&self, ty: &Ty) -> Ty {
         match self.infer.shallow(ty) {

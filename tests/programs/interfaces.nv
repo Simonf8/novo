@@ -1,0 +1,51 @@
+interface Shape:
+    function area() -> Float
+    function name() -> String
+
+class Circle(Shape):
+    radius: Float
+
+    function area() -> Float:
+        return 3.0 * self.radius * self.radius
+
+    function name() -> String:
+        return "circle"
+
+class Square(Shape):
+    side: Float
+
+    function area() -> Float:
+        return self.side * self.side
+
+    function name() -> String:
+        return f"square of side {self.side}"
+
+function describe(s: Shape) -> String:
+    return f"{s.name()} with area {s.area()}"
+
+shapes: List[Shape] = []
+shapes.push(Circle(1.0))
+shapes.push(Square(2.0))
+total = 0.0
+for s in shapes:
+    show describe(s)
+    total += s.area()
+show total
+
+function largest(xs: List[Shape]) -> Shape:
+    best = xs[0]
+    for x in xs:
+        if x.area() > best.area():
+            best = x
+    return best
+
+show largest(shapes).name()
+
+function first[T](xs: List[T]) -> T:
+    return xs[0]
+
+function pair[A, B](a: A, b: B) -> Tuple[A, B]:
+    return (a, b)
+
+show first([3, 1, 2]), first(["a", "b"])
+show pair(1, "one"), pair(true, 2.5)

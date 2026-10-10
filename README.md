@@ -123,11 +123,27 @@ evens = range(10) where it % 2 == 0
 show evens select it * it               # [0, 4, 16, 36, 64]
 show evens sum                          # 20
 
-# Errors
+# Errors carry a message or a value of your own type.
+class NotFound:
+    path: String
+
 try:
-    show 10 // 0
+    fail(NotFound("data.csv"))
+catch NotFound as e:
+    show "missing", e.path              # missing data.csv
 catch e:
-    show "caught:", e                   # caught: division by zero
+    show "caught:", e
+
+# Interfaces and type parameters
+interface Shape:
+    function area() -> Float
+
+class Square(Shape):
+    side: Float
+    function area() -> Float => self.side * self.side
+
+function first[T](xs: List[T]) -> T => xs[0]
+show first([Square(2.0)]).area()        # 4.0
 
 # Concurrency
 task square(n) => n * n

@@ -193,15 +193,31 @@ impl<'a> Parser<'a> {
             Tok::Ident(w) if w == "match" && self.starts_block_statement() => {
                 self.match_statement()
             }
+            Tok::Ident(w)
+                if w == "interface"
+                    && matches!(self.peek_nth(1), Tok::Ident(_))
+                    && *self.peek_nth(2) == Tok::Colon =>
+            {
+                self.interface_def()
+            }
             Tok::Try => {
                 self.bump();
                 let body = self.block()?;
                 self.skip_newlines();
                 self.expect(&Tok::Catch, "after the try block")?;
-                let var = self.ident("for the caught error")?;
-                let handler = self.block()?;
+                let mut catches = vec![self.catch_clause()?];
+                loop {
+                    let save = self.pos;
+                    self.skip_newlines();
+                    if self.eat(&Tok::Catch) {
+                        catches.push(self.catch_clause()?);
+                    } else {
+                        self.pos = save;
+                        break;
+                    }
+                }
                 Ok(Stmt {
-                    kind: StmtKind::Try { body, var, handler },
+                    kind: StmtKind::Try { body, catches },
                     span: lo.to(self.prev_span()),
                 })
             }
@@ -388,10 +404,20 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn function_def(&mut self) -> PResult<FunctionDef> {
-        let lo = self.span();
+    /// A function's name, type parameters, parameters and return type.
+    fn function_header(&mut self) -> PResult<(Ident, Vec<Ident>, Vec<Param>, Option<TypeExpr>)> {
         self.bump();
         let name = self.ident("for the function")?;
+        let mut type_params = Vec::new();
+        if self.eat(&Tok::LBracket) {
+            loop {
+                type_params.push(self.ident("for the type parameter")?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RBracket, "to close the type parameters")?;
+        }
         self.expect(&Tok::LParen, "to start the parameter list")?;
         let mut params = Vec::new();
         while !self.at(&Tok::RParen) {
@@ -421,6 +447,12 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        Ok((name, type_params, params, ret))
+    }
+
+    fn function_def(&mut self) -> PResult<FunctionDef> {
+        let lo = self.span();
+        let (name, type_params, params, ret) = self.function_header()?;
         let body = if self.at(&Tok::FatArrow) {
             let arrow = self.bump().span;
             let value = self.expression()?;
@@ -435,9 +467,62 @@ impl<'a> Parser<'a> {
         };
         Ok(FunctionDef {
             name,
+            type_params,
             params,
             ret,
             body,
+            span: lo.to(self.prev_span()),
+        })
+    }
+
+    fn interface_def(&mut self) -> PResult<Stmt> {
+        let lo = self.span();
+        self.bump();
+        let name = self.ident("for the interface")?;
+        self.expect(&Tok::Colon, "after the interface name")?;
+        self.expect(&Tok::Newline, "after `:`")?;
+        self.skip_newlines();
+        if !self.eat(&Tok::Indent) {
+            return Err(self.unexpected("expected indented method signatures"));
+        }
+        let mut methods = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&Tok::Dedent) || self.at(&Tok::Eof) {
+                break;
+            }
+            match self.peek() {
+                Tok::Function => {
+                    let start = self.span();
+                    let (mname, type_params, params, ret) = self.function_header()?;
+                    if self.at(&Tok::Colon) || self.at(&Tok::FatArrow) {
+                        return Err(
+                            self.unexpected("an interface lists method signatures without bodies")
+                        );
+                    }
+                    self.end_of_statement()?;
+                    methods.push(FunctionDef {
+                        name: mname,
+                        type_params,
+                        params,
+                        ret,
+                        body: Vec::new(),
+                        span: start.to(self.prev_span()),
+                    });
+                }
+                Tok::Pass => {
+                    self.bump();
+                    self.end_of_statement()?;
+                }
+                _ => {
+                    return Err(self.unexpected(
+                        "expected a method signature such as `function name(x: Int) -> Int`",
+                    ));
+                }
+            }
+        }
+        Ok(Stmt {
+            kind: StmtKind::Interface { name, methods },
             span: lo.to(self.prev_span()),
         })
     }
@@ -581,6 +666,16 @@ impl<'a> Parser<'a> {
         let lo = self.span();
         self.bump();
         let name = self.ident("for the class")?;
+        let mut bases = Vec::new();
+        if self.eat(&Tok::LParen) {
+            while !self.eat(&Tok::RParen) {
+                bases.push(self.ident("for an interface the class implements")?);
+                if !self.eat(&Tok::Comma) {
+                    self.expect(&Tok::RParen, "to close the list of interfaces")?;
+                    break;
+                }
+            }
+        }
         self.expect(&Tok::Colon, "after the class name")?;
         self.expect(&Tok::Newline, "after `:`")?;
         self.skip_newlines();
@@ -636,11 +731,30 @@ impl<'a> Parser<'a> {
         Ok(Stmt {
             kind: StmtKind::Class(ClassDef {
                 name,
+                bases,
                 fields,
                 methods,
             }),
             span,
         })
+    }
+
+    /// The rest of a `catch` clause: `e:` or `Type as e:`, then the block.
+    fn catch_clause(&mut self) -> PResult<Catch> {
+        let first = self.type_expr()?;
+        let (ty, var) = if self.eat(&Tok::As) {
+            (Some(first), self.ident("for the caught error")?)
+        } else if first.args.is_empty() && !first.name.contains('.') {
+            let var = Ident {
+                name: first.name,
+                span: first.span,
+            };
+            (None, var)
+        } else {
+            return Err(self.unexpected("expected `as` and a name for the caught error"));
+        };
+        let body = self.block()?;
+        Ok(Catch { ty, var, body })
     }
 
     fn type_expr(&mut self) -> PResult<TypeExpr> {

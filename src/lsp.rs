@@ -426,9 +426,11 @@ fn walk_stmt<'a>(s: &'a hir::Stmt, f: &mut impl FnMut(Node<'a>)) {
             walk_block(body, f);
         }
         Return(Some(e)) => walk_expr(e, f),
-        Try { body, handler, .. } => {
+        Try { body, catches } => {
             walk_block(body, f);
-            walk_block(handler, f);
+            for c in catches {
+                walk_block(&c.body, f);
+            }
         }
         Return(None) | Break | Continue | InitModule(_) => {}
     }
