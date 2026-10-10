@@ -70,12 +70,16 @@ novo check <file.nv> [--json]    Type-check without running
 novo test [path]                 Run test_*.nv and *_test.nv files
 novo bench <file.nv> [-n N]      Time repeated runs of a program
 novo new <name>                  Create a project
+novo build <file.nv> [-o out]    Make a standalone executable
 novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
 novo [repl]                      Start the interactive prompt
 novo lsp                         Run the language server on stdio
 ```
 
 `novo check --json` prints one JSON object per diagnostic, for editors.
+`novo build app.nv` writes a single executable that runs the program, with
+every file it imports, on machines without Novo or the sources; it passes its
+command-line arguments to the program.
 `novo lsp` is a language server: errors as you type, hover types, go to
 definition and formatting. [editors/vscode](editors/vscode) is a VS Code extension that uses
 it and adds syntax highlighting.

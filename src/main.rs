@@ -1,3 +1,4 @@
+mod bundle;
 mod check;
 mod diagnostic;
 mod eval;
@@ -24,6 +25,7 @@ Usage:
     novo test [path]                 Run test_*.nv and *_test.nv files
     novo bench <file.nv> [-n N]      Time repeated runs of a program
     novo new <name>                  Create a project
+    novo build <file.nv> [-o out]    Make a standalone executable
     novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
     novo [repl]                      Start the interactive prompt
     novo lsp                         Run the language server on stdio
@@ -42,6 +44,9 @@ fn main() {
         unsafe { std::env::set_var("RAYON_NUM_THREADS", n.to_string()) };
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(program) = bundle::current() {
+        std::process::exit(run_bundle(program, args));
+    }
     let code = match args.first().map(String::as_str) {
         None | Some("repl") => cmd_repl(),
         Some("-h" | "--help" | "help") => {
@@ -58,6 +63,7 @@ fn main() {
         Some("bench") => cmd_bench(&args[1..]),
         Some("new") => cmd_new(&args[1..]),
         Some("fmt") => cmd_fmt(&args[1..]),
+        Some("build") => cmd_build(&args[1..]),
         Some("lsp") => lsp::serve(),
         Some(file) if file.ends_with(".nv") => cmd_run(&args),
         Some(other) => {
@@ -104,6 +110,96 @@ fn cmd_run(args: &[String]) -> i32 {
         Ok(()) => 0,
         Err(e) => {
             render_runtime_error(&sources, e);
+            1
+        }
+    }
+}
+
+/// Runs the program bundled into this executable, passing it every argument.
+fn run_bundle(program: bundle::Bundle, args: Vec<String>) -> i32 {
+    let mut sources = SourceMap::default();
+    let name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let checked = check::check_with(&mut sources, &program.entry, program.files);
+    let program = match checked {
+        Ok(p) => p,
+        Err(diags) => {
+            render(&sources, &diags);
+            return 1;
+        }
+    };
+    let program_args = std::iter::once(name).chain(args).collect();
+    match eval::run(program, program_args, true) {
+        Ok(()) => 0,
+        Err(e) => {
+            render_runtime_error(&sources, e);
+            1
+        }
+    }
+}
+
+/// Writes a standalone executable: this `novo` with the program's source files appended.
+fn cmd_build(args: &[String]) -> i32 {
+    let file = match file_arg(args, "build") {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let mut sources = SourceMap::default();
+    if let Err(diags) = check::check(&mut sources, Path::new(file)) {
+        render(&sources, &diags);
+        return 1;
+    }
+    let loaded: Vec<(PathBuf, String)> = sources
+        .files()
+        .filter(|f| !f.path.starts_with("<"))
+        .map(|f| {
+            (
+                std::fs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()),
+                f.text.clone(),
+            )
+        })
+        .collect();
+    let paths: Vec<PathBuf> = loaded.iter().map(|(p, _)| p.clone()).collect();
+    let relative = bundle::relative_paths(&paths);
+    let files: Vec<(String, String)> = relative
+        .iter()
+        .cloned()
+        .zip(loaded.into_iter().map(|(_, t)| t))
+        .collect();
+    let stem = Path::new(file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "program".into());
+    let out = match args.iter().position(|a| a == "-o") {
+        Some(i) => match args.get(i + 1) {
+            Some(o) => PathBuf::from(o),
+            None => {
+                eprintln!("error: `-o` needs a file name");
+                return 2;
+            }
+        },
+        None => PathBuf::from(if cfg!(windows) {
+            format!("{stem}.exe")
+        } else {
+            stem
+        }),
+    };
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: cannot find the novo executable: {e}");
+            return 1;
+        }
+    };
+    match bundle::write(&exe, &out, &relative[0], &files) {
+        Ok(()) => {
+            println!("wrote {}", out.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: cannot write {}: {e}", out.display());
             1
         }
     }

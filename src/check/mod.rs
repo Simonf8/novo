@@ -23,7 +23,18 @@ use std::rc::Rc;
 use types::{ClassId, Infer, Ty};
 
 pub fn check(sources: &mut SourceMap, entry: &Path) -> Result<hir::Program, Vec<Diagnostic>> {
+    check_with(sources, entry, HashMap::new())
+}
+
+/// Checks a program whose files are given in memory, keyed by path, as when a
+/// bundled executable runs; other files are read from disk.
+pub fn check_with(
+    sources: &mut SourceMap,
+    entry: &Path,
+    files: HashMap<PathBuf, String>,
+) -> Result<hir::Program, Vec<Diagnostic>> {
     let mut checker = Checker::new(std::mem::take(sources));
+    checker.files = files.into_iter().map(|(p, t)| (normalize(&p), t)).collect();
     let result = match checker.load_module(entry, None) {
         Some(id) => checker.finish(id),
         None => Err(std::mem::take(&mut checker.diags)),
@@ -40,10 +51,8 @@ pub fn analyze(
     text: String,
 ) -> (Option<hir::Program>, Vec<Diagnostic>) {
     let mut checker = Checker::new(std::mem::take(sources));
-    checker.overlay = Some((
-        std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf()),
-        text,
-    ));
+    let path = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
+    checker.files.insert(normalize(&path), text);
     let module = checker.load_module(entry, None);
     checker.solve_deferred();
     let program = match module {
@@ -70,6 +79,24 @@ fn source_module_path(name: &str) -> Option<PathBuf> {
         .iter()
         .any(|(n, _)| *n == name)
         .then(|| PathBuf::from(format!("<std>/{name}.nv")))
+}
+
+/// `path` with `.` and `..` components resolved without touching the disk.
+pub fn normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) =>
+            {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn varied_names(body: &[ast::Stmt]) -> HashSet<String> {
@@ -190,8 +217,8 @@ struct Checker {
     sources: SourceMap,
     /// In an interactive session names may be redefined.
     redefine: bool,
-    /// Text to use for one file instead of what is on disk, as an editor has it.
-    overlay: Option<(PathBuf, String)>,
+    /// Files to use instead of what is on disk, as an editor or a bundle has them.
+    files: HashMap<PathBuf, String>,
     /// Named tensor dimensions such as `B` in `Tensor[B, 784]`, one scope per function.
     dim_names: Vec<HashMap<String, Ty>>,
     infer: Infer,
@@ -209,7 +236,7 @@ impl Checker {
         Checker {
             sources,
             redefine: false,
-            overlay: None,
+            files: HashMap::new(),
             dim_names: Vec::new(),
             infer: Infer::default(),
             diags: Vec::new(),
@@ -290,11 +317,7 @@ impl Checker {
             }
             return Some(ModuleId(i as u32));
         }
-        let overlay = self
-            .overlay
-            .as_ref()
-            .filter(|(p, _)| *p == path)
-            .map(|(_, t)| Ok(t.clone()));
+        let overlay = self.files.get(&normalize(&path)).map(|t| Ok(t.clone()));
         let builtin = SOURCE_MODULES
             .iter()
             .find(|(n, _)| source_module_path(n).as_deref() == Some(path.as_path()))
