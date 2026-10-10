@@ -1,0 +1,62 @@
+enum Shape:
+    Circle(radius: Float)
+    Rect(width: Float, height: Float)
+    Empty
+
+function area(s: Shape) -> Float:
+    match s:
+        Circle(r):
+            return 3.0 * r * r
+        Rect(w, h):
+            return w * h
+        Empty:
+            return 0.0
+
+shapes = [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Empty]
+for s in shapes:
+    show s, area(s)
+
+# Enum values compare by value.
+show Shape.Rect(2.0, 3.0) == shapes[1], Shape.Empty == Shape.Empty, shapes[0] == shapes[2]
+
+function describe(s: Shape) -> String:
+    match s:
+        Rect(_, h):
+            return f"something {h} tall"
+        _:
+            return "round or empty"
+
+show describe(shapes[1]), describe(shapes[0])
+
+# Matching literals; cases without `_` may match nothing.
+function name(n: Int) -> String:
+    result = "many"
+    match n:
+        0:
+            result = "none"
+        1:
+            result = "one"
+    return result
+
+show name(0), name(1), name(7)
+
+enum Token:
+    Number(value: Int)
+    Plus
+    Times
+
+function evaluate(tokens: List[Token]) -> Int:
+    total = 0
+    product = 1
+    for t in tokens:
+        match t:
+            Number(v):
+                product *= v
+            Times:
+                pass
+            Plus:
+                total += product
+                product = 1
+    return total + product
+
+show evaluate([Token.Number(2), Token.Times, Token.Number(3), Token.Plus, Token.Number(4)])

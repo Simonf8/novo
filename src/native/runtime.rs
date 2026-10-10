@@ -524,11 +524,18 @@ unsafe extern "C" fn novo_call_interp(
     }
 }
 
-unsafe extern "C" fn novo_new(dst: *mut Value, class: u32, args: *const *const Value, n: usize) {
+unsafe extern "C" fn novo_new(
+    dst: *mut Value,
+    class: u32,
+    args: *const *const Value,
+    n: usize,
+    variant: u8,
+) {
     let fields = unsafe { values(args, n) };
     *unsafe { slot(dst) } = Value::Instance(Arc::new(Instance {
         class: ClassId(class),
         fields: RwLock::new(fields),
+        variant: variant != 0,
     }));
 }
 
@@ -706,6 +713,10 @@ unsafe extern "C" fn novo_unlock_lists(n: usize, slots: *const *mut Value, kinds
 unsafe extern "C" fn novo_raise_index(c: *mut Ctx, i: i64, len: i64, span: u64) {
     let c = unsafe { ctx(c) };
     c.check::<usize>(crate::eval::builtins::index(i, len as usize), span);
+}
+
+unsafe extern "C" fn novo_is_variant(value: *mut Value, class: u32) -> u8 {
+    u8::from(matches!(unsafe { slot(value) }, Value::Instance(i) if i.class.0 == class))
 }
 
 unsafe extern "C" fn novo_list_push_int(list: *mut Value, v: i64) {
@@ -1121,7 +1132,7 @@ helpers! {
     builtin = novo_builtin(I64, I64, I32, I64, I64, I64);
     call_value = novo_call_value(I64, I64, I64, I64, I64, I64);
     call_interp = novo_call_interp(I64, I64, I32, I64, I64, I64);
-    new = novo_new(I64, I32, I64, I64);
+    new = novo_new(I64, I32, I64, I64, I8);
     make_list = novo_make_list(I64, I64, I64);
     make_tuple = novo_make_tuple(I64, I64, I64);
     make_map = novo_make_map(I64, I64, I64, I64, I64, I64);
@@ -1139,6 +1150,7 @@ helpers! {
     list_set = novo_list_set(I64, I64, I64, I64, I64);
     list_get_int = novo_list_get_int(I64, I64, I64, I64) -> I64;
     list_push_int = novo_list_push_int(I64, I64);
+    is_variant = novo_is_variant(I64, I32) -> I8;
     lock_lists = novo_lock_lists(I64, I64, I64, I64, I64) -> I8;
     unlock_lists = novo_unlock_lists(I64, I64, I64);
     raise_index = novo_raise_index(I64, I64, I64, I64);

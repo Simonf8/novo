@@ -1132,6 +1132,17 @@ impl Lower<'_, '_> {
                 self.b.switch_to_block(done);
                 Val::S(self.b.use_var(result), Scalar::Bool)
             }
+            ExprKind::IsVariant { value, variant } => {
+                let v = self.expr(value)?;
+                let v = self.boxed(v);
+                let class = self.i32const(variant.0);
+                let f = self.c.helpers.is_variant;
+                Val::S(
+                    self.call(f, &[v, class])
+                        .expect("returns whether it matches"),
+                    Scalar::Bool,
+                )
+            }
             ExprKind::IfElse {
                 cond,
                 then,
@@ -1212,10 +1223,14 @@ impl Lower<'_, '_> {
                 let addrs = self.boxed_all(args)?;
                 let arr = self.ptr_array(&addrs);
                 let n = self.iconst(addrs.len() as i64);
+                let variant = self.b.ins().iconst(
+                    types::I8,
+                    i64::from(self.prog.classes[class.0 as usize].variant),
+                );
                 let class = self.i32const(class.0);
                 let t = self.temp();
                 let new = self.c.helpers.new;
-                self.call(new, &[t, class, arr, n]);
+                self.call(new, &[t, class, arr, n, variant]);
                 Val::O(t, true)
             }
             ExprKind::Field { target, name } => self.field(target, name, &e.ty, span)?,

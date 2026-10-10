@@ -500,6 +500,7 @@ fn walk_expr<'a>(e: &'a hir::Expr, f: &mut impl FnMut(Node<'a>)) {
             walk_expr(target, f);
             body.iter().for_each(|x| walk_expr(x, f));
         }
+        IsVariant { value, .. } => walk_expr(value, f),
         Int(_)
         | Float(_)
         | Bool(_)

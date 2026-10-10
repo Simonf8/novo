@@ -44,6 +44,17 @@ pub(super) fn assigned_names(block: &[ast::Stmt], out: &mut Vec<ast::Ident>) {
                 add(var, out);
                 assigned_names(handler, out);
             }
+            ast::StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    if let ast::Pattern::Variant { bindings, .. } = &arm.pattern {
+                        bindings
+                            .iter()
+                            .filter(|b| b.name != "_")
+                            .for_each(|b| add(b, out));
+                    }
+                    assigned_names(&arm.body, out);
+                }
+            }
             ast::StmtKind::Use(ast::Use::Python { module, alias }) => {
                 let name = alias.clone().unwrap_or_else(|| ast::Ident {
                     name: module.split('.').next().unwrap_or(module).to_string(),
@@ -108,6 +119,17 @@ pub(super) fn count_assignments(
                 add(&var.name, names);
                 count_assignments(handler, names, returns);
             }
+            ast::StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    if let ast::Pattern::Variant { bindings, .. } = &arm.pattern {
+                        bindings
+                            .iter()
+                            .filter(|b| b.name != "_")
+                            .for_each(|b| add(&b.name, names));
+                    }
+                    count_assignments(&arm.body, names, returns);
+                }
+            }
             _ => {}
         }
     }
@@ -122,6 +144,17 @@ pub(super) fn always_returns(block: &[ast::Stmt]) -> bool {
             otherwise: Some(otherwise),
         } => branches.iter().all(|(_, b)| always_returns(b)) && always_returns(otherwise),
         ast::StmtKind::Try { body, handler, .. } => always_returns(body) && always_returns(handler),
+        // A match without `_` covers every case only when it matches an enum's
+        // variants, which the checker requires to be exhaustive.
+        ast::StmtKind::Match { arms, .. } => {
+            arms.iter().all(|a| always_returns(&a.body))
+                && (arms
+                    .iter()
+                    .any(|a| matches!(a.pattern, ast::Pattern::Wildcard(_)))
+                    || arms
+                        .iter()
+                        .all(|a| matches!(a.pattern, ast::Pattern::Variant { .. })))
+        }
         ast::StmtKind::While { cond, body } => {
             matches!(cond.kind, ast::ExprKind::Bool(true)) && !breaks(body)
         }
@@ -426,6 +459,18 @@ impl Checker {
                     value,
                 }
             }
+            ast::StmtKind::Enum(def) => {
+                if !self.is_module_level() {
+                    self.error(Diagnostic::error(
+                        def.name.span,
+                        "enums must be defined at the top level",
+                    ));
+                }
+                return None;
+            }
+            ast::StmtKind::Match { subject, arms } => {
+                return self.match_statement(subject, arms, span, out);
+            }
             ast::StmtKind::Class(def) => {
                 if !self.is_module_level() {
                     self.error(Diagnostic::error(
@@ -568,6 +613,182 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Checks a `match` as an `if` chain over a temporary holding the subject:
+    /// variant cases test the variant and bind its values, literal cases
+    /// compare with `==`, and `_` is the `otherwise` branch.
+    fn match_statement(
+        &mut self,
+        subject: &ast::Expr,
+        arms: &[ast::MatchArm],
+        span: Span,
+        out: &mut hir::Block,
+    ) -> Option<hir::Stmt> {
+        let subject = self.infer_expr(subject);
+        let ty = subject.ty.clone();
+        let tmp = self.ctx().add_local("<match>", ty.clone(), Span::default());
+        out.push(hir::Stmt {
+            kind: StmtKind::Assign {
+                place: Place::Local(tmp),
+                op: None,
+                value: subject,
+            },
+            span,
+        });
+        let current = |ty: &Ty| hir::Expr {
+            kind: hir::ExprKind::Local(tmp),
+            ty: ty.clone(),
+            span,
+        };
+        let enumeration = match self.infer.shallow(&ty) {
+            Ty::Class(c) if !self.classes[c.0 as usize].variants.is_empty() => Some(c),
+            _ => None,
+        };
+        let mut branches = Vec::new();
+        let mut otherwise: Option<hir::Block> = None;
+        let mut covered = Vec::new();
+        for arm in arms {
+            if otherwise.is_some() {
+                let at = match &arm.pattern {
+                    ast::Pattern::Wildcard(s) => *s,
+                    ast::Pattern::Variant { name, .. } => name.span,
+                    ast::Pattern::Literal(e) => e.span,
+                };
+                self.error(
+                    Diagnostic::error(at, "this case is never reached")
+                        .with_help("an earlier `_` matches every value"),
+                );
+                continue;
+            }
+            match &arm.pattern {
+                ast::Pattern::Wildcard(_) => otherwise = Some(self.check_block(&arm.body)),
+                ast::Pattern::Literal(lit) => {
+                    let value = self.infer_expr(lit);
+                    self.unify_at(value.span, &ty, &value.ty);
+                    let cond = hir::Expr {
+                        kind: hir::ExprKind::Binary {
+                            op: ast::BinOp::Eq,
+                            lhs: Box::new(current(&ty)),
+                            rhs: Box::new(value),
+                        },
+                        ty: Ty::Bool,
+                        span: lit.span,
+                    };
+                    branches.push((cond, self.check_block(&arm.body)));
+                }
+                ast::Pattern::Variant { name, bindings } => {
+                    let Some(e) = enumeration else {
+                        let msg = format!(
+                            "`{}` is a variant pattern, but the value being matched is a `{}`",
+                            name.name,
+                            self.show(&ty)
+                        );
+                        self.error(Diagnostic::error(name.span, msg));
+                        continue;
+                    };
+                    let variants = self.classes[e.0 as usize].variants.clone();
+                    let Some(v) = variants
+                        .iter()
+                        .copied()
+                        .find(|v| self.classes[v.0 as usize].name == name.name)
+                    else {
+                        let names: Vec<String> = variants
+                            .iter()
+                            .map(|v| format!("`{}`", self.classes[v.0 as usize].name))
+                            .collect();
+                        let msg = format!(
+                            "`{}` has no variant `{}`",
+                            self.classes[e.0 as usize].name, name.name
+                        );
+                        self.error(
+                            Diagnostic::error(name.span, msg)
+                                .with_help(format!("its variants are {}", names.join(", "))),
+                        );
+                        continue;
+                    };
+                    let fields: Vec<(String, Ty)> = self.classes[v.0 as usize]
+                        .fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect();
+                    if bindings.len() != fields.len() {
+                        let msg = format!(
+                            "`{}` holds {} value{} but the pattern names {}",
+                            name.name,
+                            fields.len(),
+                            if fields.len() == 1 { "" } else { "s" },
+                            bindings.len()
+                        );
+                        self.error(
+                            Diagnostic::error(name.span, msg)
+                                .with_help("use `_` for values you do not need"),
+                        );
+                        continue;
+                    }
+                    covered.push(v);
+                    let mut block = Vec::new();
+                    for (b, (field, field_ty)) in bindings.iter().zip(fields) {
+                        if b.name == "_" {
+                            continue;
+                        }
+                        let Some(place) = self.name_place(&b.name, b.span) else {
+                            continue;
+                        };
+                        let place_ty = self.place_ty(&place, b.span);
+                        self.unify_at(b.span, &place_ty, &field_ty);
+                        let value = hir::Expr {
+                            kind: hir::ExprKind::Field {
+                                target: Box::new(current(&ty)),
+                                name: field,
+                            },
+                            ty: field_ty,
+                            span: b.span,
+                        };
+                        block.push(hir::Stmt {
+                            kind: StmtKind::Assign {
+                                place,
+                                op: None,
+                                value,
+                            },
+                            span: b.span,
+                        });
+                    }
+                    block.extend(self.check_block(&arm.body));
+                    let cond = hir::Expr {
+                        kind: hir::ExprKind::IsVariant {
+                            value: Box::new(current(&ty)),
+                            variant: v,
+                        },
+                        ty: Ty::Bool,
+                        span: name.span,
+                    };
+                    branches.push((cond, block));
+                }
+            }
+        }
+        if let (Some(e), None) = (enumeration, &otherwise) {
+            let missing: Vec<String> = self.classes[e.0 as usize]
+                .variants
+                .iter()
+                .filter(|v| !covered.contains(v))
+                .map(|v| format!("`{}`", self.classes[v.0 as usize].name))
+                .collect();
+            if !missing.is_empty() {
+                let msg = format!("this `match` does not handle {}", missing.join(", "));
+                self.error(
+                    Diagnostic::error(span, msg)
+                        .with_help("add a case for each, or `_:` for the rest"),
+                );
+            }
+        }
+        Some(hir::Stmt {
+            kind: StmtKind::If {
+                branches,
+                otherwise: otherwise.unwrap_or_default(),
+            },
+            span,
+        })
     }
 
     fn name_place(&mut self, name: &str, span: Span) -> Option<Place> {

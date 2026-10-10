@@ -183,6 +183,16 @@ impl<'a> Parser<'a> {
                 })
             }
             Tok::Class => self.class_def(),
+            Tok::Ident(w)
+                if w == "enum"
+                    && matches!(self.peek_nth(1), Tok::Ident(_))
+                    && *self.peek_nth(2) == Tok::Colon =>
+            {
+                self.enum_def()
+            }
+            Tok::Ident(w) if w == "match" && self.starts_block_statement() => {
+                self.match_statement()
+            }
             Tok::Try => {
                 self.bump();
                 let body = self.block()?;
@@ -430,6 +440,141 @@ impl<'a> Parser<'a> {
             body,
             span: lo.to(self.prev_span()),
         })
+    }
+
+    /// Whether the line from here ends with `:` followed by an indented block,
+    /// which tells `match` used as a statement from `match` used as a name.
+    fn starts_block_statement(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = self.pos + 1;
+        while i < self.tokens.len() {
+            match &self.tokens[i].tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
+                Tok::Assign
+                | Tok::PlusAssign
+                | Tok::MinusAssign
+                | Tok::StarAssign
+                | Tok::SlashAssign
+                    if depth == 0 =>
+                {
+                    return false;
+                }
+                Tok::Newline | Tok::Eof => {
+                    return i > self.pos + 1
+                        && self.tokens[i - 1].tok == Tok::Colon
+                        && matches!(self.tokens.get(i + 1).map(|t| &t.tok), Some(Tok::Indent));
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    fn enum_def(&mut self) -> PResult<Stmt> {
+        let lo = self.span();
+        self.bump();
+        let name = self.ident("for the enum")?;
+        self.expect(&Tok::Colon, "after the enum name")?;
+        self.expect(&Tok::Newline, "after `:`")?;
+        self.skip_newlines();
+        if !self.eat(&Tok::Indent) {
+            return Err(self.unexpected("expected an indented list of variants"));
+        }
+        let mut variants = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&Tok::Dedent) || self.at(&Tok::Eof) {
+                break;
+            }
+            let vname = self.ident("for the variant")?;
+            let mut fields = Vec::new();
+            if self.eat(&Tok::LParen) {
+                while !self.eat(&Tok::RParen) {
+                    let fname = self.ident("for the variant's value")?;
+                    self.expect(&Tok::Colon, "and a type after the value's name")?;
+                    fields.push((fname, self.type_expr()?));
+                    if !self.eat(&Tok::Comma) {
+                        self.expect(&Tok::RParen, "to close the variant's values")?;
+                        break;
+                    }
+                }
+            }
+            self.end_of_statement()?;
+            variants.push(VariantDef {
+                name: vname,
+                fields,
+            });
+        }
+        if variants.is_empty() {
+            return Err(Diagnostic::error(
+                name.span,
+                "an enum needs at least one variant",
+            ));
+        }
+        Ok(Stmt {
+            kind: StmtKind::Enum(EnumDef { name, variants }),
+            span: lo.to(self.prev_span()),
+        })
+    }
+
+    fn match_statement(&mut self) -> PResult<Stmt> {
+        let lo = self.span();
+        self.bump();
+        let subject = self.expression()?;
+        self.expect(&Tok::Colon, "after the value to match")?;
+        self.expect(&Tok::Newline, "after `:`")?;
+        self.skip_newlines();
+        if !self.eat(&Tok::Indent) {
+            return Err(self.unexpected("expected indented cases"));
+        }
+        let mut arms = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.eat(&Tok::Dedent) || self.at(&Tok::Eof) {
+                break;
+            }
+            let pattern = self.pattern()?;
+            let body = self.block()?;
+            arms.push(MatchArm { pattern, body });
+        }
+        Ok(Stmt {
+            kind: StmtKind::Match { subject, arms },
+            span: lo.to(self.prev_span()),
+        })
+    }
+
+    fn pattern(&mut self) -> PResult<Pattern> {
+        match self.peek().clone() {
+            Tok::Ident(w) if w == "_" => Ok(Pattern::Wildcard(self.bump().span)),
+            Tok::Ident(_) => {
+                let mut name = self.ident("for the variant")?;
+                // `Shape.Circle` names the variant with its enum.
+                while self.eat(&Tok::Dot) {
+                    name = self.ident("for the variant")?;
+                }
+                let mut bindings = Vec::new();
+                if self.eat(&Tok::LParen) {
+                    while !self.eat(&Tok::RParen) {
+                        bindings.push(self.ident("to bind the variant's value")?);
+                        if !self.eat(&Tok::Comma) {
+                            self.expect(&Tok::RParen, "to close the bindings")?;
+                            break;
+                        }
+                    }
+                }
+                Ok(Pattern::Variant { name, bindings })
+            }
+            Tok::Int(_)
+            | Tok::Float(_)
+            | Tok::Str(_)
+            | Tok::True
+            | Tok::False
+            | Tok::None
+            | Tok::Minus => Ok(Pattern::Literal(self.or_expr()?)),
+            _ => Err(self.unexpected("expected a variant, a literal or `_`")),
+        }
     }
 
     fn class_def(&mut self) -> PResult<Stmt> {

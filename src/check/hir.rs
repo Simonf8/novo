@@ -73,6 +73,8 @@ pub struct Class {
     pub span: Span,
     pub fields: Vec<Field>,
     pub methods: Vec<(String, FuncId)>,
+    /// A variant of an enum: shown without field names and compared by value.
+    pub variant: bool,
 }
 
 impl Class {
@@ -252,6 +254,11 @@ pub enum ExprKind {
         cond: Box<Expr>,
         then: Box<Expr>,
         otherwise: Box<Expr>,
+    },
+    /// Whether a value of an enum is the given variant.
+    IsVariant {
+        value: Box<Expr>,
+        variant: ClassId,
     },
 }
 

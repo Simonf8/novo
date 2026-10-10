@@ -21,6 +21,8 @@ pub(super) fn error_expr(span: Span) -> hir::Expr {
 /// What a dotted access like `a.b` refers to before any value is computed.
 enum Member {
     Item(Item),
+    /// A variant of an enum, as in `Shape.Circle`.
+    Variant(ClassId),
     Builtin(Builtin),
     Value(hir::Expr),
 }
@@ -146,6 +148,22 @@ impl Checker {
                     self.not_a_value(&format!("built-in `{}`", b.name()), span)
                 }
                 Some(Member::Item(item)) => self.item_value(item, &name.name, span),
+                Some(Member::Variant(v)) => {
+                    let wanted = self.classes[v.0 as usize].fields.len();
+                    if wanted > 0 {
+                        let msg = if wanted == 1 {
+                            format!("`{}` holds a value; give it in parentheses", name.name)
+                        } else {
+                            format!(
+                                "`{}` holds {wanted} values; give them in parentheses",
+                                name.name
+                            )
+                        };
+                        self.error(Diagnostic::error(span, msg));
+                        return error_expr(span);
+                    }
+                    self.variant(v, Vec::new(), span)
+                }
                 None => {
                     let target = self.infer_expr(target);
                     self.field(target, name, span)
@@ -411,6 +429,27 @@ impl Checker {
                     }
                 }
             }
+            Resolved::Class(c) if !self.classes[c.0 as usize].variants.is_empty() => {
+                let class = &self.classes[c.0 as usize];
+                match class
+                    .variants
+                    .iter()
+                    .find(|v| self.classes[v.0 as usize].name == name.name)
+                {
+                    Some(v) => Some(Member::Variant(*v)),
+                    None => {
+                        let names: Vec<String> = class
+                            .variants
+                            .iter()
+                            .map(|v| format!("`{}`", self.classes[v.0 as usize].name))
+                            .collect();
+                        let msg = format!("`{module_name}` has no variant `{}`", name.name);
+                        let help = format!("its variants are {}", names.join(", "));
+                        self.error(Diagnostic::error(name.span, msg).with_help(help));
+                        Some(Member::Value(error_expr(name.span)))
+                    }
+                }
+            }
             Resolved::Std(s) => match s.member(&name.name) {
                 Some(b) => Some(Member::Builtin(b)),
                 None => {
@@ -551,6 +590,10 @@ impl Checker {
                 Some(Member::Item(Item::Class(c))) => {
                     let args = self.infer_args(args);
                     return self.construct(c, args, span);
+                }
+                Some(Member::Variant(v)) => {
+                    let args = self.infer_args(args);
+                    return self.variant(v, args, span);
                 }
                 Some(Member::Builtin(b)) => {
                     let args = self.infer_args(args);
@@ -705,8 +748,31 @@ impl Checker {
         )
     }
 
+    /// A value of variant `v`, typed as its enum.
+    fn variant(&mut self, v: ClassId, args: Vec<Arg>, span: Span) -> hir::Expr {
+        let mut value = self.construct(v, args, span);
+        value.ty = Ty::Class(
+            self.classes[v.0 as usize]
+                .parent
+                .expect("a variant has an enum"),
+        );
+        value
+    }
+
     fn construct(&mut self, c: ClassId, args: Vec<Arg>, span: Span) -> hir::Expr {
         let class = &self.classes[c.0 as usize];
+        if let Some(first) = class.variants.first() {
+            let msg = format!(
+                "`{}` is an enum; create one of its variants instead",
+                class.name
+            );
+            let help = format!(
+                "for example `{}.{}`",
+                class.name, self.classes[first.0 as usize].name
+            );
+            self.error(Diagnostic::error(span, msg).with_help(help));
+            return error_expr(span);
+        }
         let name = class.name.clone();
         let params: Vec<(String, bool)> = class
             .fields

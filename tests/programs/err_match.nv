@@ -1,0 +1,12 @@
+# expect-error: this `match` does not handle `Empty`
+enum Shape:
+    Circle(radius: Float)
+    Empty
+
+function area(s: Shape) -> Float:
+    match s:
+        Circle(r):
+            return r * r
+    return 0.0
+
+show area(Shape.Empty)

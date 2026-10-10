@@ -133,6 +133,7 @@ fn expr(e: &hir::Expr, out: &mut HashSet<GlobalId>) {
             expr(lhs, out);
             expr(rhs, out);
         }
+        ExprKind::IsVariant { value, .. } => expr(value, out),
         ExprKind::IfElse {
             cond,
             then,

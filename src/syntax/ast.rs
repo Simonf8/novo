@@ -52,6 +52,11 @@ pub enum StmtKind {
     },
     Function(FunctionDef),
     Class(ClassDef),
+    Enum(EnumDef),
+    Match {
+        subject: Expr,
+        arms: Vec<MatchArm>,
+    },
     Return(Option<Expr>),
     Break,
     Continue,
@@ -85,6 +90,34 @@ pub struct FieldDef {
     pub name: Ident,
     pub ty: Option<TypeExpr>,
     pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub name: Ident,
+    pub variants: Vec<VariantDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VariantDef {
+    pub name: Ident,
+    pub fields: Vec<(Ident, TypeExpr)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// `_`, matching anything.
+    Wildcard(Span),
+    /// `Circle(r)`: a variant of the subject's enum, binding its values.
+    Variant { name: Ident, bindings: Vec<Ident> },
+    /// A number, string, `true`, `false` or `none`, compared with `==`.
+    Literal(Expr),
 }
 
 #[derive(Debug, Clone)]

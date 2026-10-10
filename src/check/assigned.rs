@@ -229,7 +229,8 @@ impl Pass<'_> {
             | ExprKind::Field { target: x, .. }
             | ExprKind::Together(x)
             | ExprKind::Await(x)
-            | ExprKind::IntToFloat(x) => self.expr(x, state),
+            | ExprKind::IntToFloat(x)
+            | ExprKind::IsVariant { value: x, .. } => self.expr(x, state),
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.expr(lhs, state);
                 self.expr(rhs, state);

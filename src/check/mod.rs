@@ -161,6 +161,10 @@ struct FuncSlot {
 struct ClassSlot {
     name: String,
     span: Span,
+    /// For an enum, its variants, each a class of its own.
+    variants: Vec<ClassId>,
+    /// For a variant, its enum.
+    parent: Option<ClassId>,
     fields: Vec<FieldSlot>,
     methods: Vec<(String, FuncId)>,
 }
@@ -384,11 +388,66 @@ impl Checker {
                     self.classes.push(ClassSlot {
                         name: def.name.name.clone(),
                         span: def.name.span,
+                        variants: Vec::new(),
+                        parent: None,
                         fields: Vec::new(),
                         methods: Vec::new(),
                     });
                     self.define(id, &def.name, Item::Class(cid));
                     classes.push((cid, def.clone()));
+                }
+                ast::StmtKind::Enum(def) => {
+                    let eid = ClassId(self.classes.len() as u32);
+                    self.classes.push(ClassSlot {
+                        name: def.name.name.clone(),
+                        span: def.name.span,
+                        variants: Vec::new(),
+                        parent: None,
+                        fields: Vec::new(),
+                        methods: Vec::new(),
+                    });
+                    self.define(id, &def.name, Item::Class(eid));
+                    for v in &def.variants {
+                        if self.classes[eid.0 as usize]
+                            .variants
+                            .iter()
+                            .any(|c| self.classes[c.0 as usize].name == v.name.name)
+                        {
+                            let msg = format!(
+                                "`{}` has two variants named `{}`",
+                                def.name.name, v.name.name
+                            );
+                            self.error(Diagnostic::error(v.name.span, msg));
+                            continue;
+                        }
+                        let vid = ClassId(self.classes.len() as u32);
+                        self.classes.push(ClassSlot {
+                            name: v.name.name.clone(),
+                            span: v.name.span,
+                            variants: Vec::new(),
+                            parent: Some(eid),
+                            fields: Vec::new(),
+                            methods: Vec::new(),
+                        });
+                        self.classes[eid.0 as usize].variants.push(vid);
+                        let fields = v
+                            .fields
+                            .iter()
+                            .map(|(name, ty)| ast::FieldDef {
+                                name: name.clone(),
+                                ty: Some(ty.clone()),
+                                default: None,
+                            })
+                            .collect();
+                        classes.push((
+                            vid,
+                            ast::ClassDef {
+                                name: v.name.clone(),
+                                fields,
+                                methods: Vec::new(),
+                            },
+                        ));
+                    }
                 }
                 ast::StmtKind::Use(ast::Use::File { path: rel, alias }) => {
                     if let Some(mid) = self.load_module(&dir.join(rel), Some(stmt.span)) {
@@ -1114,6 +1173,7 @@ impl Checker {
                     })
                     .collect(),
                 methods: c.methods.clone(),
+                variant: c.parent.is_some(),
             })
             .collect();
         let globals = self
@@ -1294,6 +1354,7 @@ impl Zonk<'_> {
                     self.expr(b);
                 }
             }
+            IsVariant { value, .. } => self.expr(value),
             Int(_) | Float(_) | Bool(_) | Str(_) | None | Local(_) | Global(_) | Recurse
             | PyImport(_) => {}
         }

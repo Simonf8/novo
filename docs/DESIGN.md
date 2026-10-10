@@ -125,6 +125,37 @@ instance from the defaults; fields can be set positionally, in declaration
 order, or by name: `Counter(value=5)`. Methods see the instance as `self`.
 Instances are shared by reference.
 
+## Enums and match
+
+An enum lists the forms a value can take, each with its own named values:
+
+```
+enum Shape:
+    Circle(radius: Float)
+    Rect(width: Float, height: Float)
+    Empty
+```
+
+`Shape.Circle(1.0)` and `Shape.Empty` create values of type `Shape`. They
+display as `Circle(1.0)` and `Empty` and compare by value. `match` picks the
+first case that fits:
+
+```
+match shape:
+    Circle(r):
+        show r
+    Rect(w, _):
+        show w
+    Empty:
+        show "nothing"
+```
+
+A variant case binds the variant's values to names (`_` skips one). A case
+may also be a number, string, `true`, `false` or `none`, compared with `==`,
+and `_` matches anything. A `match` over an enum must handle every variant or
+end with `_`. `match` and `enum` are only keywords in these positions, so they
+can still be used as names.
+
 ## Errors
 
 Run-time errors (division by zero, a bad index, a failed `assert`, a call to

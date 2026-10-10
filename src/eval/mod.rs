@@ -831,6 +831,7 @@ impl Interp {
                 Value::Instance(Arc::new(Instance {
                     class: *class,
                     fields: RwLock::new(fields),
+                    variant: self.prog.classes[class.0 as usize].variant,
                 }))
             }
             ExprKind::Field { target, name } => {
@@ -889,6 +890,9 @@ impl Interp {
                 let closure = self.eval(closure, frame)?;
                 self.spawn_task(&closure, span)?
             }
+            ExprKind::IsVariant { value, variant } => Value::Bool(
+                matches!(self.eval(value, frame)?, Value::Instance(i) if i.class == *variant),
+            ),
             ExprKind::IfElse {
                 cond,
                 then,

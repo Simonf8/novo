@@ -39,6 +39,8 @@ pub struct Closure {
 pub struct Instance {
     pub class: ClassId,
     pub fields: RwLock<Vec<Value>>,
+    /// An enum variant, compared by value rather than identity.
+    pub variant: bool,
 }
 
 #[derive(Debug, Default)]
@@ -298,6 +300,21 @@ fn write_value(out: &mut String, v: &Value, prog: &Program, depth: usize) {
         Value::Func(c) => {
             let _ = write!(out, "<function {}>", prog.funcs[c.func.0 as usize].name);
         }
+        Value::Instance(inst) if prog.classes[inst.class.0 as usize].variant => {
+            let class = &prog.classes[inst.class.0 as usize];
+            out.push_str(&class.name);
+            let fields = inst.fields.read();
+            if !fields.is_empty() {
+                out.push('(');
+                for (i, val) in fields.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    write_value(out, val, prog, depth + 1);
+                }
+                out.push(')');
+            }
+        }
         Value::Instance(inst) => {
             let class = &prog.classes[inst.class.0 as usize];
             out.push_str(&class.name);
@@ -356,6 +373,13 @@ pub fn equal(a: &Value, b: &Value) -> bool {
             x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| equal(v, w)))
         }
         (Value::Func(x), Value::Func(y)) => Arc::ptr_eq(x, y),
+        (Value::Instance(x), Value::Instance(y)) if x.variant && y.variant => {
+            if Arc::ptr_eq(x, y) {
+                return true;
+            }
+            let (p, q) = (x.fields.read().clone(), y.fields.read().clone());
+            x.class == y.class && p.iter().zip(&q).all(|(a, b)| equal(a, b))
+        }
         (Value::Instance(x), Value::Instance(y)) => Arc::ptr_eq(x, y),
         (Value::Task(x), Value::Task(y)) => Arc::ptr_eq(x, y),
         (Value::Tensor(x), Value::Tensor(y)) => Arc::ptr_eq(x, y),
