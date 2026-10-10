@@ -35,7 +35,12 @@ pub fn format(file: FileId, src: &str) -> Result<String, Diagnostic> {
     if !f.line_start {
         f.out.push('\n');
     }
-    let formatted = f.out;
+    // Keep Windows line endings in files that use them.
+    let formatted = if src.contains("\r\n") {
+        f.out.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        f.out
+    };
     let after = tokenize(file, &formatted).ok();
     let text = |src: &str, t: &Token| match t.tok {
         Tok::FStr(_) => Some(src[t.span.lo as usize..t.span.hi as usize].to_string()),
@@ -281,5 +286,13 @@ mod tests {
         let want = "# head\n\n\nx = [1,\n    2]  # two\nif x:\n    y = 1\n    # inner\n# outer\nz = |a| a + 1\n";
         assert_eq!(fmt(src), want);
         assert_eq!(fmt(want), want);
+    }
+
+    #[test]
+    fn keeps_windows_line_endings() {
+        assert_eq!(
+            fmt("x=1\r\nif x:\r\n  y = 2 # two\r\n"),
+            "x = 1\r\nif x:\r\n    y = 2  # two\r\n"
+        );
     }
 }
