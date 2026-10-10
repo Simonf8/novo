@@ -7,3 +7,6 @@ table = {"a": 1}
 words = ["b"]
 found = table.has("x")
 show found, words[0]
+
+# `max` and `min` keep the first value unless another is strictly beyond it.
+show max(1.0, nan), max(nan, 1.0), min(2.0, nan, 1.0)

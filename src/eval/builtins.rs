@@ -669,12 +669,24 @@ fn extreme(items: &[Value], max: bool) -> R {
         best = Some(match best {
             None => item,
             Some(b) => {
-                let ord = compare(item, b)?;
-                if (max && ord.is_gt()) || (!max && ord.is_lt()) {
-                    item
-                } else {
-                    b
-                }
+                // As in Python, an item replaces the best only if it compares
+                // strictly beyond it, so NaN never wins against a number already chosen.
+                let beyond = match (item.as_f64(), b.as_f64()) {
+                    (Some(x), Some(y))
+                        if matches!((item, b), (Value::Float(_), _) | (_, Value::Float(_))) =>
+                    {
+                        if max {
+                            x > y
+                        } else {
+                            x < y
+                        }
+                    }
+                    _ => {
+                        let ord = compare(item, b)?;
+                        (max && ord.is_gt()) || (!max && ord.is_lt())
+                    }
+                };
+                if beyond { item } else { b }
             }
         });
     }
