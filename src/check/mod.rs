@@ -30,6 +30,28 @@ pub fn check(sources: &mut SourceMap, entry: &Path) -> Result<hir::Program, Vec<
     result
 }
 
+/// Checks `entry` for an editor, reading `text` in place of the file on disk.
+/// Returns whatever could be checked alongside the errors.
+pub fn analyze(
+    sources: &mut SourceMap,
+    entry: &Path,
+    text: String,
+) -> (Option<hir::Program>, Vec<Diagnostic>) {
+    let mut checker = Checker::new(std::mem::take(sources));
+    checker.overlay = Some((
+        std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf()),
+        text,
+    ));
+    let module = checker.load_module(entry, None);
+    checker.solve_deferred();
+    let program = match module {
+        Some(id) if checker.funcs.iter().all(|f| f.hir.is_some()) => Some(checker.snapshot(id)),
+        _ => None,
+    };
+    *sources = std::mem::take(&mut checker.sources);
+    (program, checker.diags)
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Item {
     Global(GlobalId),
@@ -128,6 +150,8 @@ struct Checker {
     sources: SourceMap,
     /// In an interactive session names may be redefined.
     redefine: bool,
+    /// Text to use for one file instead of what is on disk, as an editor has it.
+    overlay: Option<(PathBuf, String)>,
     infer: Infer,
     diags: Vec<Diagnostic>,
     funcs: Vec<FuncSlot>,
@@ -143,6 +167,7 @@ impl Checker {
         Checker {
             sources,
             redefine: false,
+            overlay: None,
             infer: Infer::default(),
             diags: Vec::new(),
             funcs: Vec::new(),
@@ -222,7 +247,12 @@ impl Checker {
             }
             return Some(ModuleId(i as u32));
         }
-        let text = match std::fs::read_to_string(&path) {
+        let overlay = self
+            .overlay
+            .as_ref()
+            .filter(|(p, _)| *p == path)
+            .map(|(_, t)| Ok(t.clone()));
+        let text = match overlay.unwrap_or_else(|| std::fs::read_to_string(&path)) {
             Ok(t) => t,
             Err(e) => {
                 let msg = format!("cannot read `{}`: {e}", path.display());

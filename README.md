@@ -67,9 +67,14 @@ novo bench <file.nv> [-n N]      Time repeated runs of a program
 novo new <name>                  Create a project
 novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
 novo [repl]                      Start the interactive prompt
+novo lsp                         Run the language server on stdio
 ```
 
 `novo check --json` prints one JSON object per diagnostic, for editors.
+`novo lsp` is a language server: errors as you type, hover types and
+formatting. [editors/vscode](editors/vscode) is a VS Code extension that uses
+it and adds syntax highlighting.
+
 `novo fmt` normalizes indentation and spacing but keeps comments, blank lines
 (up to two in a row) and line breaks inside brackets. It refuses to write a
 file if the result would not read back as the same tokens.
@@ -220,7 +225,7 @@ errors (`# expect-error: ...`) and required features
    unboxed lists of numbers, inlining, and ahead-of-time executables.
 2. **Shapes in types.** Catch tensor dimension mismatches at check time.
 3. **Data and models.** Reusable layers and more pretrained architectures.
-4. **Tooling.** Language server and editor extension.
+4. **Tooling.** Go to definition, completion, and a package manager.
 
 ## License
 

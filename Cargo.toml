@@ -19,3 +19,4 @@ cranelift-module = "0.136.2"
 cranelift-native = "0.136.2"
 parking_lot = "0.12.5"
 pyo3 = { version = "=0.20.0", features = ["auto-initialize"], optional = true }
+serde_json = "1.0.151"

@@ -1,6 +1,7 @@
 mod check;
 mod diagnostic;
 mod eval;
+mod lsp;
 mod native;
 mod python;
 mod source;
@@ -25,6 +26,7 @@ Usage:
     novo new <name>                  Create a project
     novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
     novo [repl]                      Start the interactive prompt
+    novo lsp                         Run the language server on stdio
 
 Options:
     -h, --help       Show this help
@@ -49,6 +51,7 @@ fn main() {
         Some("bench") => cmd_bench(&args[1..]),
         Some("new") => cmd_new(&args[1..]),
         Some("fmt") => cmd_fmt(&args[1..]),
+        Some("lsp") => lsp::serve(),
         Some(file) if file.ends_with(".nv") => cmd_run(&args),
         Some(other) => {
             eprintln!("error: unknown command `{other}`\n\n{USAGE}");

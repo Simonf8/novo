@@ -1340,6 +1340,7 @@ dependencies = [
  "cranelift-native",
  "parking_lot",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

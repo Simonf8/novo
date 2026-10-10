@@ -26,8 +26,8 @@ pub fn format(file: FileId, src: &str) -> Result<String, Diagnostic> {
         closure_params: None,
     };
     let mut prev_end = 0;
-    for i in 0..tokens.len() {
-        let (lo, hi) = (tokens[i].span.lo as usize, tokens[i].span.hi as usize);
+    for (i, t) in tokens.iter().enumerate() {
+        let (lo, hi) = (t.span.lo as usize, t.span.hi as usize);
         f.gap(&src[prev_end..lo.max(prev_end)], i);
         f.token(i);
         prev_end = prev_end.max(hi);
