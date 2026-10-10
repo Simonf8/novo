@@ -48,6 +48,35 @@ impl Checker {
                 expr(ExprKind::FStr(parts), Ty::Str, span)
             }
             ast::ExprKind::Name(name) => self.infer_name(name, span),
+            ast::ExprKind::IfElse {
+                cond,
+                then,
+                otherwise,
+            } => {
+                let cond = self.check_cond(cond, "a conditional expression's");
+                let then = self.infer_expr(then);
+                let then = self.unshape(then);
+                let otherwise = self.infer_expr(otherwise);
+                let otherwise = self.unshape(otherwise);
+                let ty = match (
+                    self.infer.shallow(&then.ty),
+                    self.infer.shallow(&otherwise.ty),
+                ) {
+                    (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => Ty::Float,
+                    _ => then.ty.clone(),
+                };
+                let then = self.coerce(then, &ty);
+                let otherwise = self.coerce(otherwise, &ty);
+                expr(
+                    ExprKind::IfElse {
+                        cond: Box::new(cond),
+                        then: Box::new(then),
+                        otherwise: Box::new(otherwise),
+                    },
+                    ty,
+                    span,
+                )
+            }
             ast::ExprKind::List(items) => self.infer_list(items, span),
             ast::ExprKind::Tuple(items) => {
                 let items: Vec<hir::Expr> = items.iter().map(|i| self.infer_expr(i)).collect();

@@ -133,6 +133,15 @@ fn expr(e: &hir::Expr, out: &mut HashSet<GlobalId>) {
             expr(lhs, out);
             expr(rhs, out);
         }
+        ExprKind::IfElse {
+            cond,
+            then,
+            otherwise,
+        } => {
+            expr(cond, out);
+            expr(then, out);
+            expr(otherwise, out);
+        }
         ExprKind::Call { callee, args } => {
             expr(callee, out);
             args.iter().for_each(|e| expr(e, out));

@@ -424,6 +424,15 @@ fn walk_expr<'a>(e: &'a hir::Expr, f: &mut impl FnMut(Node<'a>)) {
             walk_expr(lhs, f);
             walk_expr(rhs, f);
         }
+        IfElse {
+            cond,
+            then,
+            otherwise,
+        } => {
+            walk_expr(cond, f);
+            walk_expr(then, f);
+            walk_expr(otherwise, f);
+        }
         Call { callee, args } => {
             walk_expr(callee, f);
             walk_exprs(args, f);

@@ -1042,6 +1042,47 @@ impl Lower<'_, '_> {
                 self.b.switch_to_block(done);
                 Val::S(self.b.use_var(result), Scalar::Bool)
             }
+            ExprKind::IfElse {
+                cond,
+                then,
+                otherwise,
+            } => {
+                let c = self.expr(cond)?;
+                let c = self.scalar(c, Scalar::Bool);
+                let (then_block, else_block, done) = (
+                    self.b.create_block(),
+                    self.b.create_block(),
+                    self.b.create_block(),
+                );
+                let rep = self.rep(&e.ty);
+                let dst = matches!(rep, Rep::Obj).then(|| self.temp());
+                self.b.ins().brif(c, then_block, &[], else_block, &[]);
+                match rep {
+                    Rep::Scalar(s) => {
+                        let result = self.b.declare_var(s.clif());
+                        for (block, branch) in [(then_block, then), (else_block, otherwise)] {
+                            self.b.switch_to_block(block);
+                            let v = self.expr(branch)?;
+                            let v = self.scalar(v, s);
+                            self.b.def_var(result, v);
+                            self.b.ins().jump(done, &[]);
+                        }
+                        self.b.switch_to_block(done);
+                        Val::S(self.b.use_var(result), s)
+                    }
+                    Rep::Obj => {
+                        let dst = dst.expect("allocated for objects");
+                        for (block, branch) in [(then_block, then), (else_block, otherwise)] {
+                            self.b.switch_to_block(block);
+                            let v = self.expr(branch)?;
+                            self.write_slot(dst, v);
+                            self.b.ins().jump(done, &[]);
+                        }
+                        self.b.switch_to_block(done);
+                        Val::O(dst, true)
+                    }
+                }
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let l = self.expr(lhs)?;
                 let r = self.expr(rhs)?;

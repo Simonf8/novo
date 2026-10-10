@@ -578,6 +578,23 @@ impl<'a> Parser<'a> {
                 };
                 continue;
             }
+            if self.eat(&Tok::If) {
+                let cond = self.or_expr()?;
+                if !self.eat(&Tok::Otherwise) {
+                    return Err(self.unexpected("expected `else` in a conditional expression"));
+                }
+                let otherwise = self.expression()?;
+                let span = expr.span.to(otherwise.span);
+                expr = Expr {
+                    kind: ExprKind::IfElse {
+                        cond: Box::new(cond),
+                        then: Box::new(expr),
+                        otherwise: Box::new(otherwise),
+                    },
+                    span,
+                };
+                break;
+            }
             if self.at(&Tok::Together) {
                 let tspan = self.bump().span;
                 let span = expr.span.to(tspan);

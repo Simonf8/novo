@@ -54,6 +54,10 @@ and strings by value and class instances by identity. `<` and friends work on
 numbers and strings. `x in c` tests list membership, map keys or substrings.
 Comparisons do not chain.
 
+`a if cond else b` evaluates to `a` when `cond` holds and to `b` otherwise
+(`otherwise` may be written for `else`). Both branches must have the same
+type, except that an `Int` and a `Float` give a `Float`.
+
 ## Variables and scope
 
 A function body is one scope: blocks do not introduce new variables. Code in a

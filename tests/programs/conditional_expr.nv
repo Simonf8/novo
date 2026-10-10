@@ -1,0 +1,21 @@
+function sign(n: Int) -> String:
+    return "positive" if n > 0 else "negative" if n < 0 else "zero"
+
+function clamp(x: Float, low: Float, high: Float) -> Float:
+    return low if x < low else (high if x > high else x)
+
+show sign(5), sign(-2), sign(0)
+show clamp(-1.0, 0.0, 1.0), clamp(0.5, 0.0, 1.0), clamp(3.0, 0.0, 1.0)
+
+# Branches of Int and Float give a Float.
+show 1 if true else 2.5
+
+total = 0
+for i in range(10):
+    total += i if i % 2 == 0 else -i
+show total
+
+names = ["ada", "bo"]
+show names select (it.upper() if len(it) > 2 else it)
+label = "many" if len(names) > 1 otherwise "one"
+show label

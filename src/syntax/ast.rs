@@ -303,5 +303,11 @@ pub enum ExprKind {
     },
     Together(Box<Expr>),
     Await(Box<Expr>),
+    /// `then if cond else otherwise`
+    IfElse {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        otherwise: Box<Expr>,
+    },
     RunParallel(Vec<Expr>),
 }

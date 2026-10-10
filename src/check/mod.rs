@@ -1173,6 +1173,15 @@ impl Zonk<'_> {
             | Together(e)
             | Await(e)
             | IntToFloat(e) => self.expr(e),
+            IfElse {
+                cond,
+                then,
+                otherwise,
+            } => {
+                self.expr(cond);
+                self.expr(then);
+                self.expr(otherwise);
+            }
             Binary { lhs, rhs, .. } => {
                 self.expr(lhs);
                 self.expr(rhs);

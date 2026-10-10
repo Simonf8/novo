@@ -874,6 +874,17 @@ impl Interp {
                 let closure = self.eval(closure, frame)?;
                 self.spawn_task(&closure, span)?
             }
+            ExprKind::IfElse {
+                cond,
+                then,
+                otherwise,
+            } => {
+                if self.cond(cond, frame)? {
+                    self.eval(then, frame)?
+                } else {
+                    self.eval(otherwise, frame)?
+                }
+            }
             ExprKind::Await(task) => match self.eval(task, frame)? {
                 Value::Task(t) => t.wait().at(span)?,
                 other => {

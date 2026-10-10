@@ -241,6 +241,11 @@ pub enum ExprKind {
     RunParallel(Vec<Expr>),
     IntToFloat(Box<Expr>),
     PyImport(String),
+    IfElse {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        otherwise: Box<Expr>,
+    },
 }
 
 /// Per-call-site cache of the native code compiled for the callee, filled on first use.

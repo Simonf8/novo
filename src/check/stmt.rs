@@ -160,7 +160,7 @@ impl Checker {
         out
     }
 
-    fn check_cond(&mut self, cond: &ast::Expr, what: &str) -> hir::Expr {
+    pub(super) fn check_cond(&mut self, cond: &ast::Expr, what: &str) -> hir::Expr {
         let cond = self.infer_expr(cond);
         if !self.infer.unify(&cond.ty, &Ty::Bool) {
             let msg = format!("{what} condition must be a `Bool`");
