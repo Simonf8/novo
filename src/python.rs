@@ -42,7 +42,7 @@ mod modern {
                 let items = list
                     .read()
                     .iter()
-                    .map(|v| to_py(py, v))
+                    .map(|v| to_py(py, &v))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(items.into_py(py))
             }
