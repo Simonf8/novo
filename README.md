@@ -175,13 +175,14 @@ novo run examples/gpt2/generate.nv path/to/gpt2 "The meaning of life is" 30
 
 [examples/xor_mlp.nv](examples/xor_mlp.nv) trains a small neural network
 written as a Novo class, and [examples/tiny_gpt.nv](examples/tiny_gpt.nv) is a
-character-level GPT (embeddings, causal multi-head self-attention, layer norm,
-MLP blocks) that trains from scratch and generates text in a few seconds.
+character-level GPT built from the `layers` standard module (embeddings,
+causal self-attention, layer norm, MLP blocks) that trains from scratch and
+generates text in a few seconds.
 [examples/housing](examples/housing) reads a CSV file and fits a model on
 shuffled minibatches.
 
 Modules: `use "path/to/file.nv" as m` loads another file; `use math`,
-`use json`, `use csv`, `use time`, `use fs`, `use env`, `use random` and `use nn` bring in
+`use json`, `use csv`, `use time`, `use fs`, `use env`, `use random`, `use nn` and `use layers` bring in
 the standard library;
 `use python numpy as np` imports a Python module when built with the
 `python` feature.
@@ -235,7 +236,7 @@ errors (`# expect-error: ...`) and required features
 
 1. **Faster native code.** Closures and parallel blocks in compiled code,
    unboxed lists of numbers, inlining, and ahead-of-time executables.
-2. **Data and models.** Reusable layers and more pretrained architectures.
+2. **Models.** More pretrained architectures, and loading them into `layers`.
 3. **Tooling.** Go to definition, completion, and a package manager.
 
 ## License

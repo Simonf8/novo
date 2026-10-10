@@ -548,11 +548,20 @@ impl Checker {
                     _ => None,
                 }
             }
-            ast::Use::Module { .. } => {
+            ast::Use::Module { name, alias } => {
                 if !self.is_module_level() {
                     self.error(Diagnostic::error(span, "`use` must be at the top level"));
+                    return None;
                 }
-                None
+                let module = self.module_of_ctx();
+                let name = &alias.as_ref().unwrap_or(name).name;
+                match self.modules[module.0 as usize].names.get(name) {
+                    Some(Item::Module(m)) => Some(hir::Stmt {
+                        kind: StmtKind::InitModule(*m),
+                        span,
+                    }),
+                    _ => None,
+                }
             }
         }
     }

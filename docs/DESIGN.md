@@ -210,6 +210,23 @@ run-time errors that name both shapes.
 `random.choice(list)`, `random.shuffle(list)` and `random.seed(n)`. It shares
 one generator with `nn`, so a single seed makes a training run reproducible.
 
+### Layers
+
+`use layers` is a standard module written in Novo with the usual building
+blocks. Each layer has `forward(x)` and `params()`:
+
+- `layers.linear(inputs, outputs)`: `x @ weight + bias`.
+- `layers.embedding(count, width)`: looks up rows of a table by index.
+- `layers.layer_norm(width)`: normalizes the last dimension.
+- `layers.mlp(width, hidden)`: two linear layers with a GELU between them.
+- `layers.attention(width, heads)`: causal multi-head self-attention over
+  `[batch, steps, width]` inputs; `layers.causal_mask(steps)` is its mask.
+- `layers.transformer_block(width, heads)`: a pre-norm block of attention
+  and an MLP with residual connections.
+
+The classes (`layers.Linear`, `layers.TransformerBlock`, ...) can be named in
+type annotations to build models out of them.
+
 ## Data
 
 `use csv` reads and writes comma-separated values, with quoted fields as in

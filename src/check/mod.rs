@@ -53,6 +53,16 @@ pub fn analyze(
     (program, checker.diags)
 }
 
+/// Standard modules written in Novo, compiled into the executable.
+const SOURCE_MODULES: &[(&str, &str)] = &[("layers", include_str!("../stdlib/layers.nv"))];
+
+fn source_module_path(name: &str) -> Option<PathBuf> {
+    SOURCE_MODULES
+        .iter()
+        .any(|(n, _)| *n == name)
+        .then(|| PathBuf::from(format!("<std>/{name}.nv")))
+}
+
 fn varied_names(body: &[ast::Stmt]) -> HashSet<String> {
     let mut names = HashMap::new();
     let mut returns = 0;
@@ -274,7 +284,14 @@ impl Checker {
             .as_ref()
             .filter(|(p, _)| *p == path)
             .map(|(_, t)| Ok(t.clone()));
-        let text = match overlay.unwrap_or_else(|| std::fs::read_to_string(&path)) {
+        let builtin = SOURCE_MODULES
+            .iter()
+            .find(|(n, _)| source_module_path(n).as_deref() == Some(path.as_path()))
+            .map(|(_, t)| Ok(t.to_string()));
+        let text = match overlay
+            .or(builtin)
+            .unwrap_or_else(|| std::fs::read_to_string(&path))
+        {
             Ok(t) => t,
             Err(e) => {
                 let msg = format!("cannot read `{}`: {e}", path.display());
@@ -360,10 +377,16 @@ impl Checker {
                 ast::StmtKind::Use(ast::Use::Module { name, alias }) => {
                     match StdModule::from_name(&name.name) {
                         Some(m) => self.define(id, alias.as_ref().unwrap_or(name), Item::Std(m)),
+                        None if source_module_path(&name.name).is_some() => {
+                            let path = source_module_path(&name.name).expect("checked above");
+                            if let Some(mid) = self.load_module(&path, Some(stmt.span)) {
+                                self.define(id, alias.as_ref().unwrap_or(name), Item::Module(mid));
+                            }
+                        }
                         None => {
                             let msg = format!("unknown module `{}`", name.name);
                             let help = format!(
-                                "standard modules are math, time, json, fs, env, nn and random; to load a file write `use \"{}.nv\"`",
+                                "standard modules are math, time, json, csv, fs, env, random, nn and layers; to load a file write `use \"{}.nv\"`",
                                 name.name
                             );
                             self.error(Diagnostic::error(name.span, msg).with_help(help));
@@ -910,6 +933,28 @@ impl Checker {
                 let k = self.resolve_type(&t.args[0]);
                 let v = self.resolve_type(&t.args[1]);
                 Ty::map(k, v)
+            }
+            name if name.contains('.') => {
+                let (module, class) = name.split_once('.').expect("contains a dot");
+                let found = match self.lookup(module) {
+                    Some(Resolved::Module(m)) => {
+                        match self.modules[m.0 as usize].names.get(class) {
+                            Some(Item::Class(c)) => Some(*c),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                match found {
+                    Some(c) => {
+                        arity(self, 0);
+                        Ty::Class(c)
+                    }
+                    None => {
+                        self.error(Diagnostic::error(t.span, format!("unknown type `{name}`")));
+                        Ty::Any
+                    }
+                }
             }
             name => match self.lookup(name) {
                 Some(Resolved::Class(c)) => {

@@ -522,6 +522,16 @@ impl<'a> Parser<'a> {
             _ => return Err(self.unexpected("expected a type")),
         };
         self.bump();
+        let mut name = name;
+        while self.eat(&Tok::Dot) {
+            match self.peek().clone() {
+                Tok::Ident(member) => {
+                    self.bump();
+                    name = format!("{name}.{member}");
+                }
+                _ => return Err(self.unexpected("expected a type name after `.`")),
+            }
+        }
         let mut args = Vec::new();
         if self.eat(&Tok::LBracket) {
             loop {

@@ -1,6 +1,7 @@
 # A tiny character-level GPT: token and position embeddings, causal
 # self-attention blocks, and a language-model head, trained from scratch.
 
+use layers
 use nn
 use random
 
@@ -29,70 +30,30 @@ width = 32
 heads = 4
 depth = 2
 
-function weight(rows: Int, cols: Int) -> Tensor:
-    return nn.param(nn.randn([rows, cols]) * 0.02)
-
-function ones(n: Int) -> Tensor:
-    return nn.param(nn.ones([n]))
-
-function zeros(n: Int) -> Tensor:
-    return nn.param(nn.zeros([n]))
-
-class Block:
-    norm1_w: Tensor
-    norm1_b: Tensor
-    qkv: Tensor
-    proj: Tensor
-    norm2_w: Tensor
-    norm2_b: Tensor
-    up: Tensor
-    down: Tensor
-
-    function forward(x: Tensor, blocked: Tensor) -> Tensor:
-        shape = x.shape()
-        batch = shape[0]
-        steps = shape[1]
-        size = width // heads
-        parts = (x.layer_norm(self.norm1_w, self.norm1_b) @ self.qkv).chunk(3, 2)
-        q = parts[0].reshape([batch, steps, heads, size]).transpose(1, 2)
-        k = parts[1].reshape([batch, steps, heads, size]).transpose(1, 2)
-        v = parts[2].reshape([batch, steps, heads, size]).transpose(1, 2)
-        scores = (q @ k.transpose(2, 3)) * (1.0 / size ** 0.5)
-        attention = scores.masked_fill(blocked, -1e9).softmax(3)
-        mixed = (attention @ v).transpose(1, 2).reshape([batch, steps, width])
-        x = x + mixed @ self.proj
-        hidden = (x.layer_norm(self.norm2_w, self.norm2_b) @ self.up).gelu()
-        return x + hidden @ self.down
-
-    function params() -> List[Tensor]:
-        return [self.norm1_w, self.norm1_b, self.qkv, self.proj, self.norm2_w, self.norm2_b, self.up, self.down]
-
-function block() -> Block:
-    return Block(ones(width), zeros(width), weight(width, 3 * width), weight(width, width), ones(width), zeros(width), weight(width, 4 * width), weight(4 * width, width))
-
 class GPT:
-    tokens: Tensor
-    positions: Tensor
-    blocks: List[Block]
-    norm_w: Tensor
-    norm_b: Tensor
-    head: Tensor
+    tokens: layers.Embedding
+    positions: layers.Embedding
+    blocks: List[layers.TransformerBlock]
+    norm: layers.LayerNorm
+    head: layers.Linear
 
     function forward(idx: Tensor) -> Tensor:
         steps = idx.shape()[1]
-        blocked = 1 - nn.tril(steps)
-        x = self.tokens.embed(idx) + self.positions.narrow(0, 0, steps)
+        x = self.tokens.forward(idx) + self.positions.forward(nn.arange(steps))
         for b in self.blocks:
-            x = b.forward(x, blocked)
-        return x.layer_norm(self.norm_w, self.norm_b) @ self.head
+            x = b.forward(x)
+        return self.head.forward(self.norm.forward(x))
 
     function params() -> List[Tensor]:
-        all = [self.tokens, self.positions, self.norm_w, self.norm_b, self.head]
+        all = self.tokens.params()
+        all.extend(self.positions.params())
         for b in self.blocks:
             all.extend(b.params())
+        all.extend(self.norm.params())
+        all.extend(self.head.params())
         return all
 
-model = GPT(weight(vocab, width), weight(context, width), range(depth) select block(), ones(width), zeros(width), weight(width, vocab))
+model = GPT(layers.embedding(vocab, width), layers.embedding(context, width), range(depth) select layers.transformer_block(width, heads), layers.layer_norm(width), layers.linear(width, vocab))
 optimizer = nn.adam(model.params(), 0.01)
 
 function batch(size: Int) -> List[Tensor]:

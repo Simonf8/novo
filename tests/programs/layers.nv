@@ -1,0 +1,28 @@
+use layers
+use nn
+
+nn.seed(0)
+fc = layers.linear(3, 2)
+show fc.forward(nn.ones([4, 3])).shape(), len(fc.params())
+
+block = layers.transformer_block(8, 2)
+x = nn.randn([2, 5, 8])
+show block.forward(x).shape(), len(block.params())
+
+emb = layers.embedding(10, 4)
+show emb.forward(nn.tensor([[1, 2, 3]])).shape()
+show layers.causal_mask(3)
+
+net = layers.mlp(4, 16)
+inputs = nn.randn([32, 4])
+targets = inputs * 2.0
+opt = nn.adam(net.params(), 0.01)
+first = nn.mse(net.forward(inputs), targets).item()
+repeat 200 times:
+    opt.step(nn.mse(net.forward(inputs), targets))
+show nn.mse(net.forward(inputs), targets).item() < first / 10
+
+try:
+    layers.attention(10, 3)
+catch e:
+    show e
