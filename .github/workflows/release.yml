@@ -33,7 +33,7 @@ jobs:
         run: |
           name=novo-${{ github.ref_name }}-${{ matrix.target }}
           mkdir "$name"
-          cp README.md CHANGELOG.md "$name"/
+          cp README.md CHANGELOG.md LICENSE "$name"/
           if [ "${{ runner.os }}" = Windows ]; then
             cp target/dist/novo.exe "$name"/
             7z a "$name.zip" "$name" > /dev/null
@@ -44,7 +44,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: novo-*.*
+          path: |
+            novo-*.tar.gz
+            novo-*.zip
 
   publish:
     needs: build
