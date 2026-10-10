@@ -25,6 +25,32 @@ fn list(v: &Value) -> Result<Vec<Value>, String> {
     }
 }
 
+fn csv_rows(text: &str) -> Result<Value, String> {
+    let rows = super::csv::parse(text)?;
+    Ok(Value::list(
+        rows.into_iter()
+            .map(|r| Value::list(r.into_iter().map(|f| Value::Str(f.into())).collect()))
+            .collect(),
+    ))
+}
+
+fn string_rows(v: &Value) -> Result<Vec<Vec<String>>, String> {
+    let Value::List(rows) = v else {
+        return Err(format!("expected a List, found a {}", v.type_name()));
+    };
+    rows.read()
+        .iter()
+        .map(|row| match row {
+            Value::List(fields) => fields
+                .read()
+                .iter()
+                .map(|f| string(f).map(|s| s.to_string()))
+                .collect(),
+            other => Err(format!("expected a List, found a {}", other.type_name())),
+        })
+        .collect()
+}
+
 fn string(v: &Value) -> Result<Arc<str>, String> {
     match v {
         Value::Str(s) => Ok(s.clone()),
@@ -314,6 +340,19 @@ impl Interp {
                 Value::None
             }
             Builtin::JsonParse => json::parse(&string(&args[0])?)?,
+            Builtin::CsvParse => csv_rows(&string(&args[0])?)?,
+            Builtin::CsvRead => {
+                csv_rows(&std::fs::read_to_string(&*string(&args[0])?).map_err(|e| e.to_string())?)?
+            }
+            Builtin::CsvFormat => Value::Str(super::csv::format(&string_rows(&args[0])?).into()),
+            Builtin::CsvWrite => {
+                std::fs::write(
+                    &*string(&args[0])?,
+                    super::csv::format(&string_rows(&args[1])?),
+                )
+                .map_err(|e| e.to_string())?;
+                Value::None
+            }
             Builtin::JsonStringify => Value::Str(json::stringify(&args[0])?.into()),
             Builtin::FsRead => Value::Str(
                 std::fs::read_to_string(&*string(&args[0])?)

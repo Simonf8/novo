@@ -1,0 +1,43 @@
+# Predicts house prices from a CSV file with a linear model trained on
+# shuffled minibatches.
+#
+#     novo run examples/housing/train.nv examples/housing/houses.csv
+
+use csv
+use env
+use nn
+use random
+
+args = env.args()
+path = "examples/housing/houses.csv"
+if len(args) > 1:
+    path = args[1]
+rows = csv.read(path)
+show f"columns: {rows[0]}, examples: {len(rows) - 1}"
+
+data = rows[1:] select (it select float(it))
+features = nn.tensor(data select it[0:3])
+prices = nn.tensor(data select it[3:4])
+
+# Scale each feature to zero mean and unit variance.
+mean = features.mean(0, true)
+std = ((features - mean).square().mean(0, true)).sqrt()
+x = (features - mean) / std
+
+nn.seed(0)
+random.seed(0)
+w = nn.param(nn.zeros([3, 1]))
+b = nn.param(prices.mean(0))
+opt = nn.adam([w, b], 0.5)
+
+n = len(data)
+for epoch in range(60):
+    order = range(n)
+    random.shuffle(order)
+    for xb, yb in zip(x.take(order).batches(32), prices.take(order).batches(32)):
+        opt.step(nn.mse(xb @ w + b, yb))
+    if epoch % 20 == 19:
+        show f"epoch {epoch + 1}: loss {nn.mse(x @ w + b, prices).item():.2f}"
+
+weights = (w.flatten() / std.flatten()).to_list()
+show f"price ≈ {weights[0]:.2f}·area + {weights[1]:.2f}·rooms + {weights[2]:.2f}·age + ..."

@@ -1,0 +1,32 @@
+use csv
+use nn
+use random
+
+text = "area,rooms,price\n10,2,75\n15,3,\"88\"\n20,3,102\n25,4,114\n30,4,126\n"
+rows = csv.parse(text)
+show rows[0]
+show len(rows)
+
+data = rows[1:] select (it select float(it))
+x = nn.tensor(data select it[0:2])
+y = nn.tensor(data select it[2])
+show x.shape(), y.shape()
+
+for batch in x.batches(2):
+    show batch.shape()
+
+random.seed(7)
+order = range(5)
+random.shuffle(order)
+show y.take([4, 0]).to_list()
+show y.take(order).sum().item()
+
+show csv.format([["a", "b,c"], ["say \"hi\"", ""]])
+try:
+    csv.parse("\"open")
+catch e:
+    show e
+try:
+    y.take([5])
+catch e:
+    show e

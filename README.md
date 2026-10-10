@@ -156,9 +156,11 @@ novo run examples/gpt2/generate.nv path/to/gpt2 "The meaning of life is" 30
 written as a Novo class, and [examples/tiny_gpt.nv](examples/tiny_gpt.nv) is a
 character-level GPT (embeddings, causal multi-head self-attention, layer norm,
 MLP blocks) that trains from scratch and generates text in a few seconds.
+[examples/housing](examples/housing) reads a CSV file and fits a model on
+shuffled minibatches.
 
 Modules: `use "path/to/file.nv" as m` loads another file; `use math`,
-`use json`, `use time`, `use fs`, `use env`, `use random` and `use nn` bring in
+`use json`, `use csv`, `use time`, `use fs`, `use env`, `use random` and `use nn` bring in
 the standard library;
 `use python numpy as np` imports a Python module when built with the
 `python` feature.
@@ -213,8 +215,7 @@ errors (`# expect-error: ...`) and required features
 1. **Faster native code.** Closures and parallel blocks in compiled code,
    unboxed lists of numbers, inlining, and ahead-of-time executables.
 2. **Shapes in types.** Catch tensor dimension mismatches at check time.
-3. **Data and models.** Data loading, batching, reusable layers, and
-   running pretrained models such as GPT-2 from their published weights.
+3. **Data and models.** Reusable layers and more pretrained architectures.
 4. **Tooling.** Language server and a comment-preserving formatter.
 
 ## License

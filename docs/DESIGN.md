@@ -124,7 +124,7 @@ status 1.
 
 `use "path/file.nv" as m` loads another file relative to the current one,
 runs its top-level code once, and exposes its top-level names as `m.name`.
-Standard modules (`math`, `time`, `json`, `fs`, `env`) are brought in with
+Standard modules (`math`, `time`, `json`, `csv`, `fs`, `env`, `random`, `nn`) are brought in with
 `use math`. `use python numpy as np` imports a Python module as an `Any`;
 it requires building with `--features python`.
 
@@ -180,6 +180,24 @@ Shape errors are run-time errors that name both shapes.
 `use random` gives `random.int(low, high)` (high excluded), `random.float()`,
 `random.choice(list)`, `random.shuffle(list)` and `random.seed(n)`. It shares
 one generator with `nn`, so a single seed makes a training run reproducible.
+
+## Data
+
+`use csv` reads and writes comma-separated values, with quoted fields as in
+RFC 4180. `csv.read(path)` and `csv.parse(text)` return a `List[List[String]]`
+of rows; `csv.write(path, rows)` and `csv.format(rows)` go the other way.
+
+For training on minibatches, `t.take(indices)` gathers rows by index and
+`t.batches(size)` splits a tensor into consecutive pieces along its first
+dimension, the last one possibly shorter. Shuffling the same index list into
+the inputs and targets keeps them aligned:
+
+```
+order = range(n)
+random.shuffle(order)
+for xb, yb in zip(x.take(order).batches(32), y.take(order).batches(32)):
+    opt.step(nn.mse(model(xb), yb))
+```
 
 ## Display
 

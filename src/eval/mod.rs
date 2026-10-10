@@ -2,6 +2,7 @@
 //! behavior that compiled code must match.
 
 pub mod builtins;
+mod csv;
 mod ops;
 mod tensor;
 pub mod value;

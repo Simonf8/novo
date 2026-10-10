@@ -528,6 +528,40 @@ impl State {
                 let parts = t.chunk(n as usize, d).map_err(err)?;
                 return Ok(Value::list(parts.into_iter().map(wrap).collect()));
             }
+            "batches" => {
+                let size = int_arg(&args[0])?;
+                if size <= 0 || t.rank() == 0 {
+                    return Err(
+                        "`batches` needs a positive size and a tensor with at least one dimension"
+                            .into(),
+                    );
+                }
+                let n = t.dims()[0];
+                let parts = (0..n)
+                    .step_by(size as usize)
+                    .map(|start| t.narrow(0, start, (size as usize).min(n - start)).map(wrap))
+                    .collect::<candle_core::Result<Vec<_>>>()
+                    .map_err(err)?;
+                return Ok(Value::list(parts));
+            }
+            "take" => {
+                let Value::List(items) = &args[0] else {
+                    return Err("`take` needs a list of indices".into());
+                };
+                let n = t.dims().first().copied().unwrap_or(0) as i64;
+                let ids = items
+                    .read()
+                    .iter()
+                    .map(|v| match int_arg(v)? {
+                        i if (0..n).contains(&i) => Ok(i as u32),
+                        i => Err(format!(
+                            "index {i} is out of range for a first dimension of size {n}"
+                        )),
+                    })
+                    .collect::<R<Vec<u32>>>()?;
+                let ids = Tensor::new(ids, t.device()).map_err(err)?;
+                t.index_select(&ids, 0).map_err(err)?
+            }
             "embed" => {
                 let ids = tensor_arg(&args[0])?;
                 let mut shape = ids.dims().to_vec();

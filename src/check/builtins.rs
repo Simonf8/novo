@@ -77,6 +77,10 @@ pub enum Builtin {
     RandomFloat,
     RandomChoice,
     RandomShuffle,
+    CsvParse,
+    CsvFormat,
+    CsvRead,
+    CsvWrite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +92,7 @@ pub enum StdModule {
     Env,
     Nn,
     Random,
+    Csv,
 }
 
 impl StdModule {
@@ -100,6 +105,7 @@ impl StdModule {
             "env" => StdModule::Env,
             "nn" => StdModule::Nn,
             "random" => StdModule::Random,
+            "csv" => StdModule::Csv,
             _ => return None,
         })
     }
@@ -161,6 +167,10 @@ impl StdModule {
             (StdModule::Random, "float") => RandomFloat,
             (StdModule::Random, "choice") => RandomChoice,
             (StdModule::Random, "shuffle") => RandomShuffle,
+            (StdModule::Csv, "parse") => CsvParse,
+            (StdModule::Csv, "format") => CsvFormat,
+            (StdModule::Csv, "read") => CsvRead,
+            (StdModule::Csv, "write") => CsvWrite,
             _ => return None,
         })
     }
@@ -244,6 +254,10 @@ impl Builtin {
         Builtin::RandomFloat,
         Builtin::RandomChoice,
         Builtin::RandomShuffle,
+        Builtin::CsvParse,
+        Builtin::CsvFormat,
+        Builtin::CsvRead,
+        Builtin::CsvWrite,
     ];
 
     pub fn index(self) -> u32 {
@@ -367,6 +381,10 @@ impl Builtin {
             RandomFloat => "random.float",
             RandomChoice => "random.choice",
             RandomShuffle => "random.shuffle",
+            CsvParse => "csv.parse",
+            CsvFormat => "csv.format",
+            CsvRead => "csv.read",
+            CsvWrite => "csv.write",
         }
     }
 
@@ -413,6 +431,9 @@ impl Builtin {
             RandomSeed => (vec![Ty::Int], 1, Ty::None),
             RandomInt => (vec![Ty::Int, Ty::Int], 2, Ty::Int),
             RandomFloat => (vec![], 0, f()),
+            CsvParse | CsvRead => (vec![s()], 1, Ty::list(Ty::list(s()))),
+            CsvFormat => (vec![Ty::list(Ty::list(s()))], 1, s()),
+            CsvWrite => (vec![s(), Ty::list(Ty::list(s()))], 2, Ty::None),
             _ => return None,
         })
     }
@@ -495,6 +516,8 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
                 }
                 "narrow" => (vec![i(), i(), i()], 3, t()),
                 "chunk" => (vec![i(), i()], 1, Ty::list(t())),
+                "batches" => (vec![i()], 1, Ty::list(t())),
+                "take" => (vec![Ty::list(i())], 1, t()),
                 "embed" => (vec![t()], 1, t()),
                 "masked_fill" => (vec![t(), Ty::Float], 2, t()),
                 "layer_norm" => (vec![t(), t(), Ty::Float], 2, t()),

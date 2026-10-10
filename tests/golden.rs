@@ -176,22 +176,28 @@ fn golden_programs() {
 
 #[test]
 fn examples_type_check() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    for entry in fs::read_dir(dir).expect("examples exists") {
-        let path = entry.unwrap().path();
-        if path.extension().is_none_or(|e| e != "nv") {
-            continue;
+    let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("examples")];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir).expect("examples exists") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "nv") {
+                continue;
+            }
+            let output = Command::new(env!("CARGO_BIN_EXE_novo"))
+                .arg("check")
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} does not type-check:\n{}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
-        let output = Command::new(env!("CARGO_BIN_EXE_novo"))
-            .arg("check")
-            .arg(&path)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{} does not type-check:\n{}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }
