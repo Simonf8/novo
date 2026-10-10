@@ -1,0 +1,60 @@
+# Checks that tensors on a GPU give the same results as on the CPU, trains a
+# small network there, and times matrix products on both.
+#
+#     novo run examples/gpu/check.nv cuda
+
+use env
+use nn
+use time
+
+args = env.args()
+device = args[1] if len(args) > 1 else "cuda"
+
+function timed_matmul(a: Tensor, b: Tensor, runs: Int) -> Float:
+    (a @ b).sum().item()
+    start = time.now()
+    total = 0.0
+    repeat runs times:
+        total += (a @ b).sum().item()
+    return (time.now() - start) / float(runs)
+
+nn.seed(7)
+a = nn.randn([512, 256])
+b = nn.randn([256, 384])
+on_cpu = a @ b
+nn.device(device)
+show "device:", nn.device()
+on_device = a.to(device) @ b.to(device)
+difference = (on_device.to("cpu") - on_cpu).abs().flatten().max(0).item()
+show f"matmul matches the CPU: {difference < 0.001} (largest difference {difference:.2e})"
+
+for dtype in ["f16", "bf16"]:
+    try:
+        low = (a.to(device).to_dtype(dtype) @ b.to(device).to_dtype(dtype)).to_dtype("f32")
+        error = (low.to("cpu") - on_cpu).abs().flatten().max(0).item()
+        show f"{dtype} matmul works (largest difference {error:.2f})"
+    catch e:
+        show f"{dtype} matmul failed: {e}"
+
+w1 = nn.param(nn.randn([2, 16]) * 0.7)
+b1 = nn.param(nn.zeros([16]))
+w2 = nn.param(nn.randn([16, 2]) * 0.25)
+b2 = nn.param(nn.zeros([2]))
+inputs = nn.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
+labels = nn.tensor([0, 1, 1, 0])
+optimizer = nn.adamw([w1, b1, w2, b2], 0.05)
+repeat 300 times:
+    logits = (inputs @ w1 + b1).tanh() @ w2 + b2
+    optimizer.step(nn.cross_entropy(logits, labels))
+predictions = ((inputs @ w1 + b1).tanh() @ w2 + b2).argmax(1)
+show "trained XOR on the device:", predictions.eq(labels).mean().item() == 1.0
+
+size = 2048
+x = nn.randn([size, size])
+y = nn.randn([size, size])
+nn.device("cpu")
+cpu_time = timed_matmul(x, y, 3)
+nn.device(device)
+device_time = timed_matmul(x.to(device), y.to(device), 20)
+flops = 2.0 * float(size) ** 3
+show f"{size}x{size} matmul: cpu {cpu_time * 1000.0:.1f} ms ({flops / cpu_time / 1e9:.0f} GFLOP/s), {device} {device_time * 1000.0:.2f} ms ({flops / device_time / 1e9:.0f} GFLOP/s)"

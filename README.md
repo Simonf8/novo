@@ -77,6 +77,10 @@ cargo build --release --features accelerate  # faster CPU tensors on macOS
 cargo build --release --features mkl      # faster CPU tensors with Intel MKL
 ```
 
+To try the GPU build without a GPU of your own, open
+[notebooks/gpu.ipynb](https://colab.research.google.com/github/Simonf8/novo/blob/overhaul/notebooks/gpu.ipynb)
+in Google Colab with a T4 runtime and run every cell.
+
 ## Usage
 
 ```text
