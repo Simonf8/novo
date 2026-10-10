@@ -50,9 +50,9 @@ predictions = ((inputs @ w1 + b1).tanh() @ w2 + b2).argmax(1)
 show "trained XOR on the device:", predictions.eq(labels).mean().item() == 1.0
 
 size = 2048
+nn.device("cpu")
 x = nn.randn([size, size])
 y = nn.randn([size, size])
-nn.device("cpu")
 cpu_time = timed_matmul(x, y, 3)
 nn.device(device)
 device_time = timed_matmul(x.to(device), y.to(device), 20)
