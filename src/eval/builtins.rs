@@ -870,10 +870,8 @@ pub mod json {
                 self.pos += 1;
             }
             let text = std::str::from_utf8(&self.s[start..self.pos]).expect("ascii");
-            if !float {
-                if let Ok(i) = text.parse::<i64>() {
-                    return Ok(Value::Int(i));
-                }
+            if !float && let Ok(i) = text.parse::<i64>() {
+                return Ok(Value::Int(i));
             }
             text.parse::<f64>()
                 .map(Value::Float)

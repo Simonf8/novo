@@ -1313,10 +1313,10 @@ impl Lower<'_, '_> {
     }
 
     fn binary(&mut self, op: BinOp, l: Val, r: Val, ty: &Ty, span: Span) -> R<Val> {
-        if let (Val::S(a, sa), Val::S(b, sb)) = (l, r) {
-            if let Some(v) = self.scalar_binary(op, (a, sa), (b, sb), span) {
-                return Ok(v);
-            }
+        if let (Val::S(a, sa), Val::S(b, sb)) = (l, r)
+            && let Some(v) = self.scalar_binary(op, (a, sa), (b, sb), span)
+        {
+            return Ok(v);
         }
         let a = self.boxed(l);
         let b = self.boxed(r);
@@ -1497,10 +1497,10 @@ impl Lower<'_, '_> {
         let all_scalar = args
             .iter()
             .all(|a| matches!(self.rep(&a.ty), Rep::Scalar(_)));
-        if all_scalar || b == Builtin::Assert {
-            if let Some(v) = self.scalar_builtin(b, args, span)? {
-                return Ok(v);
-            }
+        if (all_scalar || b == Builtin::Assert)
+            && let Some(v) = self.scalar_builtin(b, args, span)?
+        {
+            return Ok(v);
         }
         let addrs = self.boxed_all(args)?;
         let arr = self.ptr_array(&addrs);

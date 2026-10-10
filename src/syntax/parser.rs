@@ -541,30 +541,31 @@ impl<'a> Parser<'a> {
     pub fn expression(&mut self) -> PResult<Expr> {
         let mut expr = self.or_expr()?;
         loop {
-            if let Tok::Ident(word) = self.peek() {
-                if let Some(op) = QueryOp::from_word(word) {
-                    self.bump();
-                    let body = if self.starts_expression() {
-                        Some(Box::new(self.or_expr()?))
-                    } else {
-                        None
-                    };
-                    if body.is_none() && matches!(op, QueryOp::Where | QueryOp::Select) {
-                        return Err(self
-                            .unexpected(&format!("expected an expression after `{}`", op.word())));
-                    }
-                    let span = expr.span.to(self.prev_span());
-                    expr = Expr {
-                        kind: ExprKind::Query {
-                            op,
-                            target: Box::new(expr),
-                            body,
-                            parallel: false,
-                        },
-                        span,
-                    };
-                    continue;
+            if let Tok::Ident(word) = self.peek()
+                && let Some(op) = QueryOp::from_word(word)
+            {
+                self.bump();
+                let body = if self.starts_expression() {
+                    Some(Box::new(self.or_expr()?))
+                } else {
+                    None
+                };
+                if body.is_none() && matches!(op, QueryOp::Where | QueryOp::Select) {
+                    return Err(
+                        self.unexpected(&format!("expected an expression after `{}`", op.word()))
+                    );
                 }
+                let span = expr.span.to(self.prev_span());
+                expr = Expr {
+                    kind: ExprKind::Query {
+                        op,
+                        target: Box::new(expr),
+                        body,
+                        parallel: false,
+                    },
+                    span,
+                };
+                continue;
             }
             if self.at(&Tok::Together) {
                 let tspan = self.bump().span;

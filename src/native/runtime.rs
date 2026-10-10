@@ -812,10 +812,10 @@ unsafe extern "C" fn novo_fstr_value(
     } else {
         crate::eval::builtins::format_spec(shown, value, unsafe { text(spec, spec_len) })
     };
-    if let Some(piece) = c.check(piece, span) {
-        if let Some(top) = c.fstrings.last_mut() {
-            top.push_str(&piece);
-        }
+    if let Some(piece) = c.check(piece, span)
+        && let Some(top) = c.fstrings.last_mut()
+    {
+        top.push_str(&piece);
     }
 }
 

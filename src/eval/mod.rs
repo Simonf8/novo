@@ -257,20 +257,19 @@ impl Interp {
         span: Span,
     ) -> Eval {
         let f = &self.prog.funcs[fid.0 as usize];
-        if let Some(native) = &self.native {
-            if args.len() == f.params && f.name != "<module>" {
-                if let Some(entry) =
-                    self.dynamic_entries[fid.0 as usize].get_or_init(|| native.entry(fid, &[]))
-                {
-                    let mut all = args;
-                    if let Some(c) = &closure {
-                        all.extend(c.captures.iter().cloned());
-                    }
-                    return entry
-                        .call(self, &all, DEPTH.with(Cell::get), span)
-                        .map_err(|e| e.through(&f.name, span));
-                }
+        if let Some(native) = &self.native
+            && args.len() == f.params
+            && f.name != "<module>"
+            && let Some(entry) =
+                self.dynamic_entries[fid.0 as usize].get_or_init(|| native.entry(fid, &[]))
+        {
+            let mut all = args;
+            if let Some(c) = &closure {
+                all.extend(c.captures.iter().cloned());
             }
+            return entry
+                .call(self, &all, DEPTH.with(Cell::get), span)
+                .map_err(|e| e.through(&f.name, span));
         }
         let depth = DEPTH.with(|d| {
             d.set(d.get() + 1);

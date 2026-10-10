@@ -457,12 +457,11 @@ impl Checker {
                         _ => {}
                     }
                 }
-                if op == BinOp::Mul {
-                    if let (Ty::Str, Ty::Int) | (Ty::Str, Ty::Var(_)) = (&l, &r) {
-                        if self.infer.unify(&r, &Ty::Int) {
-                            return self.settle(out, &Ty::Str, span);
-                        }
-                    }
+                if op == BinOp::Mul
+                    && let (Ty::Str, Ty::Int) | (Ty::Str, Ty::Var(_)) = (&l, &r)
+                    && self.infer.unify(&r, &Ty::Int)
+                {
+                    return self.settle(out, &Ty::Str, span);
                 }
                 match (&l, &r) {
                     (Ty::Int, Ty::Int) => self.settle(out, &Ty::Int, span),

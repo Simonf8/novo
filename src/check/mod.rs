@@ -256,12 +256,13 @@ impl Checker {
 
     fn define(&mut self, module: ModuleId, name: &ast::Ident, item: Item) {
         let names = &mut self.modules[module.0 as usize].names;
-        if let Some(existing) = names.get(&name.name) {
-            if !self.redefine && !matches!((existing, item), (Item::Global(_), Item::Global(_))) {
-                let msg = format!("`{}` is defined more than once", name.name);
-                self.error(Diagnostic::error(name.span, msg));
-                return;
-            }
+        if let Some(existing) = names.get(&name.name)
+            && !self.redefine
+            && !matches!((existing, item), (Item::Global(_), Item::Global(_)))
+        {
+            let msg = format!("`{}` is defined more than once", name.name);
+            self.error(Diagnostic::error(name.span, msg));
+            return;
         }
         names.insert(name.name.clone(), item);
     }
@@ -743,10 +744,10 @@ impl Checker {
         if let Some(l) = ctx.names.get(name) {
             return Some(Resolved::Local(*l));
         }
-        if let Some((n, ty)) = &ctx.self_name {
-            if n == name {
-                return Some(Resolved::Recurse(ty.clone()));
-            }
+        if let Some((n, ty)) = &ctx.self_name
+            && n == name
+        {
+            return Some(Resolved::Recurse(ty.clone()));
         }
         if !ctx.is_closure || depth == 0 {
             return None;
