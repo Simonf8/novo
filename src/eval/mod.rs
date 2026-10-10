@@ -71,7 +71,8 @@ impl Frame {
 #[derive(Clone)]
 pub struct Interp {
     prog: Arc<Program>,
-    globals: Arc<Vec<RwLock<Value>>>,
+    /// Module variables; `None` until first assigned.
+    globals: Arc<Vec<RwLock<Option<Value>>>>,
     initialized: Arc<Mutex<Vec<bool>>>,
     out: Arc<Mutex<BufWriter<Stdout>>>,
     args: Arc<Vec<String>>,
@@ -85,9 +86,7 @@ pub struct Interp {
 /// Runs a checked program on a thread with a large stack, compiling eligible
 /// functions to native code when `native` is set.
 pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError> {
-    let globals = (0..prog.globals.len())
-        .map(|_| RwLock::new(Value::None))
-        .collect();
+    let globals = (0..prog.globals.len()).map(|_| RwLock::new(None)).collect();
     let initialized = vec![false; prog.modules.len()];
     let entry = prog.entry;
     let prog = Arc::new(prog);
@@ -131,7 +130,7 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
 /// Interpreter state kept between inputs at the interactive prompt.
 #[derive(Default)]
 pub struct Session {
-    globals: Vec<Value>,
+    globals: Vec<Option<Value>>,
     initialized: Vec<bool>,
     tensors: Arc<tensor::State>,
 }
@@ -140,7 +139,7 @@ impl Session {
     /// Runs function `run` of a program that extends the previous input's program.
     pub fn run(&mut self, prog: Program, run: hir::FuncId) -> Result<(), RtError> {
         let mut globals = std::mem::take(&mut self.globals);
-        globals.resize(prog.globals.len(), Value::None);
+        globals.resize(prog.globals.len(), None);
         self.initialized.resize(prog.modules.len(), false);
         self.initialized[prog.entry.0 as usize] = true;
         let interp = Interp {
@@ -198,12 +197,17 @@ impl<T> At<T> for Result<T, String> {
 }
 
 impl Interp {
-    pub(crate) fn global(&self, g: hir::GlobalId) -> Value {
-        self.globals[g.0 as usize].read().clone()
+    pub(crate) fn global(&self, g: hir::GlobalId) -> Result<Value, String> {
+        self.globals[g.0 as usize].read().clone().ok_or_else(|| {
+            format!(
+                "`{}` is used before it is assigned",
+                self.prog.globals[g.0 as usize].name
+            )
+        })
     }
 
     pub(crate) fn set_global(&self, g: hir::GlobalId, v: Value) {
-        *self.globals[g.0 as usize].write() = v;
+        *self.globals[g.0 as usize].write() = Some(v);
     }
 
     pub(crate) fn output(&self) -> &Mutex<BufWriter<Stdout>> {
@@ -529,7 +533,7 @@ impl Interp {
     fn store(&self, place: &Place, v: Value, frame: &mut Frame) -> Result<(), RtError> {
         match place {
             Place::Local(l) => frame.locals[l.0 as usize] = v,
-            Place::Global(g) => *self.globals[g.0 as usize].write() = v,
+            Place::Global(g) => *self.globals[g.0 as usize].write() = Some(v),
             Place::Field { target, name } => {
                 let obj = self.eval(target, frame)?;
                 self.set_field(&obj, name, v).at(target.span)?;
@@ -552,15 +556,17 @@ impl Interp {
         span: Span,
     ) -> Result<(), RtError> {
         match place {
+            // The variable is read before the right-hand side runs, as in Python.
             Place::Local(l) => {
+                let current = frame.locals[l.0 as usize].clone();
                 let rhs = self.eval(value, frame)?;
-                let cur = &frame.locals[l.0 as usize];
-                frame.locals[l.0 as usize] = self.binary_values(op, cur, &rhs).at(span)?;
+                frame.locals[l.0 as usize] = self.binary_values(op, &current, &rhs).at(span)?;
             }
             Place::Global(g) => {
+                let current = self.global(*g).at(span)?;
                 let rhs = self.eval(value, frame)?;
-                let mut slot = self.globals[g.0 as usize].write();
-                *slot = self.binary_values(op, &slot, &rhs).at(span)?;
+                let new = self.binary_values(op, &current, &rhs).at(span)?;
+                *self.globals[g.0 as usize].write() = Some(new);
             }
             Place::Field { target, name } => {
                 let obj = self.eval(target, frame)?;
@@ -734,7 +740,7 @@ impl Interp {
                 Value::map(dict)
             }
             ExprKind::Local(l) => frame.locals[l.0 as usize].clone(),
-            ExprKind::Global(g) => self.globals[g.0 as usize].read().clone(),
+            ExprKind::Global(g) => self.global(*g).at(e.span)?,
             ExprKind::Func { func, .. } => Value::Func(Arc::new(Closure {
                 func: *func,
                 captures: Vec::new(),

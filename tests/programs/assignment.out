@@ -1,0 +1,4 @@
+1 2 3 3 0
+`total` is used before it is assigned
+total is 3
+6

@@ -573,9 +573,12 @@ unsafe extern "C" fn novo_make_closure(
     }));
 }
 
-unsafe extern "C" fn novo_global_get(c: *mut Ctx, dst: *mut Value, g: u32) {
-    let v = unsafe { ctx(c) }.interp().global(GlobalId(g));
-    *unsafe { slot(dst) } = v;
+unsafe extern "C" fn novo_global_get(c: *mut Ctx, dst: *mut Value, g: u32, span: u64) {
+    let c = unsafe { ctx(c) };
+    let result = c.interp().global(GlobalId(g));
+    if let Some(v) = c.check(result, span) {
+        *unsafe { slot(dst) } = v;
+    }
 }
 
 unsafe extern "C" fn novo_global_set(c: *mut Ctx, g: u32, src: *mut Value) {
@@ -900,7 +903,7 @@ helpers! {
     make_tuple = novo_make_tuple(I64, I64, I64);
     make_map = novo_make_map(I64, I64, I64, I64, I64, I64);
     make_closure = novo_make_closure(I64, I32, I64, I64);
-    global_get = novo_global_get(I64, I64, I32);
+    global_get = novo_global_get(I64, I64, I32, I64);
     global_set = novo_global_set(I64, I32, I64);
     items = novo_items(I64, I64, I64, I64);
     list_len = novo_list_len(I64) -> I64;

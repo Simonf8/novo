@@ -65,6 +65,14 @@ function can read and assign the module's top-level variables. Closures
 (`|x| x + n`) and nested functions capture the variables they use by value
 when they are created.
 
+A variable must be assigned on every path before it is read; `novo check`
+reports a read that might come first. Paths through `if` branches, loops that
+may run zero times, and a `try` whose body may fail before the assignment all
+count. A function can still run before top-level code has assigned a module
+variable it reads; that read is a run-time error.
+
+`x op= value` reads `x` before evaluating `value`.
+
 ## Control flow
 
 `if` / `otherwise if` / `otherwise`, `while`, `for x in xs`, and

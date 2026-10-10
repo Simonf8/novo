@@ -1,0 +1,7 @@
+# expect-error: `x` may be used before it is assigned
+function pick(n: Int) -> Int:
+    if n > 0:
+        x = 1
+    return x
+
+show pick(1)

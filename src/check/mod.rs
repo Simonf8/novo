@@ -1,6 +1,7 @@
 //! Static checking: resolves every name, infers every type, and lowers the
 //! surface AST into the typed HIR that engines execute.
 
+mod assigned;
 pub mod builtins;
 mod expr;
 pub mod hir;
@@ -49,6 +50,11 @@ pub fn analyze(
         Some(id) if checker.funcs.iter().all(|f| f.hir.is_some()) => Some(checker.snapshot(id)),
         _ => None,
     };
+    if let Some(p) = &program
+        && checker.diags.is_empty()
+    {
+        checker.diags = checker.unassigned_reads(p, |_| true);
+    }
     *sources = std::mem::take(&mut checker.sources);
     (program, checker.diags)
 }
@@ -995,7 +1001,41 @@ impl Checker {
         if !self.diags.is_empty() {
             return Err(std::mem::take(&mut self.diags));
         }
-        Ok(self.snapshot(entry))
+        let program = self.snapshot(entry);
+        let unassigned = self.unassigned_reads(&program, |_| true);
+        if !unassigned.is_empty() {
+            return Err(unassigned);
+        }
+        Ok(program)
+    }
+
+    /// Reads of variables that may not be assigned yet. Each module's top-level
+    /// code also tracks the module's globals for which `track` holds.
+    fn unassigned_reads(
+        &self,
+        prog: &hir::Program,
+        track: impl Fn(GlobalId) -> bool,
+    ) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        for (i, func) in prog.funcs.iter().enumerate() {
+            let module = self
+                .modules
+                .iter()
+                .find(|m| m.init == Some(FuncId(i as u32)));
+            let tracked: HashSet<GlobalId> = module
+                .map(|m| {
+                    m.names
+                        .values()
+                        .filter_map(|item| match item {
+                            Item::Global(g) if track(*g) => Some(*g),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            diags.extend(assigned::check(func, &prog.globals, &tracked));
+        }
+        diags
     }
 
     /// The checked program so far, with every type resolved as far as it can be.

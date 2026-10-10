@@ -1,0 +1,45 @@
+# Variables must be assigned on every path before they are read.
+function both(n: Int) -> Int:
+    if n > 0:
+        x = 1
+    else:
+        x = 2
+    return x
+
+function until_found(xs: List[Int]) -> Int:
+    i = 0
+    while true:
+        found = xs[i]
+        if found > 2:
+            break
+        i += 1
+    return found
+
+function safe_div(a: Int, b: Int) -> Int:
+    try:
+        q = a // b
+    catch e:
+        return 0
+    return q
+
+show both(1), both(-1), until_found([1, 2, 3, 4]), safe_div(7, 2), safe_div(1, 0)
+
+# Functions may run before top-level code assigns a global; that is a run-time error.
+function report() -> String:
+    return f"total is {total}"
+
+try:
+    show report()
+catch e:
+    show e
+total = 3
+show report()
+
+# `x op= value` reads `x` before evaluating `value`, as Python does.
+counter = 1
+function bump() -> Int:
+    counter = 100
+    return 5
+
+counter += bump()
+show counter

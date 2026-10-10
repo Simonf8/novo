@@ -568,7 +568,9 @@ impl Lower<'_, '_> {
                     Place::Local(l) => self.load_local(self.locals[l.0 as usize]),
                     Place::Global(g) => match self.private.get(&g.0) {
                         Some(local) => self.load_local(*local),
-                        None => self.global(*g, &self.prog.globals[g.0 as usize].ty.clone())?,
+                        None => {
+                            self.global(*g, &self.prog.globals[g.0 as usize].ty.clone(), span)?
+                        }
                     },
                     Place::Field { target, name } => self.field(target, name, &Ty::Any, span)?,
                     Place::Index { target, index } => self.index(target, index, &Ty::Any)?,
@@ -583,11 +585,19 @@ impl Lower<'_, '_> {
                 self.store(place, v, span)?;
             }
             StmtKind::Show(values) => {
-                for (i, e) in values.iter().enumerate() {
+                // Evaluate everything first: a call made by a later value may show its own line.
+                let mut shown = Vec::with_capacity(values.len());
+                for e in values {
+                    shown.push(match &e.kind {
+                        ExprKind::Str(_) => None,
+                        _ => Some(self.expr(e)?),
+                    });
+                }
+                for (i, (e, v)) in values.iter().zip(shown).enumerate() {
                     if i > 0 {
                         self.show_text(SPACE);
                     }
-                    self.show(e)?;
+                    self.show(e, v);
                 }
                 let end = self.c.helpers.show_end;
                 self.call(end, &[self.ctx]);
@@ -832,15 +842,18 @@ impl Lower<'_, '_> {
         self.call(f, &[self.ctx, ptr, len]);
     }
 
-    fn show(&mut self, e: &hir::Expr) -> R<()> {
-        if let ExprKind::Str(s) = &e.kind {
+    /// Shows one value of a `show` statement: `v` is its value, or `None` for a string literal.
+    fn show(&mut self, e: &hir::Expr, v: Option<Val>) {
+        let Some(v) = v else {
+            let ExprKind::Str(s) = &e.kind else {
+                unreachable!("only literals are left unevaluated")
+            };
             let s: &str = s;
             let (ptr, len) = (self.iconst(s.as_ptr() as i64), self.iconst(s.len() as i64));
             let f = self.c.helpers.show_str;
             self.call(f, &[self.ctx, ptr, len]);
-            return Ok(());
-        }
-        let v = self.expr(e)?;
+            return;
+        };
         match v {
             Val::S(_, Scalar::None) => self.show_text("none"),
             Val::S(x, s) => {
@@ -857,7 +870,6 @@ impl Lower<'_, '_> {
                 self.call(f, &[self.ctx, addr]);
             }
         }
-        Ok(())
     }
 
     // ---- expressions ---------------------------------------------------------------------
@@ -873,11 +885,13 @@ impl Lower<'_, '_> {
         self.convert(v, s, Scalar::Float)
     }
 
-    fn global(&mut self, g: hir::GlobalId, ty: &Ty) -> R<Val> {
+    fn global(&mut self, g: hir::GlobalId, ty: &Ty, span: Span) -> R<Val> {
         let t = self.temp();
         let g = self.i32const(g.0);
+        let span = self.span(span);
         let get = self.c.helpers.global_get;
-        self.call(get, &[self.ctx, t, g]);
+        self.call(get, &[self.ctx, t, g, span]);
+        self.check_status();
         Ok(self.result(t, ty))
     }
 
@@ -987,7 +1001,7 @@ impl Lower<'_, '_> {
             ExprKind::Local(l) => self.load_local(self.locals[l.0 as usize]),
             ExprKind::Global(g) => match self.private.get(&g.0) {
                 Some(local) => self.load_local(*local),
-                None => self.global(*g, &e.ty)?,
+                None => self.global(*g, &e.ty, span)?,
             },
             ExprKind::Func { func, .. } => self.closure(func.0, &[])?,
             ExprKind::Closure { func, captures } => self.closure(func.0, captures)?,

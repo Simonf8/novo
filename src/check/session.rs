@@ -55,14 +55,7 @@ impl Session {
         let module = syntax::parse(file, &source).map_err(|d| vec![d])?;
 
         let c = &mut self.checker;
-        let saved = (
-            c.funcs.len(),
-            c.classes.len(),
-            c.globals.len(),
-            c.modules.len(),
-            c.deferred.len(),
-            c.modules[self.module.0 as usize].names.clone(),
-        );
+        let mark = Mark::of(c, self.module);
         c.declare_module(
             self.module,
             &module,
@@ -71,20 +64,56 @@ impl Session {
         let run = c.check_top_level(self.module, &module.stmts);
         c.solve_deferred();
         if !c.diags.is_empty() {
-            let (funcs, classes, globals, modules, deferred, names) = saved;
-            c.funcs.truncate(funcs);
-            c.classes.truncate(classes);
-            c.globals.truncate(globals);
-            c.modules.truncate(modules);
-            c.deferred.truncate(deferred);
-            c.modules[self.module.0 as usize].names = names;
+            mark.rollback(c, self.module);
             return Err(std::mem::take(&mut c.diags));
         }
         c.modules[self.module.0 as usize].init = Some(run);
-
         let mut program = c.snapshot(self.module);
+        // Globals from earlier inputs were assigned when those inputs ran.
+        let unassigned = c.unassigned_reads(&program, |g| g.0 as usize >= mark.globals);
+        if !unassigned.is_empty() {
+            mark.rollback(c, self.module);
+            return Err(unassigned);
+        }
         echo_last_value(&mut program.funcs[run.0 as usize].body);
         Ok(Input { program, run })
+    }
+}
+
+/// How far the checker's tables reached before an input, to forget the input if it fails.
+struct Mark {
+    funcs: usize,
+    classes: usize,
+    globals: usize,
+    modules: usize,
+    deferred: usize,
+    names: HashMap<String, super::Item>,
+    init: Option<FuncId>,
+}
+
+impl Mark {
+    fn of(c: &Checker, module: ModuleId) -> Mark {
+        let m = &c.modules[module.0 as usize];
+        Mark {
+            funcs: c.funcs.len(),
+            classes: c.classes.len(),
+            globals: c.globals.len(),
+            modules: c.modules.len(),
+            deferred: c.deferred.len(),
+            names: m.names.clone(),
+            init: m.init,
+        }
+    }
+
+    fn rollback(self, c: &mut Checker, module: ModuleId) {
+        c.funcs.truncate(self.funcs);
+        c.classes.truncate(self.classes);
+        c.globals.truncate(self.globals);
+        c.modules.truncate(self.modules);
+        c.deferred.truncate(self.deferred);
+        let m = &mut c.modules[module.0 as usize];
+        m.names = self.names;
+        m.init = self.init;
     }
 }
 
