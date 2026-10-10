@@ -60,7 +60,10 @@ pub(crate) struct Frame {
 
 impl Frame {
     pub(crate) fn empty() -> Frame {
-        Frame { locals: Vec::new(), closure: None }
+        Frame {
+            locals: Vec::new(),
+            closure: None,
+        }
     }
 }
 
@@ -81,12 +84,22 @@ pub struct Interp {
 /// Runs a checked program on a thread with a large stack, compiling eligible
 /// functions to native code when `native` is set.
 pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError> {
-    let globals = (0..prog.globals.len()).map(|_| RwLock::new(Value::None)).collect();
+    let globals = (0..prog.globals.len())
+        .map(|_| RwLock::new(Value::None))
+        .collect();
     let initialized = vec![false; prog.modules.len()];
     let entry = prog.entry;
     let prog = Arc::new(prog);
-    let native = if native { crate::native::Native::new(prog.clone()).map(Arc::new) } else { None };
-    let dynamic_entries = Arc::new((0..prog.funcs.len()).map(|_| std::sync::OnceLock::new()).collect());
+    let native = if native {
+        crate::native::Native::new(prog.clone()).map(Arc::new)
+    } else {
+        None
+    };
+    let dynamic_entries = Arc::new(
+        (0..prog.funcs.len())
+            .map(|_| std::sync::OnceLock::new())
+            .collect(),
+    );
     let interp = Interp {
         prog,
         globals: Arc::new(globals),
@@ -105,11 +118,68 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
             result
         })
         .expect("spawn the main thread");
-    handle.join().unwrap_or_else(|_| Err(RtError { message: "the interpreter panicked".into(), span: Span::default(), trace: Vec::new() }))
+    handle.join().unwrap_or_else(|_| {
+        Err(RtError {
+            message: "the interpreter panicked".into(),
+            span: Span::default(),
+            trace: Vec::new(),
+        })
+    })
+}
+
+/// Interpreter state kept between inputs at the interactive prompt.
+#[derive(Default)]
+pub struct Session {
+    globals: Vec<Value>,
+    initialized: Vec<bool>,
+    tensors: Arc<tensor::State>,
+}
+
+impl Session {
+    /// Runs function `run` of a program that extends the previous input's program.
+    pub fn run(&mut self, prog: Program, run: hir::FuncId) -> Result<(), RtError> {
+        let mut globals = std::mem::take(&mut self.globals);
+        globals.resize(prog.globals.len(), Value::None);
+        self.initialized.resize(prog.modules.len(), false);
+        self.initialized[prog.entry.0 as usize] = true;
+        let interp = Interp {
+            dynamic_entries: Arc::new(
+                (0..prog.funcs.len())
+                    .map(|_| std::sync::OnceLock::new())
+                    .collect(),
+            ),
+            prog: Arc::new(prog),
+            globals: Arc::new(globals.into_iter().map(RwLock::new).collect()),
+            initialized: Arc::new(Mutex::new(std::mem::take(&mut self.initialized))),
+            out: Arc::new(Mutex::new(BufWriter::new(std::io::stdout()))),
+            args: Arc::default(),
+            native: None,
+            tensors: self.tensors.clone(),
+        };
+        let result = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(MAIN_STACK)
+                .spawn_scoped(s, || {
+                    let result = interp.call_func(run, Vec::new(), None, Span::default());
+                    interp.flush();
+                    result
+                })
+                .expect("spawn the main thread")
+                .join()
+                .unwrap_or_else(|_| fail("the interpreter panicked", Span::default()))
+        });
+        self.globals = interp.globals.iter().map(|g| g.read().clone()).collect();
+        self.initialized = interp.initialized.lock().clone();
+        result.map(|_| ())
+    }
 }
 
 fn fail<T>(message: impl Into<String>, span: Span) -> Result<T, RtError> {
-    Err(RtError { message: message.into(), span, trace: Vec::new() })
+    Err(RtError {
+        message: message.into(),
+        span,
+        trace: Vec::new(),
+    })
 }
 
 trait At<T> {
@@ -118,7 +188,11 @@ trait At<T> {
 
 impl<T> At<T> for Result<T, String> {
     fn at(self, span: Span) -> Result<T, RtError> {
-        self.map_err(|message| RtError { message, span, trace: Vec::new() })
+        self.map_err(|message| RtError {
+            message,
+            span,
+            trace: Vec::new(),
+        })
     }
 }
 
@@ -166,23 +240,35 @@ impl Interp {
         }
         let init = self.prog.modules[m.0 as usize].init;
         match self.native.as_ref().and_then(|n| n.entry(init, &[])) {
-            Some(entry) => entry.call(self, &[], DEPTH.with(Cell::get), span).map(|_| ()),
+            Some(entry) => entry
+                .call(self, &[], DEPTH.with(Cell::get), span)
+                .map(|_| ()),
             None => self.call_func(init, Vec::new(), None, span).map(|_| ()),
         }
     }
 
     /// Calls a function; `args` becomes its locals, so callers may pass a vector
     /// with spare capacity to avoid reallocating.
-    pub(crate) fn call_func(&self, fid: FuncId, args: Vec<Value>, closure: Option<Arc<Closure>>, span: Span) -> Eval {
+    pub(crate) fn call_func(
+        &self,
+        fid: FuncId,
+        args: Vec<Value>,
+        closure: Option<Arc<Closure>>,
+        span: Span,
+    ) -> Eval {
         let f = &self.prog.funcs[fid.0 as usize];
         if let Some(native) = &self.native {
             if args.len() == f.params && f.name != "<module>" {
-                if let Some(entry) = self.dynamic_entries[fid.0 as usize].get_or_init(|| native.entry(fid, &[])) {
+                if let Some(entry) =
+                    self.dynamic_entries[fid.0 as usize].get_or_init(|| native.entry(fid, &[]))
+                {
                     let mut all = args;
                     if let Some(c) = &closure {
                         all.extend(c.captures.iter().cloned());
                     }
-                    return entry.call(self, &all, DEPTH.with(Cell::get), span).map_err(|e| e.through(&f.name, span));
+                    return entry
+                        .call(self, &all, DEPTH.with(Cell::get), span)
+                        .map_err(|e| e.through(&f.name, span));
                 }
             }
         }
@@ -195,19 +281,42 @@ impl Interp {
             return fail("maximum recursion depth exceeded", span);
         }
         if args.len() > f.params {
-            return fail(format!("`{}` takes at most {} arguments but {} were given", f.name, f.params, args.len()), span);
+            return fail(
+                format!(
+                    "`{}` takes at most {} arguments but {} were given",
+                    f.name,
+                    f.params,
+                    args.len()
+                ),
+                span,
+            );
         }
         let given = args.len();
         let mut locals = args;
         locals.resize(f.locals.len(), Value::None);
         let first_default = f.params - f.defaults.len();
         for i in given..f.params {
-            match f.defaults.get(i.wrapping_sub(first_default)).and_then(Option::as_ref) {
+            match f
+                .defaults
+                .get(i.wrapping_sub(first_default))
+                .and_then(Option::as_ref)
+            {
                 Some(default) if i >= first_default => {
-                    let mut empty = Frame { locals: Vec::new(), closure: None };
+                    let mut empty = Frame {
+                        locals: Vec::new(),
+                        closure: None,
+                    };
                     locals[i] = self.eval(default, &mut empty)?;
                 }
-                _ => return fail(format!("missing argument `{}` in call to `{}`", f.locals[i].name, f.name), span),
+                _ => {
+                    return fail(
+                        format!(
+                            "missing argument `{}` in call to `{}`",
+                            f.locals[i].name, f.name
+                        ),
+                        span,
+                    );
+                }
             }
         }
         if let Some(c) = &closure {
@@ -224,10 +333,18 @@ impl Interp {
         }
     }
 
-    fn call_native(&self, entry: &crate::native::Entry, args: Vec<Value>, func: FuncId, span: Span) -> Eval {
+    fn call_native(
+        &self,
+        entry: &crate::native::Entry,
+        args: Vec<Value>,
+        func: FuncId,
+        span: Span,
+    ) -> Eval {
         let depth = DEPTH.with(Cell::get);
         let name = &self.prog.funcs[func.0 as usize].name;
-        entry.call(self, &args, depth, span).map_err(|e| e.through(name, span))
+        entry
+            .call(self, &args, depth, span)
+            .map_err(|e| e.through(name, span))
     }
 
     pub(crate) fn call_value(&self, callee: &Value, args: Vec<Value>, span: Span) -> Eval {
@@ -253,7 +370,10 @@ impl Interp {
     fn cond(&self, e: &hir::Expr, frame: &mut Frame) -> Result<bool, RtError> {
         match self.eval(e, frame)? {
             Value::Bool(b) => Ok(b),
-            other => fail(format!("a condition must be a Bool, found a {}", other.type_name()), e.span),
+            other => fail(
+                format!("a condition must be a Bool, found a {}", other.type_name()),
+                e.span,
+            ),
         }
     }
 
@@ -270,11 +390,19 @@ impl Interp {
             StmtKind::Expr(e) => {
                 self.eval(e, frame)?;
             }
-            StmtKind::Assign { place, op: None, value } => {
+            StmtKind::Assign {
+                place,
+                op: None,
+                value,
+            } => {
                 let v = self.eval(value, frame)?;
                 self.store(place, v, frame)?;
             }
-            StmtKind::Assign { place, op: Some(op), value } => self.update(place, *op, value, frame, stmt.span)?,
+            StmtKind::Assign {
+                place,
+                op: Some(op),
+                value,
+            } => self.update(place, *op, value, frame, stmt.span)?,
             StmtKind::Show(values) => {
                 let mut line = String::new();
                 for (i, v) in values.iter().enumerate() {
@@ -287,7 +415,10 @@ impl Interp {
                 line.push('\n');
                 self.write_out(&line);
             }
-            StmtKind::If { branches, otherwise } => {
+            StmtKind::If {
+                branches,
+                otherwise,
+            } => {
                 for (cond, body) in branches {
                     if self.cond(cond, frame)? {
                         return self.exec_block(body, frame);
@@ -303,7 +434,9 @@ impl Interp {
                 }
             }
             StmtKind::For { var, iter, body } if is_range(iter) => {
-                let ExprKind::CallBuiltin { args, .. } = &iter.kind else { unreachable!() };
+                let ExprKind::CallBuiltin { args, .. } = &iter.kind else {
+                    unreachable!()
+                };
                 let bounds: Vec<i64> = self
                     .eval_all(args, frame)?
                     .iter()
@@ -344,7 +477,12 @@ impl Interp {
             StmtKind::Repeat { count, it, body } => {
                 let n = match self.eval(count, frame)? {
                     Value::Int(n) => n,
-                    other => return fail(format!("`repeat` needs an Int count, found a {}", other.type_name()), count.span),
+                    other => {
+                        return fail(
+                            format!("`repeat` needs an Int count, found a {}", other.type_name()),
+                            count.span,
+                        );
+                    }
                 };
                 for i in 0..n.max(0) {
                     frame.locals[it.0 as usize] = Value::Int(i);
@@ -377,7 +515,10 @@ impl Interp {
     pub(crate) fn items(&self, v: &Value) -> Result<Vec<Value>, String> {
         match v {
             Value::List(l) => Ok(l.read().clone()),
-            Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string().into())).collect()),
+            Value::Str(s) => Ok(s
+                .chars()
+                .map(|c| Value::Str(c.to_string().into()))
+                .collect()),
             Value::Map(m) => Ok(m.read().iter().map(|(k, _)| k.to_value()).collect()),
             Value::Py(obj) => crate::python::to_list(obj),
             Value::Tensor(t) => tensor::rows(t),
@@ -402,7 +543,14 @@ impl Interp {
         Ok(())
     }
 
-    fn update(&self, place: &Place, op: BinOp, value: &hir::Expr, frame: &mut Frame, span: Span) -> Result<(), RtError> {
+    fn update(
+        &self,
+        place: &Place,
+        op: BinOp,
+        value: &hir::Expr,
+        frame: &mut Frame,
+        span: Span,
+    ) -> Result<(), RtError> {
         match place {
             Place::Local(l) => {
                 let rhs = self.eval(value, frame)?;
@@ -439,10 +587,16 @@ impl Interp {
         match obj {
             Value::Instance(inst) => {
                 let class = &self.prog.classes[inst.class.0 as usize];
-                let i = class.field_index(name).ok_or_else(|| format!("`{}` has no field `{name}`", class.name))?;
+                let i = class
+                    .field_index(name)
+                    .ok_or_else(|| format!("`{}` has no field `{name}`", class.name))?;
                 Ok(inst.fields.read()[i].clone())
             }
-            Value::Map(m) => m.read().get(&Key::Str(name.into())).cloned().ok_or_else(|| format!("key `{name}` is not in the map")),
+            Value::Map(m) => m
+                .read()
+                .get(&Key::Str(name.into()))
+                .cloned()
+                .ok_or_else(|| format!("key `{name}` is not in the map")),
             Value::Py(p) => crate::python::get_attr(p, name),
             other => Err(format!("a {} has no field `{name}`", other.type_name())),
         }
@@ -452,7 +606,9 @@ impl Interp {
         match obj {
             Value::Instance(inst) => {
                 let class = &self.prog.classes[inst.class.0 as usize];
-                let i = class.field_index(name).ok_or_else(|| format!("`{}` has no field `{name}`", class.name))?;
+                let i = class
+                    .field_index(name)
+                    .ok_or_else(|| format!("`{}` has no field `{name}`", class.name))?;
                 inst.fields.write()[i] = v;
                 Ok(())
             }
@@ -474,16 +630,31 @@ impl Interp {
             (Value::Str(s), Value::Int(i)) => {
                 let len = s.chars().count();
                 let at = builtins::index(*i, len)?;
-                Ok(Value::Str(s.chars().nth(at).expect("index in range").to_string().into()))
+                Ok(Value::Str(
+                    s.chars()
+                        .nth(at)
+                        .expect("index in range")
+                        .to_string()
+                        .into(),
+                ))
             }
             (Value::Map(m), k) => {
                 let key = Key::from_value(k)?;
-                m.read().get(&key).cloned().ok_or_else(|| format!("key {} is not in the map", self.display(k)))
+                m.read()
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| format!("key {} is not in the map", self.display(k)))
             }
             (Value::Py(p), k) => crate::python::get_item(p, k),
             (Value::Tensor(t), Value::Int(i)) => tensor::index(t, *i),
-            (Value::Tuple(items), Value::Int(i)) => Ok(items[builtins::index(*i, items.len())?].clone()),
-            (o, i) => Err(format!("cannot index a {} with a {}", o.type_name(), i.type_name())),
+            (Value::Tuple(items), Value::Int(i)) => {
+                Ok(items[builtins::index(*i, items.len())?].clone())
+            }
+            (o, i) => Err(format!(
+                "cannot index a {} with a {}",
+                o.type_name(),
+                i.type_name()
+            )),
         }
     }
 
@@ -500,7 +671,11 @@ impl Interp {
                 Ok(())
             }
             (Value::Py(p), k) => crate::python::set_item(p, k, &v),
-            (o, i) => Err(format!("cannot assign into a {} with a {} index", o.type_name(), i.type_name())),
+            (o, i) => Err(format!(
+                "cannot assign into a {} with a {} index",
+                o.type_name(),
+                i.type_name()
+            )),
         }
     }
 
@@ -537,7 +712,9 @@ impl Interp {
                             let v = self.eval(expr, frame)?;
                             let text = self.display(&v);
                             match spec {
-                                Some(spec) => out.push_str(&builtins::format_spec(text, &v, spec).at(expr.span)?),
+                                Some(spec) => out.push_str(
+                                    &builtins::format_spec(text, &v, spec).at(expr.span)?,
+                                ),
                                 None => out.push_str(&text),
                             }
                         }
@@ -558,8 +735,14 @@ impl Interp {
             }
             ExprKind::Local(l) => frame.locals[l.0 as usize].clone(),
             ExprKind::Global(g) => self.globals[g.0 as usize].read().clone(),
-            ExprKind::Func { func, .. } => Value::Func(Arc::new(Closure { func: *func, captures: Vec::new() })),
-            ExprKind::Closure { func, captures } => Value::Func(Arc::new(Closure { func: *func, captures: self.eval_all(captures, frame)? })),
+            ExprKind::Func { func, .. } => Value::Func(Arc::new(Closure {
+                func: *func,
+                captures: Vec::new(),
+            })),
+            ExprKind::Closure { func, captures } => Value::Func(Arc::new(Closure {
+                func: *func,
+                captures: self.eval_all(captures, frame)?,
+            })),
             ExprKind::Recurse => match &frame.closure {
                 Some(c) => Value::Func(c.clone()),
                 None => return fail("no enclosing function to recurse into", span),
@@ -569,13 +752,26 @@ impl Interp {
                 match op {
                     UnaryOp::Not => match v {
                         Value::Bool(b) => Value::Bool(!b),
-                        other => return fail(format!("`not` needs a Bool, found a {}", other.type_name()), span),
+                        other => {
+                            return fail(
+                                format!("`not` needs a Bool, found a {}", other.type_name()),
+                                span,
+                            );
+                        }
                     },
                     UnaryOp::Neg => negate_value(&v).at(span)?,
                 }
             }
-            ExprKind::Binary { op: BinOp::And, lhs, rhs } => Value::Bool(self.cond(lhs, frame)? && self.cond(rhs, frame)?),
-            ExprKind::Binary { op: BinOp::Or, lhs, rhs } => Value::Bool(self.cond(lhs, frame)? || self.cond(rhs, frame)?),
+            ExprKind::Binary {
+                op: BinOp::And,
+                lhs,
+                rhs,
+            } => Value::Bool(self.cond(lhs, frame)? && self.cond(rhs, frame)?),
+            ExprKind::Binary {
+                op: BinOp::Or,
+                lhs,
+                rhs,
+            } => Value::Bool(self.cond(lhs, frame)? || self.cond(rhs, frame)?),
             ExprKind::Binary { op, lhs, rhs } => {
                 let a = self.eval(lhs, frame)?;
                 let b = self.eval(rhs, frame)?;
@@ -586,13 +782,21 @@ impl Interp {
                 let args = self.eval_all(args, frame)?;
                 self.call_value(&f, args, span)?
             }
-            ExprKind::CallFunc { func, args, inst, native } => {
+            ExprKind::CallFunc {
+                func,
+                args,
+                inst,
+                native,
+            } => {
                 let mut values = Vec::with_capacity(self.prog.funcs[func.0 as usize].locals.len());
                 for a in args {
                     values.push(self.eval(a, frame)?);
                 }
                 let args = values;
-                let entry = self.native.as_ref().and_then(|n| native.0.get_or_init(|| n.entry(*func, inst)).as_ref());
+                let entry = self
+                    .native
+                    .as_ref()
+                    .and_then(|n| native.0.get_or_init(|| n.entry(*func, inst)).as_ref());
                 match entry {
                     Some(entry) => self.call_native(entry, args, *func, span)?,
                     None => self.call_func(*func, args, None, span)?,
@@ -609,7 +813,10 @@ impl Interp {
             }
             ExprKind::New { class, args } => {
                 let fields = self.eval_all(args, frame)?;
-                Value::Instance(Arc::new(Instance { class: *class, fields: RwLock::new(fields) }))
+                Value::Instance(Arc::new(Instance {
+                    class: *class,
+                    fields: RwLock::new(fields),
+                }))
             }
             ExprKind::Field { target, name } => {
                 let obj = self.eval(target, frame)?;
@@ -622,25 +829,44 @@ impl Interp {
             }
             ExprKind::Slice { target, start, end } => {
                 let obj = self.eval(target, frame)?;
-                let bound = |b: &Option<Box<hir::Expr>>, frame: &mut Frame| -> Result<Option<i64>, RtError> {
+                let bound = |b: &Option<Box<hir::Expr>>,
+                             frame: &mut Frame|
+                 -> Result<Option<i64>, RtError> {
                     match b {
                         None => Ok(None),
                         Some(e) => match self.eval(e, frame)? {
                             Value::Int(i) => Ok(Some(i)),
-                            other => fail(format!("slice bounds must be Ints, found a {}", other.type_name()), e.span),
+                            other => fail(
+                                format!("slice bounds must be Ints, found a {}", other.type_name()),
+                                e.span,
+                            ),
                         },
                     }
                 };
                 let (s, t) = (bound(start, frame)?, bound(end, frame)?);
                 slice_value(&obj, s, t).at(span)?
             }
-            ExprKind::Query { target, body: Some(body), parallel: true, .. } => {
+            ExprKind::Query {
+                target,
+                body: Some(body),
+                parallel: true,
+                ..
+            } => {
                 let items = self.items(&self.eval(target, frame)?).at(target.span)?;
                 let f = self.eval(body, frame)?;
-                let jobs = items.into_iter().map(|item| (f.clone(), vec![item])).collect();
+                let jobs = items
+                    .into_iter()
+                    .map(|item| (f.clone(), vec![item]))
+                    .collect();
                 Value::list(self.run_parallel(jobs, span)?)
             }
-            ExprKind::Query { op, target, item, body, .. } => {
+            ExprKind::Query {
+                op,
+                target,
+                item,
+                body,
+                ..
+            } => {
                 let items = self.items(&self.eval(target, frame)?).at(target.span)?;
                 self.query(*op, items, *item, body.as_deref(), &e.ty, frame, span)?
             }
@@ -650,10 +876,19 @@ impl Interp {
             }
             ExprKind::Await(task) => match self.eval(task, frame)? {
                 Value::Task(t) => t.wait().at(span)?,
-                other => return fail(format!("`await` needs a Task, found a {}", other.type_name()), span),
+                other => {
+                    return fail(
+                        format!("`await` needs a Task, found a {}", other.type_name()),
+                        span,
+                    );
+                }
             },
             ExprKind::RunParallel(items) => {
-                let jobs = self.eval_all(items, frame)?.into_iter().map(|f| (f, Vec::new())).collect();
+                let jobs = self
+                    .eval_all(items, frame)?
+                    .into_iter()
+                    .map(|f| (f, Vec::new()))
+                    .collect();
                 Value::list(self.run_parallel(jobs, span)?)
             }
             ExprKind::IntToFloat(inner) => match self.eval(inner, frame)? {
@@ -666,7 +901,9 @@ impl Interp {
 
     /// Runs a zero-argument closure on its own thread.
     pub(crate) fn spawn_task(&self, closure: &Value, span: Span) -> Eval {
-        let Value::Func(c) = closure else { return fail("`together` needs a function", span) };
+        let Value::Func(c) = closure else {
+            return fail("`together` needs a function", span);
+        };
         let c = c.clone();
         let handle = Arc::new(TaskHandle::default());
         let (interp, task) = (self.clone(), handle.clone());
@@ -681,7 +918,13 @@ impl Interp {
         Ok(Value::Task(handle))
     }
 
-    pub(crate) fn call_method(&self, obj: &Value, name: &str, args: Vec<Value>, span: Span) -> Eval {
+    pub(crate) fn call_method(
+        &self,
+        obj: &Value,
+        name: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Eval {
         match obj {
             Value::Instance(inst) => {
                 let class = &self.prog.classes[inst.class.0 as usize];
@@ -715,23 +958,43 @@ impl Interp {
     }
 
     /// Calls each function with its arguments on scoped threads, preserving order.
-    pub(crate) fn run_parallel(&self, jobs: Vec<(Value, Vec<Value>)>, span: Span) -> Result<Vec<Value>, RtError> {
+    pub(crate) fn run_parallel(
+        &self,
+        jobs: Vec<(Value, Vec<Value>)>,
+        span: Span,
+    ) -> Result<Vec<Value>, RtError> {
         let n = jobs.len();
-        let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4).min(n.max(1));
+        let workers = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4)
+            .min(n.max(1));
         let chunk = n.div_ceil(workers.max(1)).max(1);
         let mut jobs = jobs.into_iter();
-        let batches: Vec<Vec<(Value, Vec<Value>)>> = (0..n.div_ceil(chunk)).map(|_| jobs.by_ref().take(chunk).collect()).collect();
+        let batches: Vec<Vec<(Value, Vec<Value>)>> = (0..n.div_ceil(chunk))
+            .map(|_| jobs.by_ref().take(chunk).collect())
+            .collect();
         let results: Vec<Result<Vec<Value>, RtError>> = std::thread::scope(|s| {
             let handles: Vec<_> = batches
                 .into_iter()
                 .map(|batch| {
                     std::thread::Builder::new()
                         .stack_size(TASK_STACK)
-                        .spawn_scoped(s, move || batch.into_iter().map(|(f, args)| self.call_value(&f, args, span)).collect())
+                        .spawn_scoped(s, move || {
+                            batch
+                                .into_iter()
+                                .map(|(f, args)| self.call_value(&f, args, span))
+                                .collect()
+                        })
                         .expect("spawn a worker thread")
                 })
                 .collect();
-            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| fail("a parallel task panicked", span))).collect()
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| fail("a parallel task panicked", span))
+                })
+                .collect()
         });
         let mut out = Vec::with_capacity(n);
         for r in results {
@@ -741,7 +1004,16 @@ impl Interp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn query(&self, op: QueryOp, items: Vec<Value>, slot: hir::LocalId, body: Option<&hir::Expr>, ty: &Ty, frame: &mut Frame, span: Span) -> Eval {
+    fn query(
+        &self,
+        op: QueryOp,
+        items: Vec<Value>,
+        slot: hir::LocalId,
+        body: Option<&hir::Expr>,
+        ty: &Ty,
+        frame: &mut Frame,
+        span: Span,
+    ) -> Eval {
         let apply = |item: &Value, frame: &mut Frame| -> Eval {
             match body {
                 Some(b) => {
@@ -758,7 +1030,15 @@ impl Interp {
                     match apply(&item, frame)? {
                         Value::Bool(true) => kept.push(item),
                         Value::Bool(false) => {}
-                        other => return fail(format!("a `where` condition must be a Bool, found a {}", other.type_name()), span),
+                        other => {
+                            return fail(
+                                format!(
+                                    "a `where` condition must be a Bool, found a {}",
+                                    other.type_name()
+                                ),
+                                span,
+                            );
+                        }
                     }
                 }
                 Value::list(kept)
@@ -771,7 +1051,11 @@ impl Interp {
                 Value::list(out)
             }
             QueryOp::Sum | QueryOp::Average => {
-                let mut total = if *ty == Ty::Float && op == QueryOp::Sum { Value::Float(0.0) } else { Value::Int(0) };
+                let mut total = if *ty == Ty::Float && op == QueryOp::Sum {
+                    Value::Float(0.0)
+                } else {
+                    Value::Int(0)
+                };
                 let n = items.len();
                 for item in &items {
                     let v = apply(item, frame)?;
@@ -783,7 +1067,9 @@ impl Interp {
                     }
                     match total.as_f64() {
                         Some(t) => Value::Float(t / n as f64),
-                        None => self.binary_values(BinOp::Div, &total, &Value::Int(n as i64)).at(span)?,
+                        None => self
+                            .binary_values(BinOp::Div, &total, &Value::Int(n as i64))
+                            .at(span)?,
                     }
                 } else {
                     total
@@ -794,7 +1080,11 @@ impl Interp {
                 for item in &items {
                     mapped.push(apply(item, frame)?);
                 }
-                let b = if op == QueryOp::Max { crate::check::builtins::Builtin::Max } else { crate::check::builtins::Builtin::Min };
+                let b = if op == QueryOp::Max {
+                    crate::check::builtins::Builtin::Max
+                } else {
+                    crate::check::builtins::Builtin::Min
+                };
                 self.call_builtin(b, vec![Value::list(mapped)]).at(span)?
             }
         })
@@ -802,7 +1092,22 @@ impl Interp {
 }
 
 fn is_map_method(name: &str) -> bool {
-    matches!(name, "length" | "len" | "has" | "contains" | "keys" | "values" | "items" | "get" | "remove" | "clear" | "copy" | "clone" | "is_empty")
+    matches!(
+        name,
+        "length"
+            | "len"
+            | "has"
+            | "contains"
+            | "keys"
+            | "values"
+            | "items"
+            | "get"
+            | "remove"
+            | "clear"
+            | "copy"
+            | "clone"
+            | "is_empty"
+    )
 }
 
 pub(crate) fn slice_value(obj: &Value, s: Option<i64>, t: Option<i64>) -> Result<Value, String> {
@@ -830,7 +1135,13 @@ pub(crate) fn negate_value(v: &Value) -> Result<Value, String> {
 }
 
 fn is_range(e: &hir::Expr) -> bool {
-    matches!(e.kind, ExprKind::CallBuiltin { builtin: crate::check::builtins::Builtin::Range, .. })
+    matches!(
+        e.kind,
+        ExprKind::CallBuiltin {
+            builtin: crate::check::builtins::Builtin::Range,
+            ..
+        }
+    )
 }
 
 struct DepthGuard;

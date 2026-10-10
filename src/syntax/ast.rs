@@ -22,20 +22,45 @@ pub struct Stmt {
 #[derive(Debug, Clone)]
 pub enum StmtKind {
     Expr(Expr),
-    Assign { target: Expr, ty: Option<TypeExpr>, value: Expr },
-    AugAssign { target: Expr, op: BinOp, value: Expr },
+    Assign {
+        target: Expr,
+        ty: Option<TypeExpr>,
+        value: Expr,
+    },
+    AugAssign {
+        target: Expr,
+        op: BinOp,
+        value: Expr,
+    },
     Show(Vec<Expr>),
-    If { branches: Vec<(Expr, Block)>, otherwise: Option<Block> },
-    While { cond: Expr, body: Block },
-    Repeat { count: Expr, body: Block },
-    For { vars: Vec<Ident>, iter: Expr, body: Block },
+    If {
+        branches: Vec<(Expr, Block)>,
+        otherwise: Option<Block>,
+    },
+    While {
+        cond: Expr,
+        body: Block,
+    },
+    Repeat {
+        count: Expr,
+        body: Block,
+    },
+    For {
+        vars: Vec<Ident>,
+        iter: Expr,
+        body: Block,
+    },
     Function(FunctionDef),
     Class(ClassDef),
     Return(Option<Expr>),
     Break,
     Continue,
     Pass,
-    Try { body: Block, var: Ident, handler: Block },
+    Try {
+        body: Block,
+        var: Ident,
+        handler: Block,
+    },
     Use(Use),
 }
 
@@ -71,9 +96,18 @@ pub struct ClassDef {
 
 #[derive(Debug, Clone)]
 pub enum Use {
-    Module { name: Ident, alias: Option<Ident> },
-    File { path: String, alias: Option<Ident> },
-    Python { module: String, alias: Option<Ident> },
+    Module {
+        name: Ident,
+        alias: Option<Ident>,
+    },
+    File {
+        path: String,
+        alias: Option<Ident>,
+    },
+    Python {
+        module: String,
+        alias: Option<Ident>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +166,10 @@ impl BinOp {
     ];
 
     pub fn index(self) -> u32 {
-        BinOp::ALL.iter().position(|b| *b == self).expect("listed in ALL") as u32
+        BinOp::ALL
+            .iter()
+            .position(|b| *b == self)
+            .expect("listed in ALL") as u32
     }
 
     pub fn symbol(self) -> &'static str {
@@ -214,7 +251,10 @@ pub struct Arg {
 #[derive(Debug, Clone)]
 pub enum IndexItem {
     Single(Expr),
-    Slice { start: Option<Expr>, end: Option<Expr> },
+    Slice {
+        start: Option<Expr>,
+        end: Option<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -229,13 +269,38 @@ pub enum ExprKind {
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Map(Vec<(Expr, Expr)>),
-    Unary { op: UnaryOp, operand: Box<Expr> },
-    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
-    Call { callee: Box<Expr>, args: Vec<Arg> },
-    Field { target: Box<Expr>, name: Ident },
-    Index { target: Box<Expr>, items: Vec<IndexItem> },
-    Lambda { params: Vec<Ident>, types: Vec<Option<TypeExpr>>, body: Box<Expr> },
-    Query { op: QueryOp, target: Box<Expr>, body: Option<Box<Expr>>, parallel: bool },
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Arg>,
+    },
+    Field {
+        target: Box<Expr>,
+        name: Ident,
+    },
+    Index {
+        target: Box<Expr>,
+        items: Vec<IndexItem>,
+    },
+    Lambda {
+        params: Vec<Ident>,
+        types: Vec<Option<TypeExpr>>,
+        body: Box<Expr>,
+    },
+    Query {
+        op: QueryOp,
+        target: Box<Expr>,
+        body: Option<Box<Expr>>,
+        parallel: bool,
+    },
     Together(Box<Expr>),
     Await(Box<Expr>),
     RunParallel(Vec<Expr>),

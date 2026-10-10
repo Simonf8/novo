@@ -4,7 +4,7 @@ use super::value::{Dict, Key, Value};
 use crate::check::builtins::Builtin;
 use crate::syntax::ast::BinOp;
 use candle_core::backprop::GradStore;
-use candle_core::{DType, Device, Tensor, Var, D};
+use candle_core::{D, DType, Device, Tensor, Var};
 use candle_nn::optim::{AdamW, Optimizer as _, ParamsAdamW, SGD};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -12,7 +12,11 @@ use std::sync::Arc;
 type R<T> = Result<T, String>;
 
 fn err(e: candle_core::Error) -> String {
-    e.to_string().lines().next().unwrap_or("tensor error").to_string()
+    e.to_string()
+        .lines()
+        .next()
+        .unwrap_or("tensor error")
+        .to_string()
 }
 
 /// A tensor value. Parameters wrap a `Var` so optimizers can update them in place.
@@ -32,7 +36,10 @@ impl NTensor {
 }
 
 fn wrap(t: Tensor) -> Value {
-    Value::Tensor(Arc::new(NTensor { tensor: t, var: None }))
+    Value::Tensor(Arc::new(NTensor {
+        tensor: t,
+        var: None,
+    }))
 }
 
 pub enum Opt {
@@ -59,8 +66,15 @@ pub struct State {
 
 impl Default for State {
     fn default() -> Self {
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
-        State { rng: Mutex::new(Rng::new(seed)), grads: Mutex::new(None), device: Mutex::new(Device::Cpu) }
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        State {
+            rng: Mutex::new(Rng::new(seed)),
+            grads: Mutex::new(None),
+            device: Mutex::new(Device::Cpu),
+        }
     }
 }
 
@@ -92,7 +106,9 @@ impl Rng {
 }
 
 fn shape_arg(v: &Value) -> R<Vec<usize>> {
-    let Value::List(items) = v else { return Err("a shape must be a list of Ints".into()) };
+    let Value::List(items) = v else {
+        return Err("a shape must be a list of Ints".into());
+    };
     items
         .read()
         .iter()
@@ -105,7 +121,9 @@ fn shape_arg(v: &Value) -> R<Vec<usize>> {
 
 /// A target shape where one dimension may be `-1`, inferred from the element count.
 fn reshape_arg(v: &Value, from: &[usize]) -> R<Vec<usize>> {
-    let Value::List(items) = v else { return Err("a shape must be a list of Ints".into()) };
+    let Value::List(items) = v else {
+        return Err("a shape must be a list of Ints".into());
+    };
     let dims: Vec<i64> = items.read().iter().map(int_arg).collect::<R<_>>()?;
     let total: usize = from.iter().product();
     let known: i64 = dims.iter().filter(|d| **d != -1).product();
@@ -116,7 +134,17 @@ fn reshape_arg(v: &Value, from: &[usize]) -> R<Vec<usize>> {
     }
     let shape: Vec<usize> = dims
         .iter()
-        .map(|d| if *d == -1 { if known == 0 { 0 } else { total / known as usize } } else { *d as usize })
+        .map(|d| {
+            if *d == -1 {
+                if known == 0 {
+                    0
+                } else {
+                    total / known as usize
+                }
+            } else {
+                *d as usize
+            }
+        })
         .collect();
     if shape.iter().product::<usize>() != total {
         return Err(bad());
@@ -139,12 +167,17 @@ fn int_arg(v: &Value) -> R<i64> {
 }
 
 fn float_arg(v: &Value) -> R<f64> {
-    v.as_f64().ok_or_else(|| format!("expected a number, found a {}", v.type_name()))
+    v.as_f64()
+        .ok_or_else(|| format!("expected a number, found a {}", v.type_name()))
 }
 
 fn parse_device(name: &str) -> R<Device> {
     let (kind, index) = match name.split_once(':') {
-        Some((k, i)) => (k, i.parse::<usize>().map_err(|_| format!("invalid device `{name}`"))?),
+        Some((k, i)) => (
+            k,
+            i.parse::<usize>()
+                .map_err(|_| format!("invalid device `{name}`"))?,
+        ),
         None => (name, 0),
     };
     match kind {
@@ -169,7 +202,11 @@ fn parse_dtype(name: &str) -> R<DType> {
         "f16" | "float16" | "half" => DType::F16,
         "bf16" | "bfloat16" => DType::BF16,
         "f64" | "float64" => DType::F64,
-        _ => return Err(format!("unknown dtype `{name}`; use \"f32\", \"f16\", \"bf16\" or \"f64\"")),
+        _ => {
+            return Err(format!(
+                "unknown dtype `{name}`; use \"f32\", \"f16\", \"bf16\" or \"f64\""
+            ));
+        }
     })
 }
 
@@ -213,7 +250,11 @@ fn flatten(v: &Value, shape: &[usize], depth: usize, out: &mut Vec<f32>) -> R<()
             if t.rank() != 0 {
                 return Err("nested tensors must be scalars".into());
             }
-            out.push(t.to_dtype(DType::F32).and_then(|t| t.to_scalar::<f32>()).map_err(err)?);
+            out.push(
+                t.to_dtype(DType::F32)
+                    .and_then(|t| t.to_scalar::<f32>())
+                    .map_err(err)?,
+            );
             Ok(())
         }
         other if depth == shape.len() => {
@@ -236,20 +277,31 @@ impl State {
                 }
                 return Ok(Value::Str(device_name(&self.device.lock()).into()));
             }
-            Builtin::NnZeros => Tensor::zeros(shape_arg(&args[0])?, DType::F32, cpu).map_err(err)?,
+            Builtin::NnZeros => {
+                Tensor::zeros(shape_arg(&args[0])?, DType::F32, cpu).map_err(err)?
+            }
             Builtin::NnOnes => Tensor::ones(shape_arg(&args[0])?, DType::F32, cpu).map_err(err)?,
             Builtin::NnRandn | Builtin::NnRand => {
                 let shape = shape_arg(&args[0])?;
                 let n: usize = shape.iter().product();
                 let mut rng = self.rng.lock();
                 let data: Vec<f32> = (0..n).map(|_| if b == Builtin::NnRandn { rng.normal() } else { rng.uniform() } as f32).collect();
-                Tensor::from_vec(data, shape, &Device::Cpu).and_then(|t| t.to_device(cpu)).map_err(err)?
+                Tensor::from_vec(data, shape, &Device::Cpu)
+                    .and_then(|t| t.to_device(cpu))
+                    .map_err(err)?
             }
-            Builtin::NnArange => Tensor::arange(0f32, int_arg(&args[0])?.max(0) as f32, cpu).map_err(err)?,
-            Builtin::NnEye => Tensor::eye(int_arg(&args[0])?.max(0) as usize, DType::F32, cpu).map_err(err)?,
+            Builtin::NnArange => {
+                Tensor::arange(0f32, int_arg(&args[0])?.max(0) as f32, cpu).map_err(err)?
+            }
+            Builtin::NnEye => {
+                Tensor::eye(int_arg(&args[0])?.max(0) as usize, DType::F32, cpu).map_err(err)?
+            }
             Builtin::NnParam => {
                 let var = Var::from_tensor(&tensor_arg(&args[0])?).map_err(err)?;
-                return Ok(Value::Tensor(Arc::new(NTensor { tensor: var.as_tensor().clone(), var: Some(var) })));
+                return Ok(Value::Tensor(Arc::new(NTensor {
+                    tensor: var.as_tensor().clone(),
+                    var: Some(var),
+                })));
             }
             Builtin::NnSeed | Builtin::RandomSeed => {
                 *self.rng.lock() = Rng::new(int_arg(&args[0])? as u64);
@@ -261,11 +313,15 @@ impl State {
                     return Err(format!("`random.int` needs low < high, got {lo} and {hi}"));
                 }
                 let span = hi.wrapping_sub(lo) as u64;
-                return Ok(Value::Int(lo.wrapping_add((self.rng.lock().next() % span) as i64)));
+                return Ok(Value::Int(
+                    lo.wrapping_add((self.rng.lock().next() % span) as i64),
+                ));
             }
             Builtin::RandomFloat => return Ok(Value::Float(self.rng.lock().uniform())),
             Builtin::RandomChoice | Builtin::RandomShuffle => {
-                let Value::List(items) = &args[0] else { return Err("expected a list".into()) };
+                let Value::List(items) = &args[0] else {
+                    return Err("expected a list".into());
+                };
                 let mut rng = self.rng.lock();
                 if b == Builtin::RandomChoice {
                     let items = items.read();
@@ -282,7 +338,9 @@ impl State {
                 return Ok(Value::None);
             }
             Builtin::NnSgd | Builtin::NnAdam => {
-                let Value::List(items) = &args[0] else { return Err("optimizers take a list of parameters".into()) };
+                let Value::List(items) = &args[0] else {
+                    return Err("optimizers take a list of parameters".into());
+                };
                 let mut vars = Vec::new();
                 for item in items.read().iter() {
                     match item {
@@ -297,19 +355,31 @@ impl State {
                 let opt = if b == Builtin::NnSgd {
                     Opt::Sgd(SGD::new(vars, lr).map_err(err)?)
                 } else {
-                    let params = ParamsAdamW { lr, weight_decay: 0.0, ..ParamsAdamW::default() };
+                    let params = ParamsAdamW {
+                        lr,
+                        weight_decay: 0.0,
+                        ..ParamsAdamW::default()
+                    };
                     Opt::Adam(AdamW::new(vars, params).map_err(err)?)
                 };
                 return Ok(Value::Optimizer(Arc::new(Mutex::new(opt))));
             }
-            Builtin::NnMse => candle_nn::loss::mse(&tensor_arg(&args[0])?, &tensor_arg(&args[1])?).map_err(err)?,
+            Builtin::NnMse => {
+                candle_nn::loss::mse(&tensor_arg(&args[0])?, &tensor_arg(&args[1])?).map_err(err)?
+            }
             Builtin::NnCrossEntropy => {
                 let targets = tensor_arg(&args[1])?.to_dtype(DType::U32).map_err(err)?;
                 candle_nn::loss::cross_entropy(&tensor_arg(&args[0])?, &targets).map_err(err)?
             }
             Builtin::NnStack | Builtin::NnCat => {
-                let name = if b == Builtin::NnStack { "nn.stack" } else { "nn.cat" };
-                let Value::List(items) = &args[0] else { return Err(format!("`{name}` takes a list of tensors")) };
+                let name = if b == Builtin::NnStack {
+                    "nn.stack"
+                } else {
+                    "nn.cat"
+                };
+                let Value::List(items) = &args[0] else {
+                    return Err(format!("`{name}` takes a list of tensors"));
+                };
                 let tensors = items.read().iter().map(tensor_arg).collect::<R<Vec<_>>>()?;
                 if tensors.is_empty() {
                     return Err(format!("`{name}` needs at least one tensor"));
@@ -319,31 +389,53 @@ impl State {
                     Some(d) => dim(int_arg(d)?, rank)?,
                     None => 0,
                 };
-                if b == Builtin::NnStack { Tensor::stack(&tensors, dim) } else { Tensor::cat(&tensors, dim) }.map_err(err)?
+                if b == Builtin::NnStack {
+                    Tensor::stack(&tensors, dim)
+                } else {
+                    Tensor::cat(&tensors, dim)
+                }
+                .map_err(err)?
             }
-            Builtin::NnTril => Tensor::tril2(int_arg(&args[0])?.max(0) as usize, DType::F32, cpu).map_err(err)?,
+            Builtin::NnTril => {
+                Tensor::tril2(int_arg(&args[0])?.max(0) as usize, DType::F32, cpu).map_err(err)?
+            }
             Builtin::NnSave => {
-                let Value::Map(map) = &args[0] else { return Err("`nn.save` takes a map of tensors".into()) };
+                let Value::Map(map) = &args[0] else {
+                    return Err("`nn.save` takes a map of tensors".into());
+                };
                 let mut named = std::collections::HashMap::new();
                 for (k, v) in map.read().iter() {
-                    let Key::Str(name) = k else { return Err("tensor names must be strings".into()) };
+                    let Key::Str(name) = k else {
+                        return Err("tensor names must be strings".into());
+                    };
                     named.insert(name.to_string(), tensor_arg(v)?.contiguous().map_err(err)?);
                 }
-                let Value::Str(path) = &args[1] else { return Err("`nn.save` needs a file path".into()) };
+                let Value::Str(path) = &args[1] else {
+                    return Err("`nn.save` needs a file path".into());
+                };
                 candle_core::safetensors::save(&named, &**path).map_err(err)?;
                 return Ok(Value::None);
             }
             Builtin::NnLoad => {
-                let Value::Str(path) = &args[0] else { return Err("`nn.load` needs a file path".into()) };
+                let Value::Str(path) = &args[0] else {
+                    return Err("`nn.load` needs a file path".into());
+                };
                 let dtype = match args.get(1) {
                     Some(Value::Str(name)) => parse_dtype(name)?,
                     _ => DType::F32,
                 };
-                let mut named: Vec<(String, Tensor)> = candle_core::safetensors::load(&**path, cpu).map_err(err)?.into_iter().collect();
+                let mut named: Vec<(String, Tensor)> = candle_core::safetensors::load(&**path, cpu)
+                    .map_err(err)?
+                    .into_iter()
+                    .collect();
                 named.sort_by(|a, b| a.0.cmp(&b.0));
                 let mut dict = Dict::default();
                 for (name, t) in named {
-                    let t = if t.dtype() == dtype || !t.dtype().is_float() { t } else { t.to_dtype(dtype).map_err(err)? };
+                    let t = if t.dtype() == dtype || !t.dtype().is_float() {
+                        t
+                    } else {
+                        t.to_dtype(dtype).map_err(err)?
+                    };
                     dict.insert(Key::Str(name.into()), wrap(t));
                 }
                 return Ok(Value::map(dict));
@@ -363,14 +455,25 @@ impl State {
         };
         let keepdim = matches!(args.get(1), Some(Value::Bool(true)));
         let out = match name {
-            "shape" => return Ok(Value::list(t.dims().iter().map(|d| Value::Int(*d as i64)).collect())),
+            "shape" => {
+                return Ok(Value::list(
+                    t.dims().iter().map(|d| Value::Int(*d as i64)).collect(),
+                ));
+            }
             "rank" => return Ok(Value::Int(t.rank() as i64)),
             "size" => return Ok(Value::Int(t.elem_count() as i64)),
             "item" => {
                 if t.elem_count() != 1 {
-                    return Err(format!("`item` needs a tensor with one element, this one has shape {:?}", t.dims()));
+                    return Err(format!(
+                        "`item` needs a tensor with one element, this one has shape {:?}",
+                        t.dims()
+                    ));
                 }
-                let v = t.flatten_all().and_then(|f| f.to_dtype(DType::F64)).and_then(|f| f.to_vec1::<f64>()).map_err(err)?;
+                let v = t
+                    .flatten_all()
+                    .and_then(|f| f.to_dtype(DType::F64))
+                    .and_then(|f| f.to_vec1::<f64>())
+                    .map_err(err)?;
                 return Ok(Value::Float(v[0]));
             }
             "to_list" => return to_list(&t),
@@ -381,7 +484,9 @@ impl State {
             }
             "grad" => {
                 let grads = self.grads.lock();
-                let g = grads.as_ref().and_then(|g| g.get(&t)).ok_or("this tensor has no gradient; call `backward` on a result that depends on it")?;
+                let g = grads.as_ref().and_then(|g| g.get(&t)).ok_or(
+                    "this tensor has no gradient; call `backward` on a result that depends on it",
+                )?;
                 g.clone()
             }
             "sum" => match arg_dim(0)? {
@@ -405,7 +510,9 @@ impl State {
                 let (start, len) = (int_arg(&args[1])?, int_arg(&args[2])?);
                 let size = t.dims()[d] as i64;
                 if start < 0 || len < 0 || start + len > size {
-                    return Err(format!("cannot take {len} items from {start} in a dimension of size {size}"));
+                    return Err(format!(
+                        "cannot take {len} items from {start} in a dimension of size {size}"
+                    ));
                 }
                 t.narrow(d, start as usize, len as usize).map_err(err)?
             }
@@ -424,14 +531,27 @@ impl State {
             "embed" => {
                 let ids = tensor_arg(&args[0])?;
                 let mut shape = ids.dims().to_vec();
-                shape.push(*t.dims().last().ok_or("`embed` needs a table with at least one dimension")?);
-                let flat = ids.flatten_all().and_then(|i| i.to_dtype(DType::U32)).map_err(err)?;
-                t.index_select(&flat, 0).and_then(|rows| rows.reshape(shape)).map_err(err)?
+                shape.push(
+                    *t.dims()
+                        .last()
+                        .ok_or("`embed` needs a table with at least one dimension")?,
+                );
+                let flat = ids
+                    .flatten_all()
+                    .and_then(|i| i.to_dtype(DType::U32))
+                    .map_err(err)?;
+                t.index_select(&flat, 0)
+                    .and_then(|rows| rows.reshape(shape))
+                    .map_err(err)?
             }
             "masked_fill" => {
                 let mask = tensor_arg(&args[0])?.broadcast_as(t.dims()).map_err(err)?;
-                let fill = Tensor::full(float_arg(&args[1])? as f32, t.dims(), t.device()).and_then(|f| f.to_dtype(t.dtype())).map_err(err)?;
-                mask.ne(0f32).and_then(|m| m.where_cond(&fill, &t)).map_err(err)?
+                let fill = Tensor::full(float_arg(&args[1])? as f32, t.dims(), t.device())
+                    .and_then(|f| f.to_dtype(t.dtype()))
+                    .map_err(err)?;
+                mask.ne(0f32)
+                    .and_then(|m| m.where_cond(&fill, &t))
+                    .map_err(err)?
             }
             "layer_norm" => {
                 let (weight, bias) = (tensor_arg(&args[0])?, tensor_arg(&args[1])?);
@@ -444,18 +564,24 @@ impl State {
             "device" => return Ok(Value::Str(device_name(t.device()).into())),
             "dtype" => return Ok(Value::Str(t.dtype().as_str().into())),
             "to" => {
-                let Value::Str(name) = &args[0] else { return Err("`to` needs a device name".into()) };
+                let Value::Str(name) = &args[0] else {
+                    return Err("`to` needs a device name".into());
+                };
                 t.to_device(&parse_device(name)?).map_err(err)?
             }
             "to_dtype" => {
-                let Value::Str(name) = &args[0] else { return Err("`to_dtype` needs a dtype name".into()) };
+                let Value::Str(name) = &args[0] else {
+                    return Err("`to_dtype` needs a dtype name".into());
+                };
                 t.to_dtype(parse_dtype(name)?).map_err(err)?
             }
             "sample" => {
                 let probs = values(&t)?;
                 let total: f64 = probs.iter().map(|p| f64::from(*p)).sum();
                 if t.rank() != 1 || !(total > 0.0) {
-                    return Err("`sample` needs a one-dimensional tensor of non-negative weights".into());
+                    return Err(
+                        "`sample` needs a one-dimensional tensor of non-negative weights".into(),
+                    );
                 }
                 let mut target = self.rng.lock().uniform() * total;
                 let mut pick = probs.len() - 1;
@@ -468,12 +594,20 @@ impl State {
                 }
                 return Ok(Value::Int(pick as i64));
             }
-            "argmax" => t.argmax(arg_dim(0)?.unwrap()).and_then(|a| a.to_dtype(DType::F32)).map_err(err)?,
-            "argmin" => t.argmin(arg_dim(0)?.unwrap()).and_then(|a| a.to_dtype(DType::F32)).map_err(err)?,
+            "argmax" => t
+                .argmax(arg_dim(0)?.unwrap())
+                .and_then(|a| a.to_dtype(DType::F32))
+                .map_err(err)?,
+            "argmin" => t
+                .argmin(arg_dim(0)?.unwrap())
+                .and_then(|a| a.to_dtype(DType::F32))
+                .map_err(err)?,
             "softmax" => candle_nn::ops::softmax(&t, arg_dim(0)?.unwrap()).map_err(err)?,
             "log_softmax" => candle_nn::ops::log_softmax(&t, arg_dim(0)?.unwrap()).map_err(err)?,
             "squeeze" => t.squeeze(arg_dim(0)?.unwrap()).map_err(err)?,
-            "unsqueeze" => t.unsqueeze(dim(int_arg(&args[0])?, t.rank() + 1)?).map_err(err)?,
+            "unsqueeze" => t
+                .unsqueeze(dim(int_arg(&args[0])?, t.rank() + 1)?)
+                .map_err(err)?,
             "relu" => t.relu().map_err(err)?,
             "sigmoid" => candle_nn::ops::sigmoid(&t).map_err(err)?,
             "tanh" => t.tanh().map_err(err)?,
@@ -490,7 +624,12 @@ impl State {
                 }
                 t.t().map_err(err)?
             }
-            "transpose" => t.transpose(dim(int_arg(&args[0])?, t.rank())?, dim(int_arg(&args[1])?, t.rank())?).map_err(err)?,
+            "transpose" => t
+                .transpose(
+                    dim(int_arg(&args[0])?, t.rank())?,
+                    dim(int_arg(&args[1])?, t.rank())?,
+                )
+                .map_err(err)?,
             "flatten" => t.flatten_all().map_err(err)?,
             "detach" => t.detach(),
             "copy" => t.copy().map_err(err)?,
@@ -499,9 +638,14 @@ impl State {
                 t.reshape(shape).map_err(err)?
             }
             "matmul" => matmul(&t, &tensor_arg(&args[0])?)?,
-            "eq" => t.broadcast_eq(&tensor_arg(&args[0])?).and_then(|m| m.to_dtype(DType::F32)).map_err(err)?,
+            "eq" => t
+                .broadcast_eq(&tensor_arg(&args[0])?)
+                .and_then(|m| m.to_dtype(DType::F32))
+                .map_err(err)?,
             "pow" => t.powf(float_arg(&args[0])?).map_err(err)?,
-            "clamp" => t.clamp(float_arg(&args[0])? as f32, float_arg(&args[1])? as f32).map_err(err)?,
+            "clamp" => t
+                .clamp(float_arg(&args[0])? as f32, float_arg(&args[1])? as f32)
+                .map_err(err)?,
             _ => return Err(format!("Tensor has no method `{name}`")),
         };
         Ok(wrap(out))
@@ -548,7 +692,9 @@ fn layer_norm(x: &Tensor, weight: &Tensor, bias: &Tensor, eps: f64) -> candle_co
 fn dim(d: i64, rank: usize) -> R<usize> {
     let resolved = if d < 0 { d + rank as i64 } else { d };
     if resolved < 0 || resolved >= rank as i64 {
-        return Err(format!("dimension {d} is out of range for a tensor with {rank} dimensions"));
+        return Err(format!(
+            "dimension {d} is out of range for a tensor with {rank} dimensions"
+        ));
     }
     Ok(resolved as usize)
 }
@@ -558,16 +704,41 @@ fn matmul(a: &Tensor, b: &Tensor) -> R<Tensor> {
     if ar == 0 || br == 0 {
         return Err("`@` needs tensors with at least one dimension".into());
     }
-    let a2 = if ar == 1 { a.unsqueeze(0).map_err(err)? } else { a.clone() };
-    let b2 = if br == 1 { b.unsqueeze(1).map_err(err)? } else { b.clone() };
+    let a2 = if ar == 1 {
+        a.unsqueeze(0).map_err(err)?
+    } else {
+        a.clone()
+    };
+    let b2 = if br == 1 {
+        b.unsqueeze(1).map_err(err)?
+    } else {
+        b.clone()
+    };
     let (ka, kb) = (a2.dims()[a2.rank() - 1], b2.dims()[b2.rank() - 2]);
     if ka != kb {
-        return Err(format!("cannot multiply shapes {:?} and {:?}: inner dimensions {ka} and {kb} differ", a.dims(), b.dims()));
+        return Err(format!(
+            "cannot multiply shapes {:?} and {:?}: inner dimensions {ka} and {kb} differ",
+            a.dims(),
+            b.dims()
+        ));
     }
     let (a2, b2) = (a2.contiguous().map_err(err)?, b2.contiguous().map_err(err)?);
-    let out = if a2.rank() == b2.rank() { a2.matmul(&b2) } else { a2.broadcast_matmul(&b2) }.map_err(err)?;
-    let out = if ar == 1 { out.squeeze(out.rank() - 2).map_err(err)? } else { out };
-    if br == 1 { out.squeeze(D::Minus1).map_err(err) } else { Ok(out) }
+    let out = if a2.rank() == b2.rank() {
+        a2.matmul(&b2)
+    } else {
+        a2.broadcast_matmul(&b2)
+    }
+    .map_err(err)?;
+    let out = if ar == 1 {
+        out.squeeze(out.rank() - 2).map_err(err)?
+    } else {
+        out
+    };
+    if br == 1 {
+        out.squeeze(D::Minus1).map_err(err)
+    } else {
+        Ok(out)
+    }
 }
 
 pub fn binary(op: BinOp, a: &Value, b: &Value) -> R<Value> {
@@ -587,7 +758,13 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> R<Value> {
         }
         (Value::Tensor(x), s) => {
             let x = x.get();
-            let s = scalar(s).ok_or_else(|| format!("cannot apply `{}` to a Tensor and a {}", op.symbol(), s.type_name()))?;
+            let s = scalar(s).ok_or_else(|| {
+                format!(
+                    "cannot apply `{}` to a Tensor and a {}",
+                    op.symbol(),
+                    s.type_name()
+                )
+            })?;
             match op {
                 BinOp::Add => x.affine(1.0, s),
                 BinOp::Sub => x.affine(1.0, -s),
@@ -599,19 +776,35 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> R<Value> {
                     x.affine(1.0 / s, 0.0)
                 }
                 BinOp::Pow => x.powf(s),
-                _ => return Err(format!("cannot apply `{}` to a Tensor and a number", op.symbol())),
+                _ => {
+                    return Err(format!(
+                        "cannot apply `{}` to a Tensor and a number",
+                        op.symbol()
+                    ));
+                }
             }
             .map_err(err)?
         }
         (s, Value::Tensor(y)) => {
             let y = y.get();
-            let s = scalar(s).ok_or_else(|| format!("cannot apply `{}` to a {} and a Tensor", op.symbol(), s.type_name()))?;
+            let s = scalar(s).ok_or_else(|| {
+                format!(
+                    "cannot apply `{}` to a {} and a Tensor",
+                    op.symbol(),
+                    s.type_name()
+                )
+            })?;
             match op {
                 BinOp::Add => y.affine(1.0, s),
                 BinOp::Sub => y.affine(-1.0, s),
                 BinOp::Mul => y.affine(s, 0.0),
                 BinOp::Div => y.recip().and_then(|r| r.affine(s, 0.0)),
-                _ => return Err(format!("cannot apply `{}` to a number and a Tensor", op.symbol())),
+                _ => {
+                    return Err(format!(
+                        "cannot apply `{}` to a number and a Tensor",
+                        op.symbol()
+                    ));
+                }
             }
             .map_err(err)?
         }
@@ -623,7 +816,12 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> R<Value> {
 fn shape_error(op: BinOp, x: &Tensor, y: &Tensor, e: candle_core::Error) -> String {
     let msg = err(e);
     if msg.contains("shape") {
-        format!("cannot apply `{}` to tensors of shapes {:?} and {:?}", op.symbol(), x.dims(), y.dims())
+        format!(
+            "cannot apply `{}` to tensors of shapes {:?} and {:?}",
+            op.symbol(),
+            x.dims(),
+            y.dims()
+        )
     } else {
         msg
     }
@@ -635,30 +833,46 @@ pub fn negate(t: &NTensor) -> R<Value> {
 
 pub fn index(t: &NTensor, i: i64) -> R<Value> {
     let t = t.get();
-    let len = *t.dims().first().ok_or("cannot index a tensor with no dimensions")?;
+    let len = *t
+        .dims()
+        .first()
+        .ok_or("cannot index a tensor with no dimensions")?;
     let at = super::builtins::index(i, len)?;
     t.get(at).map(wrap).map_err(err)
 }
 
 pub fn slice(t: &NTensor, start: Option<i64>, end: Option<i64>) -> R<Value> {
     let t = t.get();
-    let len = *t.dims().first().ok_or("cannot slice a tensor with no dimensions")?;
+    let len = *t
+        .dims()
+        .first()
+        .ok_or("cannot slice a tensor with no dimensions")?;
     let (a, b) = super::builtins::bounds(start, end, len);
     t.narrow(0, a, b - a).map(wrap).map_err(err)
 }
 
 pub fn rows(t: &NTensor) -> R<Vec<Value>> {
     let t = t.get();
-    let len = *t.dims().first().ok_or("cannot iterate over a tensor with no dimensions")?;
+    let len = *t
+        .dims()
+        .first()
+        .ok_or("cannot iterate over a tensor with no dimensions")?;
     (0..len).map(|i| t.get(i).map(wrap).map_err(err)).collect()
 }
 
 pub fn len(t: &NTensor) -> R<i64> {
-    t.get().dims().first().map(|d| *d as i64).ok_or_else(|| "a tensor with no dimensions has no length".to_string())
+    t.get()
+        .dims()
+        .first()
+        .map(|d| *d as i64)
+        .ok_or_else(|| "a tensor with no dimensions has no length".to_string())
 }
 
 fn values(t: &Tensor) -> R<Vec<f32>> {
-    t.flatten_all().and_then(|f| f.to_dtype(DType::F32)).and_then(|f| f.to_vec1::<f32>()).map_err(err)
+    t.flatten_all()
+        .and_then(|f| f.to_dtype(DType::F32))
+        .and_then(|f| f.to_vec1::<f32>())
+        .map_err(err)
 }
 
 fn to_list(t: &Tensor) -> R<Value> {
@@ -692,14 +906,20 @@ fn format_f32(f: f32) -> String {
 /// Formats like `tensor([[1.0, 2.0], [3.0, 4.0]])`, eliding the middle of long dimensions.
 pub fn display(t: &NTensor) -> String {
     let t = t.get();
-    let Ok(data) = values(&t) else { return "tensor(<unprintable>)".into() };
+    let Ok(data) = values(&t) else {
+        return "tensor(<unprintable>)".into();
+    };
     fn write(out: &mut String, data: &[f32], dims: &[usize]) {
         match dims.split_first() {
             None => out.push_str(&format_f32(data[0])),
             Some((&n, rest)) => {
                 let stride: usize = rest.iter().product();
                 out.push('[');
-                let shown: Vec<usize> = if n > 6 { (0..3).chain(n - 3..n).collect() } else { (0..n).collect() };
+                let shown: Vec<usize> = if n > 6 {
+                    (0..3).chain(n - 3..n).collect()
+                } else {
+                    (0..n).collect()
+                };
                 for (k, i) in shown.iter().enumerate() {
                     if k > 0 {
                         out.push_str(", ");

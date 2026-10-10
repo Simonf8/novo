@@ -3,15 +3,40 @@ use crate::diagnostic::Diagnostic;
 use crate::source::{FileId, Span};
 
 pub fn tokenize(file: FileId, src: &str) -> Result<Vec<Token>, Diagnostic> {
-    Lexer { file, src, pos: 0, depth: 0, indents: vec![0], tokens: Vec::new(), at_line_start: true }.run()
+    Lexer {
+        file,
+        src,
+        pos: 0,
+        depth: 0,
+        indents: vec![0],
+        tokens: Vec::new(),
+        at_line_start: true,
+    }
+    .run()
 }
 
 /// Tokenizes a slice of a larger file, used for expressions embedded in f-strings.
-pub fn tokenize_fragment(file: FileId, src: &str, lo: usize, hi: usize) -> Result<Vec<Token>, Diagnostic> {
-    let mut lexer = Lexer { file, src: &src[..hi], pos: lo, depth: 1, indents: vec![0], tokens: Vec::new(), at_line_start: false };
+pub fn tokenize_fragment(
+    file: FileId,
+    src: &str,
+    lo: usize,
+    hi: usize,
+) -> Result<Vec<Token>, Diagnostic> {
+    let mut lexer = Lexer {
+        file,
+        src: &src[..hi],
+        pos: lo,
+        depth: 1,
+        indents: vec![0],
+        tokens: Vec::new(),
+        at_line_start: false,
+    };
     lexer.scan()?;
     let end = Span::new(file, hi, hi);
-    lexer.tokens.push(Token { tok: Tok::Eof, span: end });
+    lexer.tokens.push(Token {
+        tok: Tok::Eof,
+        span: end,
+    });
     Ok(lexer.tokens)
 }
 
@@ -29,14 +54,26 @@ impl<'a> Lexer<'a> {
     fn run(mut self) -> Result<Vec<Token>, Diagnostic> {
         self.scan()?;
         let end = self.span(self.src.len(), self.src.len());
-        if !matches!(self.tokens.last().map(|t| &t.tok), None | Some(Tok::Newline)) {
-            self.tokens.push(Token { tok: Tok::Newline, span: end });
+        if !matches!(
+            self.tokens.last().map(|t| &t.tok),
+            None | Some(Tok::Newline)
+        ) {
+            self.tokens.push(Token {
+                tok: Tok::Newline,
+                span: end,
+            });
         }
         while self.indents.len() > 1 {
             self.indents.pop();
-            self.tokens.push(Token { tok: Tok::Dedent, span: end });
+            self.tokens.push(Token {
+                tok: Tok::Dedent,
+                span: end,
+            });
         }
-        self.tokens.push(Token { tok: Tok::Eof, span: end });
+        self.tokens.push(Token {
+            tok: Tok::Eof,
+            span: end,
+        });
         Ok(self.tokens)
     }
 
@@ -76,7 +113,10 @@ impl<'a> Lexer<'a> {
                 '\n' => {
                     self.bump();
                     if self.depth == 0 {
-                        if !matches!(self.tokens.last().map(|t| &t.tok), None | Some(Tok::Newline)) {
+                        if !matches!(
+                            self.tokens.last().map(|t| &t.tok),
+                            None | Some(Tok::Newline)
+                        ) {
                             self.push(Tok::Newline, lo);
                         }
                         self.at_line_start = true;
@@ -128,8 +168,10 @@ impl<'a> Lexer<'a> {
                 self.push(Tok::Dedent, self.pos);
             }
             if width != *self.indents.last().unwrap() {
-                return Err(Diagnostic::error(self.span(lo, self.pos), "inconsistent indentation")
-                    .with_help("indent each block by the same amount as the lines around it"));
+                return Err(
+                    Diagnostic::error(self.span(lo, self.pos), "inconsistent indentation")
+                        .with_help("indent each block by the same amount as the lines around it"),
+                );
             }
         }
         Ok(())
@@ -178,8 +220,9 @@ impl<'a> Lexer<'a> {
             self.bump();
             let radix = if self.bump() == Some('x') { 16 } else { 2 };
             self.digits(&mut text, radix);
-            let value = i64::from_str_radix(&text, radix)
-                .map_err(|_| Diagnostic::error(self.span(lo, self.pos), "invalid integer literal"))?;
+            let value = i64::from_str_radix(&text, radix).map_err(|_| {
+                Diagnostic::error(self.span(lo, self.pos), "invalid integer literal")
+            })?;
             self.push(Tok::Int(value), lo);
             return Ok(());
         }
@@ -213,11 +256,14 @@ impl<'a> Lexer<'a> {
 
         let span = self.span(lo, self.pos);
         if is_float {
-            let value: f64 = text.parse().map_err(|_| Diagnostic::error(span, "invalid number literal"))?;
+            let value: f64 = text
+                .parse()
+                .map_err(|_| Diagnostic::error(span, "invalid number literal"))?;
             self.push(Tok::Float(value), lo);
         } else {
             let value: i64 = text.parse().map_err(|_| {
-                Diagnostic::error(span, "integer literal is too large").with_help("integers are 64-bit; use a float for larger values")
+                Diagnostic::error(span, "integer literal is too large")
+                    .with_help("integers are 64-bit; use a float for larger values")
             })?;
             self.push(Tok::Int(value), lo);
         }
@@ -227,7 +273,9 @@ impl<'a> Lexer<'a> {
     fn escape(&mut self, quote_lo: usize) -> Result<char, Diagnostic> {
         let lo = self.pos;
         self.bump();
-        let c = self.bump().ok_or_else(|| Diagnostic::error(self.span(quote_lo, self.pos), "unterminated string"))?;
+        let c = self.bump().ok_or_else(|| {
+            Diagnostic::error(self.span(quote_lo, self.pos), "unterminated string")
+        })?;
         Ok(match c {
             'n' => '\n',
             't' => '\t',
@@ -240,7 +288,10 @@ impl<'a> Lexer<'a> {
             '}' => '}',
             'u' => {
                 if self.bump() != Some('{') {
-                    return Err(Diagnostic::error(self.span(lo, self.pos), "expected `{` after `\\u`"));
+                    return Err(Diagnostic::error(
+                        self.span(lo, self.pos),
+                        "expected `{` after `\\u`",
+                    ));
                 }
                 let start = self.pos;
                 while self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
@@ -248,16 +299,24 @@ impl<'a> Lexer<'a> {
                 }
                 let hex = &self.src[start..self.pos];
                 if self.bump() != Some('}') {
-                    return Err(Diagnostic::error(self.span(lo, self.pos), "expected `}` to close unicode escape"));
+                    return Err(Diagnostic::error(
+                        self.span(lo, self.pos),
+                        "expected `}` to close unicode escape",
+                    ));
                 }
                 u32::from_str_radix(hex, 16)
                     .ok()
                     .and_then(char::from_u32)
-                    .ok_or_else(|| Diagnostic::error(self.span(lo, self.pos), "invalid unicode escape"))?
+                    .ok_or_else(|| {
+                        Diagnostic::error(self.span(lo, self.pos), "invalid unicode escape")
+                    })?
             }
             other => {
-                return Err(Diagnostic::error(self.span(lo, self.pos), format!("unknown escape `\\{other}`"))
-                    .with_help("use `\\\\` for a literal backslash"));
+                return Err(Diagnostic::error(
+                    self.span(lo, self.pos),
+                    format!("unknown escape `\\{other}`"),
+                )
+                .with_help("use `\\\\` for a literal backslash"));
             }
         })
     }
@@ -273,10 +332,17 @@ impl<'a> Lexer<'a> {
         let mut out = String::new();
         loop {
             match self.peek() {
-                None => return Err(Diagnostic::error(self.span(lo, self.pos), "unterminated string")),
+                None => {
+                    return Err(Diagnostic::error(
+                        self.span(lo, self.pos),
+                        "unterminated string",
+                    ));
+                }
                 Some('\n') if !triple => {
-                    return Err(Diagnostic::error(self.span(lo, self.pos), "unterminated string")
-                        .with_help("use triple quotes for strings that span lines"));
+                    return Err(
+                        Diagnostic::error(self.span(lo, self.pos), "unterminated string")
+                            .with_help("use triple quotes for strings that span lines"),
+                    );
                 }
                 Some('\\') => out.push(self.escape(lo)?),
                 Some(c) if c == quote => {
@@ -307,7 +373,12 @@ impl<'a> Lexer<'a> {
         let mut lit = String::new();
         loop {
             match self.peek() {
-                None | Some('\n') => return Err(Diagnostic::error(self.span(lo, self.pos), "unterminated f-string")),
+                None | Some('\n') => {
+                    return Err(Diagnostic::error(
+                        self.span(lo, self.pos),
+                        "unterminated f-string",
+                    ));
+                }
                 Some('\\') => lit.push(self.escape(lo)?),
                 Some(c) if c == quote => {
                     self.bump();
@@ -332,8 +403,11 @@ impl<'a> Lexer<'a> {
                     parts.push(self.fstring_expr(open, quote)?);
                 }
                 Some('}') => {
-                    return Err(Diagnostic::error(self.span(self.pos, self.pos + 1), "unmatched `}` in f-string")
-                        .with_help("write `}}` for a literal brace"));
+                    return Err(Diagnostic::error(
+                        self.span(self.pos, self.pos + 1),
+                        "unmatched `}` in f-string",
+                    )
+                    .with_help("write `}}` for a literal brace"));
                 }
                 Some(c) => {
                     lit.push(c);
@@ -353,8 +427,18 @@ impl<'a> Lexer<'a> {
         let mut colon = None;
         loop {
             match self.peek() {
-                None | Some('\n') => return Err(Diagnostic::error(self.span(open, self.pos), "unclosed `{` in f-string")),
-                Some(c) if c == quote => return Err(Diagnostic::error(self.span(open, self.pos), "unclosed `{` in f-string")),
+                None | Some('\n') => {
+                    return Err(Diagnostic::error(
+                        self.span(open, self.pos),
+                        "unclosed `{` in f-string",
+                    ));
+                }
+                Some(c) if c == quote => {
+                    return Err(Diagnostic::error(
+                        self.span(open, self.pos),
+                        "unclosed `{` in f-string",
+                    ));
+                }
                 Some('(') | Some('[') | Some('{') => depth += 1,
                 Some(')') | Some(']') => depth = depth.saturating_sub(1),
                 Some('}') if depth == 0 => break,
@@ -375,7 +459,10 @@ impl<'a> Lexer<'a> {
             None => (close, None),
         };
         if self.src[lo..hi].trim().is_empty() {
-            return Err(Diagnostic::error(self.span(open, close + 1), "empty expression in f-string"));
+            return Err(Diagnostic::error(
+                self.span(open, close + 1),
+                "empty expression in f-string",
+            ));
         }
         Ok(FPart::Expr { lo, hi, spec })
     }
@@ -431,10 +518,14 @@ impl<'a> Lexer<'a> {
                 }
             }
             ('!', _) => {
-                return Err(Diagnostic::error(self.span(lo, self.pos), "unexpected `!`").with_help("use `not` for negation"));
+                return Err(Diagnostic::error(self.span(lo, self.pos), "unexpected `!`")
+                    .with_help("use `not` for negation"));
             }
             _ => {
-                return Err(Diagnostic::error(self.span(lo, self.pos), format!("unexpected character `{c}`")));
+                return Err(Diagnostic::error(
+                    self.span(lo, self.pos),
+                    format!("unexpected character `{c}`"),
+                ));
             }
         };
         self.push(tok, lo);

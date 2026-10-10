@@ -168,10 +168,89 @@ impl StdModule {
 
 impl Builtin {
     /// Every builtin, so compiled code can refer to one by its position.
-    pub const ALL: &[Builtin] = &[Builtin::Len, Builtin::Range, Builtin::ToStr, Builtin::ToInt, Builtin::ToFloat, Builtin::ToBool, Builtin::Abs, Builtin::Min, Builtin::Max, Builtin::Round, Builtin::Assert, Builtin::AssertEq, Builtin::Fail, Builtin::TypeOf, Builtin::Input, Builtin::Enumerate, Builtin::Zip, Builtin::Sorted, Builtin::Reversed, Builtin::Sum, Builtin::Any, Builtin::All, Builtin::Chr, Builtin::Ord, Builtin::FromBytes, Builtin::MathPi, Builtin::MathE, Builtin::MathSqrt, Builtin::MathPow, Builtin::MathFloor, Builtin::MathCeil, Builtin::MathSin, Builtin::MathCos, Builtin::MathTan, Builtin::MathLog, Builtin::MathExp, Builtin::TimeNow, Builtin::TimeNowMs, Builtin::TimeSleep, Builtin::JsonParse, Builtin::JsonStringify, Builtin::FsRead, Builtin::FsWrite, Builtin::FsAppend, Builtin::FsExists, Builtin::FsListDir, Builtin::FsDelete, Builtin::FsCreateDir, Builtin::EnvGet, Builtin::EnvSet, Builtin::EnvArgs, Builtin::NnTensor, Builtin::NnZeros, Builtin::NnOnes, Builtin::NnRandn, Builtin::NnRand, Builtin::NnArange, Builtin::NnEye, Builtin::NnParam, Builtin::NnSeed, Builtin::NnSgd, Builtin::NnAdam, Builtin::NnMse, Builtin::NnCrossEntropy, Builtin::NnStack, Builtin::NnCat, Builtin::NnTril, Builtin::NnSave, Builtin::NnLoad, Builtin::NnDevice, Builtin::RandomSeed, Builtin::RandomInt, Builtin::RandomFloat, Builtin::RandomChoice, Builtin::RandomShuffle];
+    pub const ALL: &[Builtin] = &[
+        Builtin::Len,
+        Builtin::Range,
+        Builtin::ToStr,
+        Builtin::ToInt,
+        Builtin::ToFloat,
+        Builtin::ToBool,
+        Builtin::Abs,
+        Builtin::Min,
+        Builtin::Max,
+        Builtin::Round,
+        Builtin::Assert,
+        Builtin::AssertEq,
+        Builtin::Fail,
+        Builtin::TypeOf,
+        Builtin::Input,
+        Builtin::Enumerate,
+        Builtin::Zip,
+        Builtin::Sorted,
+        Builtin::Reversed,
+        Builtin::Sum,
+        Builtin::Any,
+        Builtin::All,
+        Builtin::Chr,
+        Builtin::Ord,
+        Builtin::FromBytes,
+        Builtin::MathPi,
+        Builtin::MathE,
+        Builtin::MathSqrt,
+        Builtin::MathPow,
+        Builtin::MathFloor,
+        Builtin::MathCeil,
+        Builtin::MathSin,
+        Builtin::MathCos,
+        Builtin::MathTan,
+        Builtin::MathLog,
+        Builtin::MathExp,
+        Builtin::TimeNow,
+        Builtin::TimeNowMs,
+        Builtin::TimeSleep,
+        Builtin::JsonParse,
+        Builtin::JsonStringify,
+        Builtin::FsRead,
+        Builtin::FsWrite,
+        Builtin::FsAppend,
+        Builtin::FsExists,
+        Builtin::FsListDir,
+        Builtin::FsDelete,
+        Builtin::FsCreateDir,
+        Builtin::EnvGet,
+        Builtin::EnvSet,
+        Builtin::EnvArgs,
+        Builtin::NnTensor,
+        Builtin::NnZeros,
+        Builtin::NnOnes,
+        Builtin::NnRandn,
+        Builtin::NnRand,
+        Builtin::NnArange,
+        Builtin::NnEye,
+        Builtin::NnParam,
+        Builtin::NnSeed,
+        Builtin::NnSgd,
+        Builtin::NnAdam,
+        Builtin::NnMse,
+        Builtin::NnCrossEntropy,
+        Builtin::NnStack,
+        Builtin::NnCat,
+        Builtin::NnTril,
+        Builtin::NnSave,
+        Builtin::NnLoad,
+        Builtin::NnDevice,
+        Builtin::RandomSeed,
+        Builtin::RandomInt,
+        Builtin::RandomFloat,
+        Builtin::RandomChoice,
+        Builtin::RandomShuffle,
+    ];
 
     pub fn index(self) -> u32 {
-        Builtin::ALL.iter().position(|b| *b == self).expect("listed in ALL") as u32
+        Builtin::ALL
+            .iter()
+            .position(|b| *b == self)
+            .expect("listed in ALL") as u32
     }
 
     pub fn global(name: &str) -> Option<Builtin> {
@@ -347,7 +426,9 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
     match recv {
         Ty::Str => Some(match name {
             "length" | "len" => (vec![], 0, i()),
-            "to_upper" | "upper" | "to_lower" | "lower" | "trim" | "trim_start" | "trim_end" => (vec![], 0, s()),
+            "to_upper" | "upper" | "to_lower" | "lower" | "trim" | "trim_start" | "trim_end" => {
+                (vec![], 0, s())
+            }
             "split" => (vec![s()], 0, Ty::list(s())),
             "lines" | "chars" => (vec![], 0, Ty::list(s())),
             "replace" => (vec![s(), s()], 2, s()),
@@ -358,7 +439,9 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
             "pad_start" | "pad_end" => (vec![i(), s()], 1, s()),
             "join" => (vec![Ty::list(s())], 1, s()),
             "bytes" => (vec![], 0, Ty::list(i())),
-            "is_alpha" | "is_digit" | "is_space" | "is_alnum" | "is_upper" | "is_lower" => (vec![], 0, b()),
+            "is_alpha" | "is_digit" | "is_space" | "is_alnum" | "is_upper" | "is_lower" => {
+                (vec![], 0, b())
+            }
             "is_empty" => (vec![], 0, b()),
             _ => return None,
         }),
@@ -407,7 +490,9 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
                 "to_list" => (vec![], 0, Ty::Any),
                 "sum" | "mean" => (vec![i(), Ty::Bool], 0, t()),
                 "max" | "min" => (vec![i(), Ty::Bool], 1, t()),
-                "argmax" | "argmin" | "softmax" | "log_softmax" | "squeeze" | "unsqueeze" => (vec![i()], 1, t()),
+                "argmax" | "argmin" | "softmax" | "log_softmax" | "squeeze" | "unsqueeze" => {
+                    (vec![i()], 1, t())
+                }
                 "narrow" => (vec![i(), i(), i()], 3, t()),
                 "chunk" => (vec![i(), i()], 1, Ty::list(t())),
                 "embed" => (vec![t()], 1, t()),
@@ -416,8 +501,8 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
                 "sample" => (vec![], 0, i()),
                 "device" | "dtype" => (vec![], 0, Ty::Str),
                 "to" | "to_dtype" => (vec![Ty::Str], 1, t()),
-                "relu" | "sigmoid" | "tanh" | "exp" | "log" | "sqrt" | "abs" | "gelu" | "silu" | "square" | "t" | "flatten" | "detach"
-                | "grad" | "copy" => (vec![], 0, t()),
+                "relu" | "sigmoid" | "tanh" | "exp" | "log" | "sqrt" | "abs" | "gelu" | "silu"
+                | "square" | "t" | "flatten" | "detach" | "grad" | "copy" => (vec![], 0, t()),
                 "reshape" => (vec![Ty::list(i())], 1, t()),
                 "transpose" => (vec![i(), i()], 2, t()),
                 "matmul" | "eq" => (vec![t()], 1, t()),

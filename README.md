@@ -65,9 +65,14 @@ novo check <file.nv> [--json]    Type-check without running
 novo test [path]                 Run test_*.nv and *_test.nv files
 novo bench <file.nv> [-n N]      Time repeated runs of a program
 novo new <name>                  Create a project
+novo [repl]                      Start the interactive prompt
 ```
 
 `novo check --json` prints one JSON object per diagnostic, for editors.
+
+At the interactive prompt each input runs against the state the earlier ones
+left, and a bare expression shows its value. Defining a function again
+replaces it. An input that fails to check is forgotten entirely.
 
 ## A short tour
 
@@ -210,7 +215,7 @@ errors (`# expect-error: ...`) and required features
 2. **Shapes in types.** Catch tensor dimension mismatches at check time.
 3. **Data and models.** Data loading, batching, reusable layers, and
    running pretrained models such as GPT-2 from their published weights.
-4. **Tooling.** Language server, REPL, and a comment-preserving formatter.
+4. **Tooling.** Language server and a comment-preserving formatter.
 
 ## License
 

@@ -1,5 +1,5 @@
-use super::value::{compare, equal, format_float, Key, Value};
 use super::Interp;
+use super::value::{Key, Value, compare, equal, format_float};
 use crate::check::builtins::Builtin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,7 +14,8 @@ fn int(v: &Value) -> Result<i64, String> {
 }
 
 fn float(v: &Value) -> Result<f64, String> {
-    v.as_f64().ok_or_else(|| format!("expected a number, found a {}", v.type_name()))
+    v.as_f64()
+        .ok_or_else(|| format!("expected a number, found a {}", v.type_name()))
 }
 
 fn list(v: &Value) -> Result<Vec<Value>, String> {
@@ -67,7 +68,12 @@ impl Interp {
                 Value::Map(m) => m.read().len() as i64,
                 Value::Tensor(t) => super::tensor::len(t)?,
                 Value::Tuple(items) => items.len() as i64,
-                other => return Err(format!("`len` needs a list, string, map or tensor, found a {}", other.type_name())),
+                other => {
+                    return Err(format!(
+                        "`len` needs a list, string, map or tensor, found a {}",
+                        other.type_name()
+                    ));
+                }
             }),
             Builtin::Range => {
                 let (start, end, step) = match args.len() {
@@ -94,14 +100,20 @@ impl Interp {
                 Value::Int(i) => *i,
                 Value::Float(f) if f.is_finite() => f.trunc() as i64,
                 Value::Bool(b) => i64::from(*b),
-                Value::Str(s) => s.trim().parse().map_err(|_| format!("cannot convert \"{s}\" to an Int"))?,
+                Value::Str(s) => s
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("cannot convert \"{s}\" to an Int"))?,
                 other => return Err(format!("cannot convert a {} to an Int", other.type_name())),
             }),
             Builtin::ToFloat => Value::Float(match &args[0] {
                 Value::Int(i) => *i as f64,
                 Value::Float(f) => *f,
                 Value::Bool(b) => f64::from(u8::from(*b)),
-                Value::Str(s) => s.trim().parse().map_err(|_| format!("cannot convert \"{s}\" to a Float"))?,
+                Value::Str(s) => s
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("cannot convert \"{s}\" to a Float"))?,
                 other => return Err(format!("cannot convert a {} to a Float", other.type_name())),
             }),
             Builtin::ToBool => Value::Bool(match &args[0] {
@@ -122,7 +134,13 @@ impl Interp {
                 let items = if args.len() == 1 {
                     match &args[0] {
                         Value::List(l) => l.read().clone(),
-                        other => return Err(format!("`{}` needs a list, found a {}", b.name(), other.type_name())),
+                        other => {
+                            return Err(format!(
+                                "`{}` needs a list, found a {}",
+                                b.name(),
+                                other.type_name()
+                            ));
+                        }
                     }
                 } else {
                     args
@@ -147,7 +165,8 @@ impl Interp {
             }
             Builtin::AssertEq => {
                 if !equal(&args[0], &args[1]) {
-                    let detail = format!("{} != {}", self.display(&args[0]), self.display(&args[1]));
+                    let detail =
+                        format!("{} != {}", self.display(&args[0]), self.display(&args[1]));
                     return Err(match args.get(2) {
                         Some(Value::Str(m)) => format!("assertion failed: {m} ({detail})"),
                         _ => format!("assertion failed: {detail}"),
@@ -158,7 +177,10 @@ impl Interp {
             Builtin::Fail => return Err(string(&args[0])?.to_string()),
             Builtin::Chr => {
                 let code = int(&args[0])?;
-                let c = u32::try_from(code).ok().and_then(char::from_u32).ok_or_else(|| format!("{code} is not a valid character code"))?;
+                let c = u32::try_from(code)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(|| format!("{code} is not a valid character code"))?;
                 Value::Str(c.to_string().into())
             }
             Builtin::Ord => {
@@ -179,30 +201,59 @@ impl Interp {
                     .collect::<Result<Vec<u8>, _>>()?;
                 Value::Str(String::from_utf8_lossy(&bytes).into_owned().into())
             }
-            Builtin::Enumerate => Value::list(list(&args[0])?.into_iter().enumerate().map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v].into())).collect()),
+            Builtin::Enumerate => Value::list(
+                list(&args[0])?
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| Value::Tuple(vec![Value::Int(i as i64), v].into()))
+                    .collect(),
+            ),
             Builtin::Zip => {
                 let (a, b) = (list(&args[0])?, list(&args[1])?);
-                Value::list(a.into_iter().zip(b).map(|(x, y)| Value::Tuple(vec![x, y].into())).collect())
+                Value::list(
+                    a.into_iter()
+                        .zip(b)
+                        .map(|(x, y)| Value::Tuple(vec![x, y].into()))
+                        .collect(),
+                )
             }
             Builtin::Reversed => Value::list(list(&args[0])?.into_iter().rev().collect()),
             Builtin::Sum => {
                 let mut total = Value::Int(0);
                 for (i, v) in list(&args[0])?.into_iter().enumerate() {
-                    total = if i == 0 { v } else { self.binary_values(crate::syntax::ast::BinOp::Add, &total, &v)? };
+                    total = if i == 0 {
+                        v
+                    } else {
+                        self.binary_values(crate::syntax::ast::BinOp::Add, &total, &v)?
+                    };
                 }
                 total
             }
             Builtin::Any | Builtin::All => {
                 let items = list(&args[0])?;
                 let truthy = |v: &Value| matches!(v, Value::Bool(true));
-                Value::Bool(if b == Builtin::Any { items.iter().any(truthy) } else { items.iter().all(truthy) })
+                Value::Bool(if b == Builtin::Any {
+                    items.iter().any(truthy)
+                } else {
+                    items.iter().all(truthy)
+                })
             }
             Builtin::Sorted => {
                 let items = list(&args[0])?;
                 let mut keyed: Vec<(Value, Value)> = match args.get(1) {
                     Some(key) => items
                         .into_iter()
-                        .map(|v| Ok((self.call_value(key, vec![v.clone()], crate::source::Span::default()).map_err(|e| e.message)?, v)))
+                        .map(|v| {
+                            Ok((
+                                self.call_value(
+                                    key,
+                                    vec![v.clone()],
+                                    crate::source::Span::default(),
+                                )
+                                .map_err(|e| e.message)?,
+                                v,
+                            ))
+                        })
                         .collect::<Result<_, String>>()?,
                     None => items.into_iter().map(|v| (v.clone(), v)).collect(),
                 };
@@ -228,7 +279,9 @@ impl Interp {
                 }
                 self.flush();
                 let mut line = String::new();
-                std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+                std::io::stdin()
+                    .read_line(&mut line)
+                    .map_err(|e| e.to_string())?;
                 Value::str(line.trim_end_matches(['\n', '\r']))
             }
             Builtin::MathPi => Value::Float(std::f64::consts::PI),
@@ -242,23 +295,45 @@ impl Interp {
             Builtin::MathTan => Value::Float(float(&args[0])?.tan()),
             Builtin::MathLog => Value::Float(float(&args[0])?.ln()),
             Builtin::MathExp => Value::Float(float(&args[0])?.exp()),
-            Builtin::TimeNow => Value::Float(SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs_f64()),
-            Builtin::TimeNowMs => Value::Int(SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis() as i64),
+            Builtin::TimeNow => Value::Float(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_secs_f64(),
+            ),
+            Builtin::TimeNowMs => Value::Int(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_millis() as i64,
+            ),
             Builtin::TimeSleep => {
-                std::thread::sleep(std::time::Duration::from_millis(int(&args[0])?.max(0) as u64));
+                std::thread::sleep(std::time::Duration::from_millis(
+                    int(&args[0])?.max(0) as u64
+                ));
                 Value::None
             }
             Builtin::JsonParse => json::parse(&string(&args[0])?)?,
             Builtin::JsonStringify => Value::Str(json::stringify(&args[0])?.into()),
-            Builtin::FsRead => Value::Str(std::fs::read_to_string(&*string(&args[0])?).map_err(|e| e.to_string())?.into()),
+            Builtin::FsRead => Value::Str(
+                std::fs::read_to_string(&*string(&args[0])?)
+                    .map_err(|e| e.to_string())?
+                    .into(),
+            ),
             Builtin::FsWrite => {
-                std::fs::write(&*string(&args[0])?, string(&args[1])?.as_bytes()).map_err(|e| e.to_string())?;
+                std::fs::write(&*string(&args[0])?, string(&args[1])?.as_bytes())
+                    .map_err(|e| e.to_string())?;
                 Value::None
             }
             Builtin::FsAppend => {
                 use std::io::Write;
-                let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&*string(&args[0])?).map_err(|e| e.to_string())?;
-                f.write_all(string(&args[1])?.as_bytes()).map_err(|e| e.to_string())?;
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&*string(&args[0])?)
+                    .map_err(|e| e.to_string())?;
+                f.write_all(string(&args[1])?.as_bytes())
+                    .map_err(|e| e.to_string())?;
                 Value::None
             }
             Builtin::FsExists => Value::Bool(std::path::Path::new(&*string(&args[0])?).exists()),
@@ -283,7 +358,9 @@ impl Interp {
                 match (std::env::var(&*name), args.get(1)) {
                     (Ok(v), _) => Value::Str(v.into()),
                     (Err(_), Some(default)) => default.clone(),
-                    (Err(_), None) => return Err(format!("environment variable `{name}` is not set")),
+                    (Err(_), None) => {
+                        return Err(format!("environment variable `{name}` is not set"));
+                    }
                 }
             }
             Builtin::EnvSet => {
@@ -291,7 +368,12 @@ impl Interp {
                 unsafe { std::env::set_var(&*string(&args[0])?, &*string(&args[1])?) };
                 Value::None
             }
-            Builtin::EnvArgs => Value::list(self.args.iter().map(|a| Value::Str(a.as_str().into())).collect()),
+            Builtin::EnvArgs => Value::list(
+                self.args
+                    .iter()
+                    .map(|a| Value::Str(a.as_str().into()))
+                    .collect(),
+            ),
             Builtin::NnTensor
             | Builtin::NnZeros
             | Builtin::NnOnes
@@ -343,14 +425,22 @@ impl Interp {
                     Value::list(parts)
                 }
                 "lines" => Value::list(s.lines().map(Value::str).collect()),
-                "chars" => Value::list(s.chars().map(|c| Value::Str(c.to_string().into())).collect()),
+                "chars" => Value::list(
+                    s.chars()
+                        .map(|c| Value::Str(c.to_string().into()))
+                        .collect(),
+                ),
                 "replace" => Value::Str(s.replace(&*string(&args[0])?, &string(&args[1])?).into()),
                 "contains" => Value::Bool(s.contains(&*string(&args[0])?)),
                 "starts_with" => Value::Bool(s.starts_with(&*string(&args[0])?)),
                 "ends_with" => Value::Bool(s.ends_with(&*string(&args[0])?)),
                 "index_of" => {
                     let needle = string(&args[0])?;
-                    Value::Int(s.find(&*needle).map(|b| s[..b].chars().count() as i64).unwrap_or(-1))
+                    Value::Int(
+                        s.find(&*needle)
+                            .map(|b| s[..b].chars().count() as i64)
+                            .unwrap_or(-1),
+                    )
                 }
                 "slice" => {
                     let end = match args.get(1) {
@@ -367,12 +457,21 @@ impl Interp {
                         None => ' ',
                     };
                     let len = s.chars().count();
-                    let pad: String = std::iter::repeat_n(fill, width.saturating_sub(len)).collect();
-                    Value::Str(if name == "pad_start" { format!("{pad}{s}") } else { format!("{s}{pad}") }.into())
+                    let pad: String =
+                        std::iter::repeat_n(fill, width.saturating_sub(len)).collect();
+                    Value::Str(
+                        if name == "pad_start" {
+                            format!("{pad}{s}")
+                        } else {
+                            format!("{s}{pad}")
+                        }
+                        .into(),
+                    )
                 }
                 "is_empty" => Value::Bool(s.is_empty()),
                 "join" => {
-                    let parts: Vec<String> = list(&args[0])?.iter().map(|v| self.display(v)).collect();
+                    let parts: Vec<String> =
+                        list(&args[0])?.iter().map(|v| self.display(v)).collect();
                     Value::Str(parts.join(s).into())
                 }
                 "bytes" => Value::list(s.bytes().map(|b| Value::Int(i64::from(b))).collect()),
@@ -400,7 +499,11 @@ impl Interp {
                     let mut l = list.write();
                     let len = l.len();
                     let i = int(&args[0])?;
-                    let at = if i < 0 { (i + len as i64).max(0) as usize } else { (i as usize).min(len) };
+                    let at = if i < 0 {
+                        (i + len as i64).max(0) as usize
+                    } else {
+                        (i as usize).min(len)
+                    };
                     l.insert(at, arg(1));
                     Value::None
                 }
@@ -410,7 +513,13 @@ impl Interp {
                     l.remove(i)
                 }
                 "contains" => Value::Bool(list.read().iter().any(|x| equal(x, &args[0]))),
-                "index_of" => Value::Int(list.read().iter().position(|x| equal(x, &args[0])).map(|i| i as i64).unwrap_or(-1)),
+                "index_of" => Value::Int(
+                    list.read()
+                        .iter()
+                        .position(|x| equal(x, &args[0]))
+                        .map(|i| i as i64)
+                        .unwrap_or(-1),
+                ),
                 "slice" => {
                     let l = list.read();
                     let end = match args.get(1) {
@@ -454,27 +563,53 @@ impl Interp {
                 "extend" => {
                     let other = match &args[0] {
                         Value::List(o) => o.read().clone(),
-                        other => return Err(format!("`extend` needs a list, found a {}", other.type_name())),
+                        other => {
+                            return Err(format!(
+                                "`extend` needs a list, found a {}",
+                                other.type_name()
+                            ));
+                        }
                     };
                     list.write().extend(other);
                     Value::None
                 }
                 "copy" | "clone" => Value::list(list.read().clone()),
-                "first" => list.read().first().cloned().ok_or("`first` of an empty list")?,
-                "last" => list.read().last().cloned().ok_or("`last` of an empty list")?,
+                "first" => list
+                    .read()
+                    .first()
+                    .cloned()
+                    .ok_or("`first` of an empty list")?,
+                "last" => list
+                    .read()
+                    .last()
+                    .cloned()
+                    .ok_or("`last` of an empty list")?,
                 "is_empty" => Value::Bool(list.read().is_empty()),
                 _ => return Err(format!("List has no method `{name}`")),
             }),
             Value::Map(map) => Ok(match name {
                 "length" | "len" => Value::Int(map.read().len() as i64),
-                "has" | "contains" => Value::Bool(map.read().get(&Key::from_value(&args[0])?).is_some()),
+                "has" | "contains" => {
+                    Value::Bool(map.read().get(&Key::from_value(&args[0])?).is_some())
+                }
                 "keys" => Value::list(map.read().iter().map(|(k, _)| k.to_value()).collect()),
                 "values" => Value::list(map.read().iter().map(|(_, v)| v.clone()).collect()),
-                "items" => Value::list(map.read().iter().map(|(k, v)| Value::Tuple(vec![k.to_value(), v.clone()].into())).collect()),
-                "get" => map.read().get(&Key::from_value(&args[0])?).cloned().unwrap_or_else(|| arg(1)),
+                "items" => Value::list(
+                    map.read()
+                        .iter()
+                        .map(|(k, v)| Value::Tuple(vec![k.to_value(), v.clone()].into()))
+                        .collect(),
+                ),
+                "get" => map
+                    .read()
+                    .get(&Key::from_value(&args[0])?)
+                    .cloned()
+                    .unwrap_or_else(|| arg(1)),
                 "remove" => {
                     let key = Key::from_value(&args[0])?;
-                    map.write().remove(&key).ok_or_else(|| format!("key {} is not in the map", self.display(&args[0])))?
+                    map.write().remove(&key).ok_or_else(|| {
+                        format!("key {} is not in the map", self.display(&args[0]))
+                    })?
                 }
                 "clear" => {
                     map.write().clear();
@@ -496,11 +631,16 @@ fn extreme(items: &[Value], max: bool) -> R {
             None => item,
             Some(b) => {
                 let ord = compare(item, b)?;
-                if (max && ord.is_gt()) || (!max && ord.is_lt()) { item } else { b }
+                if (max && ord.is_gt()) || (!max && ord.is_lt()) {
+                    item
+                } else {
+                    b
+                }
             }
         });
     }
-    best.cloned().ok_or_else(|| format!("`{}` of an empty list", if max { "max" } else { "min" }))
+    best.cloned()
+        .ok_or_else(|| format!("`{}` of an empty list", if max { "max" } else { "min" }))
 }
 
 /// Formats a value according to a Python-style format spec such as `>8`, `.2f` or `,d`.
@@ -541,7 +681,10 @@ pub fn format_spec(text: String, value: &Value, spec: &str) -> Result<String, St
     }
     let mut precision = None;
     if chars.get(i) == Some(&'.') {
-        let digits: String = chars[i + 1..].iter().take_while(|c| c.is_ascii_digit()).collect();
+        let digits: String = chars[i + 1..]
+            .iter()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         i += 1 + digits.len();
         precision = Some(digits.parse::<usize>().map_err(|_| bad())?);
     }
@@ -551,19 +694,33 @@ pub fn format_spec(text: String, value: &Value, spec: &str) -> Result<String, St
 
     let mut body = match (kind, value) {
         (Some('f'), v) => format!("{:.*}", precision.unwrap_or(6), v.as_f64().ok_or_else(bad)?),
-        (Some('e'), v) => format!("{:.*e}", precision.unwrap_or(6), v.as_f64().ok_or_else(bad)?),
-        (Some('%'), v) => format!("{:.*}%", precision.unwrap_or(6), v.as_f64().ok_or_else(bad)? * 100.0),
+        (Some('e'), v) => format!(
+            "{:.*e}",
+            precision.unwrap_or(6),
+            v.as_f64().ok_or_else(bad)?
+        ),
+        (Some('%'), v) => format!(
+            "{:.*}%",
+            precision.unwrap_or(6),
+            v.as_f64().ok_or_else(bad)? * 100.0
+        ),
         (Some('d'), Value::Int(n)) => n.to_string(),
         (Some('d'), _) => return Err(bad()),
         (_, Value::Float(f)) if precision.is_some() => format!("{:.*}", precision.unwrap(), f),
         (_, Value::Float(f)) => format_float(*f),
-        (_, Value::Str(_)) if precision.is_some() => text.chars().take(precision.unwrap()).collect(),
+        (_, Value::Str(_)) if precision.is_some() => {
+            text.chars().take(precision.unwrap()).collect()
+        }
         _ => text,
     };
     if comma {
         body = group_thousands(&body);
     }
-    let width: usize = if width.is_empty() { 0 } else { width.parse().map_err(|_| bad())? };
+    let width: usize = if width.is_empty() {
+        0
+    } else {
+        width.parse().map_err(|_| bad())?
+    };
     let len = body.chars().count();
     if len >= width {
         return Ok(body);
@@ -581,7 +738,10 @@ pub fn format_spec(text: String, value: &Value, spec: &str) -> Result<String, St
 
 fn group_thousands(s: &str) -> String {
     let (sign, rest) = s.strip_prefix('-').map(|r| ("-", r)).unwrap_or(("", s));
-    let (int_part, frac) = rest.split_once('.').map(|(a, b)| (a, Some(b))).unwrap_or((rest, None));
+    let (int_part, frac) = rest
+        .split_once('.')
+        .map(|(a, b)| (a, Some(b)))
+        .unwrap_or((rest, None));
     let mut grouped = String::new();
     for (i, c) in int_part.chars().enumerate() {
         if i > 0 && (int_part.len() - i) % 3 == 0 {
@@ -596,10 +756,13 @@ fn group_thousands(s: &str) -> String {
 }
 
 pub mod json {
-    use super::super::value::{format_float, Dict, Key, Value};
+    use super::super::value::{Dict, Key, Value, format_float};
 
     pub fn parse(text: &str) -> Result<Value, String> {
-        let mut p = Parser { s: text.as_bytes(), pos: 0 };
+        let mut p = Parser {
+            s: text.as_bytes(),
+            pos: 0,
+        };
         p.ws();
         let v = p.value(0)?;
         p.ws();
@@ -712,7 +875,9 @@ pub mod json {
                     return Ok(Value::Int(i));
                 }
             }
-            text.parse::<f64>().map(Value::Float).map_err(|_| self.err("invalid number"))
+            text.parse::<f64>()
+                .map(Value::Float)
+                .map_err(|_| self.err("invalid number"))
         }
 
         fn string(&mut self) -> Result<String, String> {
@@ -721,12 +886,16 @@ pub mod json {
             }
             let mut out = Vec::new();
             loop {
-                let Some(&c) = self.s.get(self.pos) else { return Err(self.err("unterminated string")) };
+                let Some(&c) = self.s.get(self.pos) else {
+                    return Err(self.err("unterminated string"));
+                };
                 self.pos += 1;
                 match c {
                     b'"' => return String::from_utf8(out).map_err(|_| self.err("invalid UTF-8")),
                     b'\\' => {
-                        let Some(&e) = self.s.get(self.pos) else { return Err(self.err("unterminated escape")) };
+                        let Some(&e) = self.s.get(self.pos) else {
+                            return Err(self.err("unterminated escape"));
+                        };
                         self.pos += 1;
                         let ch = match e {
                             b'"' => '"',
@@ -741,9 +910,12 @@ pub mod json {
                                 let mut code = self.hex4()?;
                                 if (0xD800..0xDC00).contains(&code) && self.eat("\\u") {
                                     let low = self.hex4()?;
-                                    code = 0x10000 + ((code - 0xD800) << 10) + (low.wrapping_sub(0xDC00) & 0x3FF);
+                                    code = 0x10000
+                                        + ((code - 0xD800) << 10)
+                                        + (low.wrapping_sub(0xDC00) & 0x3FF);
                                 }
-                                char::from_u32(code).ok_or_else(|| self.err("invalid unicode escape"))?
+                                char::from_u32(code)
+                                    .ok_or_else(|| self.err("invalid unicode escape"))?
                             }
                             _ => return Err(self.err("invalid escape")),
                         };
@@ -756,9 +928,16 @@ pub mod json {
         }
 
         fn hex4(&mut self) -> Result<u32, String> {
-            let digits = self.s.get(self.pos..self.pos + 4).ok_or_else(|| self.err("short unicode escape"))?;
+            let digits = self
+                .s
+                .get(self.pos..self.pos + 4)
+                .ok_or_else(|| self.err("short unicode escape"))?;
             self.pos += 4;
-            u32::from_str_radix(std::str::from_utf8(digits).map_err(|_| self.err("invalid escape"))?, 16).map_err(|_| self.err("invalid escape"))
+            u32::from_str_radix(
+                std::str::from_utf8(digits).map_err(|_| self.err("invalid escape"))?,
+                16,
+            )
+            .map_err(|_| self.err("invalid escape"))
         }
     }
 
@@ -817,9 +996,13 @@ pub mod json {
                 }
                 out.push('}');
             }
-            other => return Err(format!("a {} cannot be converted to JSON", other.type_name())),
+            other => {
+                return Err(format!(
+                    "a {} cannot be converted to JSON",
+                    other.type_name()
+                ));
+            }
         }
         Ok(())
     }
 }
-

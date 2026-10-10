@@ -26,12 +26,18 @@ struct Directives {
 fn directives(source: &str) -> Directives {
     let mut d = Directives::default();
     for line in source.lines() {
-        let Some(comment) = line.trim().strip_prefix('#') else { break };
-        let Some((key, value)) = comment.split_once(':') else { continue };
+        let Some(comment) = line.trim().strip_prefix('#') else {
+            break;
+        };
+        let Some((key, value)) = comment.split_once(':') else {
+            continue;
+        };
         let value = value.trim();
         match key.trim() {
             "engines" => d.engines = Some(value.split_whitespace().map(String::from).collect()),
-            "requires" => d.requires.extend(value.split_whitespace().map(String::from)),
+            "requires" => d
+                .requires
+                .extend(value.split_whitespace().map(String::from)),
             "expect-error" => d.expect_error = Some(value.to_string()),
             "xfail" => d.xfail.extend(value.split_whitespace().map(String::from)),
             _ => {}
@@ -65,7 +71,10 @@ fn check(path: &Path, bless: bool) -> Result<(), String> {
         return Ok(());
     }
     let expected_path = path.with_extension("out");
-    let engines: Vec<String> = d.engines.clone().unwrap_or_else(|| ENGINES.iter().map(|(name, _)| name.to_string()).collect());
+    let engines: Vec<String> = d
+        .engines
+        .clone()
+        .unwrap_or_else(|| ENGINES.iter().map(|(name, _)| name.to_string()).collect());
 
     let mut errors = Vec::new();
     for engine in &engines {
@@ -77,11 +86,25 @@ fn check(path: &Path, bless: bool) -> Result<(), String> {
             _ => {}
         }
     }
-    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
-fn run_engine(path: &Path, engine: &str, d: &Directives, bless: bool, expected_path: &Path) -> Result<(), String> {
-    let flags = ENGINES.iter().find(|(name, _)| *name == engine).map(|(_, f)| *f).ok_or_else(|| format!("unknown engine `{engine}`"))?;
+fn run_engine(
+    path: &Path,
+    engine: &str,
+    d: &Directives,
+    bless: bool,
+    expected_path: &Path,
+) -> Result<(), String> {
+    let flags = ENGINES
+        .iter()
+        .find(|(name, _)| *name == engine)
+        .map(|(_, f)| *f)
+        .ok_or_else(|| format!("unknown engine `{engine}`"))?;
     let output = Command::new(env!("CARGO_BIN_EXE_novo"))
         .arg("run")
         .args(flags)
@@ -94,14 +117,21 @@ fn run_engine(path: &Path, engine: &str, d: &Directives, bless: bool, expected_p
     match &d.expect_error {
         Some(needle) => {
             if output.status.success() {
-                return Err(format!("[{engine}] expected an error containing {needle:?}, but the program succeeded"));
+                return Err(format!(
+                    "[{engine}] expected an error containing {needle:?}, but the program succeeded"
+                ));
             }
             if !stderr.contains(needle.as_str()) {
-                return Err(format!("[{engine}] expected stderr to contain {needle:?}, got:\n{stderr}"));
+                return Err(format!(
+                    "[{engine}] expected stderr to contain {needle:?}, got:\n{stderr}"
+                ));
             }
         }
         None if !output.status.success() => {
-            return Err(format!("[{engine}] exited with {}:\n{stderr}", output.status));
+            return Err(format!(
+                "[{engine}] exited with {}:\n{stderr}",
+                output.status
+            ));
         }
         None => {}
     }
@@ -111,10 +141,17 @@ fn run_engine(path: &Path, engine: &str, d: &Directives, bless: bool, expected_p
         return Ok(());
     }
     let expected = fs::read_to_string(expected_path)
-        .map_err(|_| format!("missing {}; run with NOVO_BLESS=1 to create it", expected_path.display()))?
+        .map_err(|_| {
+            format!(
+                "missing {}; run with NOVO_BLESS=1 to create it",
+                expected_path.display()
+            )
+        })?
         .replace("\r\n", "\n");
     if stdout != expected {
-        return Err(format!("[{engine}] output differs\n--- expected\n{expected}--- actual\n{stdout}"));
+        return Err(format!(
+            "[{engine}] output differs\n--- expected\n{expected}--- actual\n{stdout}"
+        ));
     }
     Ok(())
 }
@@ -129,7 +166,12 @@ fn golden_programs() {
             check(path, bless).err().map(|e| format!("{name}: {e}"))
         })
         .collect();
-    assert!(failures.is_empty(), "{} golden program(s) failed:\n\n{}", failures.len(), failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "{} golden program(s) failed:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 #[test]
@@ -140,7 +182,16 @@ fn examples_type_check() {
         if path.extension().is_none_or(|e| e != "nv") {
             continue;
         }
-        let output = Command::new(env!("CARGO_BIN_EXE_novo")).arg("check").arg(&path).output().unwrap();
-        assert!(output.status.success(), "{} does not type-check:\n{}", path.display(), String::from_utf8_lossy(&output.stderr));
+        let output = Command::new(env!("CARGO_BIN_EXE_novo"))
+            .arg("check")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} does not type-check:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

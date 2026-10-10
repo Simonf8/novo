@@ -4,6 +4,7 @@
 pub mod builtins;
 mod expr;
 pub mod hir;
+pub mod session;
 mod solve;
 mod stmt;
 pub mod types;
@@ -20,12 +21,13 @@ use std::rc::Rc;
 use types::{ClassId, Infer, Ty};
 
 pub fn check(sources: &mut SourceMap, entry: &Path) -> Result<hir::Program, Vec<Diagnostic>> {
-    let mut checker = Checker::new(sources);
-    let entry = match checker.load_module(entry, None) {
-        Some(id) => id,
-        None => return Err(checker.diags),
+    let mut checker = Checker::new(std::mem::take(sources));
+    let result = match checker.load_module(entry, None) {
+        Some(id) => checker.finish(id),
+        None => Err(std::mem::take(&mut checker.diags)),
     };
-    checker.finish(entry)
+    *sources = checker.sources;
+    result
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -103,7 +105,10 @@ struct FnCtx {
 
 impl FnCtx {
     fn add_local(&mut self, name: &str, ty: Ty) -> LocalId {
-        self.locals.push(hir::Local { name: name.to_string(), ty });
+        self.locals.push(hir::Local {
+            name: name.to_string(),
+            ty,
+        });
         LocalId(self.locals.len() as u32 - 1)
     }
 }
@@ -119,8 +124,10 @@ enum Resolved {
     Recurse(Ty),
 }
 
-struct Checker<'s> {
-    sources: &'s mut SourceMap,
+struct Checker {
+    sources: SourceMap,
+    /// In an interactive session names may be redefined.
+    redefine: bool,
     infer: Infer,
     diags: Vec<Diagnostic>,
     funcs: Vec<FuncSlot>,
@@ -131,10 +138,11 @@ struct Checker<'s> {
     deferred: Vec<Constraint>,
 }
 
-impl<'s> Checker<'s> {
-    fn new(sources: &'s mut SourceMap) -> Self {
+impl Checker {
+    fn new(sources: SourceMap) -> Self {
         Checker {
             sources,
+            redefine: false,
             infer: Infer::default(),
             diags: Vec::new(),
             funcs: Vec::new(),
@@ -168,7 +176,11 @@ impl<'s> Checker<'s> {
     }
 
     fn mismatch(&mut self, span: Span, expected: &Ty, found: &Ty) {
-        let msg = format!("expected `{}`, found `{}`", self.show(expected), self.show(found));
+        let msg = format!(
+            "expected `{}`, found `{}`",
+            self.show(expected),
+            self.show(found)
+        );
         self.error(Diagnostic::error(span, "mismatched types").with_label(msg));
     }
 
@@ -185,7 +197,11 @@ impl<'s> Checker<'s> {
         let found = self.infer.shallow(&expr.ty);
         if found == Ty::Int && self.infer.shallow(expected) == Ty::Float {
             let span = expr.span;
-            return hir::Expr { kind: hir::ExprKind::IntToFloat(Box::new(expr)), ty: Ty::Float, span };
+            return hir::Expr {
+                kind: hir::ExprKind::IntToFloat(Box::new(expr)),
+                ty: Ty::Float,
+                span,
+            };
         }
         self.unify_at(expr.span, expected, &found);
         expr
@@ -198,7 +214,10 @@ impl<'s> Checker<'s> {
         if let Some(i) = self.modules.iter().position(|m| m.path == path) {
             if !self.modules[i].loaded {
                 let span = from.unwrap_or_default();
-                self.error(Diagnostic::error(span, "circular module import").with_help("move the shared code into a third module"));
+                self.error(
+                    Diagnostic::error(span, "circular module import")
+                        .with_help("move the shared code into a third module"),
+                );
                 return None;
             }
             return Some(ModuleId(i as u32));
@@ -223,7 +242,12 @@ impl<'s> Checker<'s> {
             }
         };
         let id = ModuleId(self.modules.len() as u32);
-        self.modules.push(ModuleSlot { path: path.clone(), names: HashMap::new(), init: None, loaded: false });
+        self.modules.push(ModuleSlot {
+            path: path.clone(),
+            names: HashMap::new(),
+            init: None,
+            loaded: false,
+        });
         self.declare_module(id, &module, display);
         self.check_module(id, module);
         self.modules[id.0 as usize].loaded = true;
@@ -233,7 +257,7 @@ impl<'s> Checker<'s> {
     fn define(&mut self, module: ModuleId, name: &ast::Ident, item: Item) {
         let names = &mut self.modules[module.0 as usize].names;
         if let Some(existing) = names.get(&name.name) {
-            if !matches!((existing, item), (Item::Global(_), Item::Global(_))) {
+            if !self.redefine && !matches!((existing, item), (Item::Global(_), Item::Global(_))) {
                 let msg = format!("`{}` is defined more than once", name.name);
                 self.error(Diagnostic::error(name.span, msg));
                 return;
@@ -253,7 +277,11 @@ impl<'s> Checker<'s> {
                 }
                 ast::StmtKind::Class(def) => {
                     let cid = ClassId(self.classes.len() as u32);
-                    self.classes.push(ClassSlot { name: def.name.name.clone(), fields: Vec::new(), methods: Vec::new() });
+                    self.classes.push(ClassSlot {
+                        name: def.name.name.clone(),
+                        fields: Vec::new(),
+                        methods: Vec::new(),
+                    });
                     self.define(id, &def.name, Item::Class(cid));
                     classes.push((cid, def.clone()));
                 }
@@ -262,21 +290,33 @@ impl<'s> Checker<'s> {
                         let name = match alias {
                             Some(a) => a.clone(),
                             None => {
-                                let stem = Path::new(rel).file_stem().and_then(|s| s.to_str()).unwrap_or(rel).to_string();
-                                ast::Ident { name: stem, span: stmt.span }
+                                let stem = Path::new(rel)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(rel)
+                                    .to_string();
+                                ast::Ident {
+                                    name: stem,
+                                    span: stmt.span,
+                                }
                             }
                         };
                         self.define(id, &name, Item::Module(mid));
                     }
                 }
-                ast::StmtKind::Use(ast::Use::Module { name, alias }) => match StdModule::from_name(&name.name) {
-                    Some(m) => self.define(id, alias.as_ref().unwrap_or(name), Item::Std(m)),
-                    None => {
-                        let msg = format!("unknown module `{}`", name.name);
-                        let help = format!("standard modules are math, time, json, fs, env, nn and random; to load a file write `use \"{}.nv\"`", name.name);
-                        self.error(Diagnostic::error(name.span, msg).with_help(help));
+                ast::StmtKind::Use(ast::Use::Module { name, alias }) => {
+                    match StdModule::from_name(&name.name) {
+                        Some(m) => self.define(id, alias.as_ref().unwrap_or(name), Item::Std(m)),
+                        None => {
+                            let msg = format!("unknown module `{}`", name.name);
+                            let help = format!(
+                                "standard modules are math, time, json, fs, env, nn and random; to load a file write `use \"{}.nv\"`",
+                                name.name
+                            );
+                            self.error(Diagnostic::error(name.span, msg).with_help(help));
+                        }
                     }
-                },
+                }
                 _ => {}
             }
         }
@@ -284,15 +324,24 @@ impl<'s> Checker<'s> {
         stmt::assigned_names(&module.stmts, &mut assigned);
         for name in assigned {
             if self.modules[id.0 as usize].names.contains_key(&name.name) {
-                if !matches!(self.modules[id.0 as usize].names[&name.name], Item::Global(_)) {
-                    let msg = format!("cannot assign to `{}` because it names a function, class or module", name.name);
+                if !matches!(
+                    self.modules[id.0 as usize].names[&name.name],
+                    Item::Global(_)
+                ) {
+                    let msg = format!(
+                        "cannot assign to `{}` because it names a function, class or module",
+                        name.name
+                    );
                     self.error(Diagnostic::error(name.span, msg));
                 }
                 continue;
             }
             let ty = self.infer.fresh();
             let gid = GlobalId(self.globals.len() as u32);
-            self.globals.push(hir::Global { name: name.name.clone(), ty });
+            self.globals.push(hir::Global {
+                name: name.name.clone(),
+                ty,
+            });
             self.define(id, &name, Item::Global(gid));
         }
         for (cid, def) in classes {
@@ -300,18 +349,40 @@ impl<'s> Checker<'s> {
         }
     }
 
-    fn add_func(&mut self, name: &str, module: ModuleId, class: Option<ClassId>, def: Option<Rc<ast::FunctionDef>>) -> FuncId {
+    fn add_func(
+        &mut self,
+        name: &str,
+        module: ModuleId,
+        class: Option<ClassId>,
+        def: Option<Rc<ast::FunctionDef>>,
+    ) -> FuncId {
         let id = FuncId(self.funcs.len() as u32);
-        self.funcs.push(FuncSlot { name: name.to_string(), module, class, def, state: FnState::Pending, params: Vec::new(), hir: None });
+        self.funcs.push(FuncSlot {
+            name: name.to_string(),
+            module,
+            class,
+            def,
+            state: FnState::Pending,
+            params: Vec::new(),
+            hir: None,
+        });
         id
     }
 
     fn declare_class(&mut self, module: ModuleId, cid: ClassId, def: &ast::ClassDef) {
-        self.stack.push(FnCtx { module: module.0, is_toplevel: true, is_const: true, ..FnCtx::default() });
+        self.stack.push(FnCtx {
+            module: module.0,
+            is_toplevel: true,
+            is_const: true,
+            ..FnCtx::default()
+        });
         let mut fields: Vec<FieldSlot> = Vec::new();
         for field in &def.fields {
             if fields.iter().any(|f| f.name == field.name.name) {
-                self.error(Diagnostic::error(field.name.span, format!("field `{}` is declared twice", field.name.name)));
+                self.error(Diagnostic::error(
+                    field.name.span,
+                    format!("field `{}` is declared twice", field.name.name),
+                ));
                 continue;
             }
             let ty = match &field.ty {
@@ -322,13 +393,24 @@ impl<'s> Checker<'s> {
                 let value = self.infer_expr(e);
                 self.coerce(value, &ty)
             });
-            fields.push(FieldSlot { name: field.name.name.clone(), ty, default });
+            fields.push(FieldSlot {
+                name: field.name.name.clone(),
+                ty,
+                default,
+            });
         }
         self.end_const_ctx(def.name.span);
         let mut methods = Vec::new();
         for m in &def.methods {
-            if fields.iter().any(|f| f.name == m.name.name) || methods.iter().any(|(n, _): &(String, FuncId)| *n == m.name.name) {
-                self.error(Diagnostic::error(m.name.span, format!("`{}` is defined more than once in this class", m.name.name)));
+            if fields.iter().any(|f| f.name == m.name.name)
+                || methods
+                    .iter()
+                    .any(|(n, _): &(String, FuncId)| *n == m.name.name)
+            {
+                self.error(Diagnostic::error(
+                    m.name.span,
+                    format!("`{}` is defined more than once in this class", m.name.name),
+                ));
                 continue;
             }
             let name = format!("{}.{}", def.name.name, m.name.name);
@@ -344,16 +426,29 @@ impl<'s> Checker<'s> {
     fn end_const_ctx(&mut self, span: Span) {
         let ctx = self.stack.pop().expect("const context");
         if !ctx.locals.is_empty() {
-            self.error(Diagnostic::error(span, "default values must be simple expressions").with_help("compute the value inside the function instead"));
+            self.error(
+                Diagnostic::error(span, "default values must be simple expressions")
+                    .with_help("compute the value inside the function instead"),
+            );
         }
         self.deferred.extend(ctx.pending);
     }
 
     fn check_module(&mut self, id: ModuleId, module: ast::Module) {
-        let init = self.add_func("<module>", id, None, None);
+        let init = self.check_top_level(id, &module.stmts);
         self.modules[id.0 as usize].init = Some(init);
-        self.stack.push(FnCtx { module: id.0, is_toplevel: true, ..FnCtx::default() });
-        let body = self.check_block(&module.stmts);
+    }
+
+    /// Checks a module's top-level statements as the body of a new function,
+    /// then checks any of the module's functions not yet inferred.
+    fn check_top_level(&mut self, id: ModuleId, stmts: &[ast::Stmt]) -> FuncId {
+        let init = self.add_func("<module>", id, None, None);
+        self.stack.push(FnCtx {
+            module: id.0,
+            is_toplevel: true,
+            ..FnCtx::default()
+        });
+        let body = self.check_block(stmts);
         self.solve_pending();
         let ctx = self.stack.pop().unwrap();
         self.deferred.extend(ctx.pending);
@@ -367,15 +462,23 @@ impl<'s> Checker<'s> {
             body,
             ty: Ty::func(vec![], Ty::None),
         });
-        self.funcs[init.0 as usize].state = FnState::Done(Scheme { vars: vec![], ty: Ty::func(vec![], Ty::None), constraints: vec![] });
+        self.funcs[init.0 as usize].state = FnState::Done(Scheme {
+            vars: vec![],
+            ty: Ty::func(vec![], Ty::None),
+            constraints: vec![],
+        });
 
         let pending: Vec<FuncId> = (0..self.funcs.len() as u32)
             .map(FuncId)
-            .filter(|f| self.funcs[f.0 as usize].module == id && matches!(self.funcs[f.0 as usize].state, FnState::Pending))
+            .filter(|f| {
+                self.funcs[f.0 as usize].module == id
+                    && matches!(self.funcs[f.0 as usize].state, FnState::Pending)
+            })
             .collect();
         for f in pending {
             self.func_scheme(f);
         }
+        init
     }
 
     // ---- functions -----------------------------------------------------------------------
@@ -384,13 +487,25 @@ impl<'s> Checker<'s> {
     fn func_scheme(&mut self, id: FuncId) -> Scheme {
         match &self.funcs[id.0 as usize].state {
             FnState::Done(s) => return s.clone(),
-            FnState::InProgress(ty) => return Scheme { vars: vec![], ty: ty.clone(), constraints: vec![] },
+            FnState::InProgress(ty) => {
+                return Scheme {
+                    vars: vec![],
+                    ty: ty.clone(),
+                    constraints: vec![],
+                };
+            }
             FnState::Pending => {}
         }
-        let def = self.funcs[id.0 as usize].def.clone().expect("function source");
+        let def = self.funcs[id.0 as usize]
+            .def
+            .clone()
+            .expect("function source");
         let module = self.funcs[id.0 as usize].module;
         let class = self.funcs[id.0 as usize].class;
-        let mut ctx = FnCtx { module: module.0, ..FnCtx::default() };
+        let mut ctx = FnCtx {
+            module: module.0,
+            ..FnCtx::default()
+        };
 
         let mut param_tys = Vec::new();
         if let Some(cid) = class {
@@ -399,7 +514,12 @@ impl<'s> Checker<'s> {
             ctx.names.insert("self".into(), local);
             param_tys.push(ty);
         }
-        self.stack.push(FnCtx { module: module.0, is_toplevel: true, is_const: true, ..FnCtx::default() });
+        self.stack.push(FnCtx {
+            module: module.0,
+            is_toplevel: true,
+            is_const: true,
+            ..FnCtx::default()
+        });
         let mut params = Vec::new();
         for p in &def.params {
             let ty = match &p.ty {
@@ -411,15 +531,24 @@ impl<'s> Checker<'s> {
                 self.coerce(value, &ty)
             });
             if default.is_none() && params.iter().any(|q: &Param| q.default.is_some()) {
-                self.error(Diagnostic::error(p.name.span, "parameters without defaults must come first"));
+                self.error(Diagnostic::error(
+                    p.name.span,
+                    "parameters without defaults must come first",
+                ));
             }
             if ctx.names.contains_key(&p.name.name) {
-                self.error(Diagnostic::error(p.name.span, format!("parameter `{}` is declared twice", p.name.name)));
+                self.error(Diagnostic::error(
+                    p.name.span,
+                    format!("parameter `{}` is declared twice", p.name.name),
+                ));
             }
             let local = ctx.add_local(&p.name.name, ty.clone());
             ctx.names.insert(p.name.name.clone(), local);
             param_tys.push(ty);
-            params.push(Param { name: p.name.name.clone(), default });
+            params.push(Param {
+                name: p.name.name.clone(),
+                default,
+            });
         }
         let ret = match &def.ret {
             Some(t) => self.resolve_type(t),
@@ -440,7 +569,11 @@ impl<'s> Checker<'s> {
 
         self.funcs[id.0 as usize].state = FnState::Pending;
         let scheme = self.generalize(&fty, ctx.pending);
-        let defaults = self.funcs[id.0 as usize].params.iter().map(|p| p.default.clone()).collect();
+        let defaults = self.funcs[id.0 as usize]
+            .params
+            .iter()
+            .map(|p| p.default.clone())
+            .collect();
         self.funcs[id.0 as usize].hir = Some(hir::Func {
             name: self.funcs[id.0 as usize].name.clone(),
             generics: scheme.vars.clone(),
@@ -461,7 +594,9 @@ impl<'s> Checker<'s> {
         stmt::assigned_names(body, &mut assigned);
         let names = &self.modules[ctx.module as usize].names;
         for name in assigned {
-            if ctx.names.contains_key(&name.name) || matches!(names.get(&name.name), Some(Item::Global(_))) {
+            if ctx.names.contains_key(&name.name)
+                || matches!(names.get(&name.name), Some(Item::Global(_)))
+            {
                 continue;
             }
             let ty = self.infer.fresh();
@@ -470,13 +605,21 @@ impl<'s> Checker<'s> {
         }
     }
 
-    fn check_function_body(&mut self, body: &[ast::Stmt], name_span: Span, name: &str) -> hir::Block {
+    fn check_function_body(
+        &mut self,
+        body: &[ast::Stmt],
+        name_span: Span,
+        name: &str,
+    ) -> hir::Block {
         let block = self.check_block(body);
         if !stmt::always_returns(body) {
             let ret = self.ctx().ret.clone().unwrap();
             if !self.infer.unify(&ret, &Ty::None) {
                 let msg = format!("function `{name}` can reach its end without returning a value");
-                let help = format!("it returns `{}` elsewhere; add a `return` at the end", self.show(&ret));
+                let help = format!(
+                    "it returns `{}` elsewhere; add a `return` at the end",
+                    self.show(&ret)
+                );
                 self.error(Diagnostic::error(name_span, msg).with_help(help));
             }
         }
@@ -544,7 +687,11 @@ impl<'s> Checker<'s> {
                 self.deferred.push(c);
             }
         }
-        Scheme { vars, ty: self.infer.zonk(ty), constraints: kept }
+        Scheme {
+            vars,
+            ty: self.infer.zonk(ty),
+            constraints: kept,
+        }
     }
 
     /// Instantiates a scheme with fresh variables, returning its type and the types
@@ -553,7 +700,11 @@ impl<'s> Checker<'s> {
         if scheme.vars.is_empty() {
             return (scheme.ty.clone(), Vec::new());
         }
-        let map: Vec<(u32, Ty)> = scheme.vars.iter().map(|v| (*v, self.infer.fresh())).collect();
+        let map: Vec<(u32, Ty)> = scheme
+            .vars
+            .iter()
+            .map(|v| (*v, self.infer.fresh()))
+            .collect();
         for c in &scheme.constraints {
             let c = c.substitute(&self.infer, &map);
             self.add_constraint(c);
@@ -616,7 +767,11 @@ impl<'s> Checker<'s> {
     fn resolve_type(&mut self, t: &ast::TypeExpr) -> Ty {
         let arity = |c: &mut Self, n: usize| -> bool {
             if t.args.len() != n {
-                let msg = format!("`{}` takes {n} type argument{}", t.name, if n == 1 { "" } else { "s" });
+                let msg = format!(
+                    "`{}` takes {n} type argument{}",
+                    t.name,
+                    if n == 1 { "" } else { "s" }
+                );
                 c.error(Diagnostic::error(t.span, msg));
                 return false;
             }
@@ -679,47 +834,93 @@ impl<'s> Checker<'s> {
 
     // ---- finishing -----------------------------------------------------------------------
 
-    fn finish(mut self, entry: ModuleId) -> Result<hir::Program, Vec<Diagnostic>> {
+    /// Re-checks constraints that were waiting on types fixed later in the program.
+    fn solve_deferred(&mut self) {
         let deferred = std::mem::take(&mut self.deferred);
         self.stack.push(FnCtx::default());
         for c in deferred {
             self.add_constraint(c);
         }
         self.solve_pending();
-        self.stack.pop();
-        if !self.diags.is_empty() {
-            return Err(self.diags);
-        }
+        let ctx = self.stack.pop().expect("pushed above");
+        self.deferred.extend(ctx.pending);
+    }
 
-        let infer = &self.infer;
-        let generics: Vec<Vec<u32>> = self.funcs.iter().map(|f| f.hir.as_ref().map(|h| h.generics.clone()).unwrap_or_default()).collect();
-        let z = Zonk { infer, generics: &generics };
-        let mut funcs = Vec::with_capacity(self.funcs.len());
-        for slot in self.funcs {
-            let mut f = slot.hir.expect("every function is checked");
-            f.ty = infer.zonk(&f.ty);
-            for l in &mut f.locals {
-                l.ty = infer.zonk(&l.ty);
-            }
-            z.block(&mut f.body);
-            funcs.push(f);
+    fn finish(&mut self, entry: ModuleId) -> Result<hir::Program, Vec<Diagnostic>> {
+        self.solve_deferred();
+        if !self.diags.is_empty() {
+            return Err(std::mem::take(&mut self.diags));
         }
-        let classes = self
-            .classes
-            .into_iter()
-            .map(|c| hir::Class {
-                name: c.name,
-                fields: c.fields.into_iter().map(|f| hir::Field { name: f.name }).collect(),
-                methods: c.methods,
+        Ok(self.snapshot(entry))
+    }
+
+    /// The checked program so far, with every type resolved as far as it can be.
+    fn snapshot(&self, entry: ModuleId) -> hir::Program {
+        let infer = &self.infer;
+        let generics: Vec<Vec<u32>> = self
+            .funcs
+            .iter()
+            .map(|f| {
+                f.hir
+                    .as_ref()
+                    .map(|h| h.generics.clone())
+                    .unwrap_or_default()
             })
             .collect();
-        let globals = self.globals.into_iter().map(|g| hir::Global { name: g.name, ty: infer.zonk(&g.ty) }).collect();
+        let z = Zonk {
+            infer,
+            generics: &generics,
+        };
+        let funcs = self
+            .funcs
+            .iter()
+            .map(|slot| {
+                let mut f = slot.hir.clone().expect("every function is checked");
+                f.ty = infer.zonk(&f.ty);
+                for l in &mut f.locals {
+                    l.ty = infer.zonk(&l.ty);
+                }
+                z.block(&mut f.body);
+                f
+            })
+            .collect();
+        let classes = self
+            .classes
+            .iter()
+            .map(|c| hir::Class {
+                name: c.name.clone(),
+                fields: c
+                    .fields
+                    .iter()
+                    .map(|f| hir::Field {
+                        name: f.name.clone(),
+                    })
+                    .collect(),
+                methods: c.methods.clone(),
+            })
+            .collect();
+        let globals = self
+            .globals
+            .iter()
+            .map(|g| hir::Global {
+                name: g.name.clone(),
+                ty: infer.zonk(&g.ty),
+            })
+            .collect();
         let modules = self
             .modules
-            .into_iter()
-            .map(|m| hir::Module { init: m.init.expect("module init") })
+            .iter()
+            .map(|m| hir::Module {
+                init: m.init.expect("module init"),
+            })
             .collect();
-        Ok(hir::Program { funcs, classes, globals, modules, entry })
+        hir::Program {
+            funcs,
+            classes,
+            globals,
+            modules,
+            entry,
+        }
     }
 }
 
@@ -768,7 +969,10 @@ impl Zonk<'_> {
                 self.expr(value);
             }
             Show(es) => es.iter_mut().for_each(|e| self.expr(e)),
-            If { branches, otherwise } => {
+            If {
+                branches,
+                otherwise,
+            } => {
                 for (c, b) in branches {
                     self.expr(c);
                     self.block(b);
@@ -816,13 +1020,21 @@ impl Zonk<'_> {
                     self.expr(v);
                 }
             }
-            CallFunc { func, args, inst, .. } => {
+            CallFunc {
+                func, args, inst, ..
+            } => {
                 self.inst(*func, inst);
                 args.iter_mut().for_each(|e| self.expr(e));
             }
             Func { func, inst } => self.inst(*func, inst),
-            Closure { captures: args, .. } | CallBuiltin { args, .. } | New { args, .. } => args.iter_mut().for_each(|e| self.expr(e)),
-            Unary { operand: e, .. } | Field { target: e, .. } | Together(e) | Await(e) | IntToFloat(e) => self.expr(e),
+            Closure { captures: args, .. } | CallBuiltin { args, .. } | New { args, .. } => {
+                args.iter_mut().for_each(|e| self.expr(e))
+            }
+            Unary { operand: e, .. }
+            | Field { target: e, .. }
+            | Together(e)
+            | Await(e)
+            | IntToFloat(e) => self.expr(e),
             Binary { lhs, rhs, .. } => {
                 self.expr(lhs);
                 self.expr(rhs);
@@ -854,7 +1066,8 @@ impl Zonk<'_> {
                     self.expr(b);
                 }
             }
-            Int(_) | Float(_) | Bool(_) | Str(_) | None | Local(_) | Global(_) | Recurse | PyImport(_) => {}
+            Int(_) | Float(_) | Bool(_) | Str(_) | None | Local(_) | Global(_) | Recurse
+            | PyImport(_) => {}
         }
     }
 }

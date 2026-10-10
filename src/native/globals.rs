@@ -58,12 +58,17 @@ fn place(p: &Place, out: &mut HashSet<GlobalId>) {
 fn stmt(s: &hir::Stmt, out: &mut HashSet<GlobalId>) {
     match &s.kind {
         StmtKind::Expr(e) => expr(e, out),
-        StmtKind::Assign { place: p, value, .. } => {
+        StmtKind::Assign {
+            place: p, value, ..
+        } => {
             place(p, out);
             expr(value, out);
         }
         StmtKind::Show(es) => es.iter().for_each(|e| expr(e, out)),
-        StmtKind::If { branches, otherwise } => {
+        StmtKind::If {
+            branches,
+            otherwise,
+        } => {
             for (c, b) in branches {
                 expr(c, out);
                 block(b, out);
@@ -89,7 +94,8 @@ fn stmt(s: &hir::Stmt, out: &mut HashSet<GlobalId>) {
             place(var, out);
             block(handler, out);
         }
-        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::InitModule(_) => {}
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::InitModule(_) => {
+        }
     }
 }
 
@@ -105,16 +111,19 @@ fn expr(e: &hir::Expr, out: &mut HashSet<GlobalId>) {
                 }
             }
         }
-        ExprKind::List(es) | ExprKind::Tuple(es) | ExprKind::RunParallel(es) => es.iter().for_each(|e| expr(e, out)),
+        ExprKind::List(es) | ExprKind::Tuple(es) | ExprKind::RunParallel(es) => {
+            es.iter().for_each(|e| expr(e, out))
+        }
         ExprKind::Map(entries) => {
             for (k, v) in entries {
                 expr(k, out);
                 expr(v, out);
             }
         }
-        ExprKind::Closure { captures: args, .. } | ExprKind::CallFunc { args, .. } | ExprKind::CallBuiltin { args, .. } | ExprKind::New { args, .. } => {
-            args.iter().for_each(|e| expr(e, out))
-        }
+        ExprKind::Closure { captures: args, .. }
+        | ExprKind::CallFunc { args, .. }
+        | ExprKind::CallBuiltin { args, .. }
+        | ExprKind::New { args, .. } => args.iter().for_each(|e| expr(e, out)),
         ExprKind::Unary { operand: inner, .. }
         | ExprKind::Field { target: inner, .. }
         | ExprKind::Together(inner)

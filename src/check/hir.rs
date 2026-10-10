@@ -19,7 +19,7 @@ pub struct FuncId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(pub u32);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Program {
     pub funcs: Vec<Func>,
     pub classes: Vec<Class>,
@@ -28,24 +28,24 @@ pub struct Program {
     pub entry: ModuleId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Module {
     pub init: FuncId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Global {
     pub name: String,
     pub ty: Ty,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Local {
     pub name: String,
     pub ty: Ty,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Func {
     pub name: String,
     /// Type variables the function is generic over; calls record a type for each.
@@ -61,7 +61,7 @@ pub struct Func {
     pub ty: Ty,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Class {
     pub name: String,
     pub fields: Vec<Field>,
@@ -74,40 +74,65 @@ impl Class {
     }
 
     pub fn method(&self, name: &str) -> Option<FuncId> {
-        self.methods.iter().find(|(n, _)| n == name).map(|(_, f)| *f)
+        self.methods
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, f)| *f)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
 }
 
 pub type Block = Vec<Stmt>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     Expr(Expr),
-    Assign { place: Place, op: Option<BinOp>, value: Expr },
+    Assign {
+        place: Place,
+        op: Option<BinOp>,
+        value: Expr,
+    },
     Show(Vec<Expr>),
-    If { branches: Vec<(Expr, Block)>, otherwise: Block },
-    While { cond: Expr, body: Block },
-    For { var: Place, iter: Expr, body: Block },
-    Repeat { count: Expr, it: LocalId, body: Block },
+    If {
+        branches: Vec<(Expr, Block)>,
+        otherwise: Block,
+    },
+    While {
+        cond: Expr,
+        body: Block,
+    },
+    For {
+        var: Place,
+        iter: Expr,
+        body: Block,
+    },
+    Repeat {
+        count: Expr,
+        it: LocalId,
+        body: Block,
+    },
     Return(Option<Expr>),
     Break,
     Continue,
-    Try { body: Block, var: Place, handler: Block },
+    Try {
+        body: Block,
+        var: Place,
+        handler: Block,
+    },
     InitModule(ModuleId),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Place {
     Local(LocalId),
     Global(GlobalId),
@@ -142,26 +167,73 @@ pub enum ExprKind {
     Local(LocalId),
     Global(GlobalId),
     /// A named function used as a value, with the types chosen for its generics.
-    Func { func: FuncId, inst: Vec<Ty> },
+    Func {
+        func: FuncId,
+        inst: Vec<Ty>,
+    },
     /// A closure over the current values of `captures`.
-    Closure { func: FuncId, captures: Vec<Expr> },
+    Closure {
+        func: FuncId,
+        captures: Vec<Expr>,
+    },
     /// The closure currently executing, used by nested functions to recurse.
     Recurse,
-    Unary { op: UnaryOp, operand: Box<Expr> },
-    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// Calls a function value.
-    Call { callee: Box<Expr>, args: Vec<Expr> },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
     /// Calls a known function directly; for methods the receiver is the first argument.
-    CallFunc { func: FuncId, args: Vec<Expr>, inst: Vec<Ty>, native: NativeSlot },
-    CallBuiltin { builtin: Builtin, args: Vec<Expr> },
+    CallFunc {
+        func: FuncId,
+        args: Vec<Expr>,
+        inst: Vec<Ty>,
+        native: NativeSlot,
+    },
+    CallBuiltin {
+        builtin: Builtin,
+        args: Vec<Expr>,
+    },
     /// A method resolved from the receiver's run-time value.
-    MethodCall { recv: Box<Expr>, name: String, args: Vec<Expr> },
-    New { class: ClassId, args: Vec<Expr> },
-    Field { target: Box<Expr>, name: String },
-    Index { target: Box<Expr>, index: Box<Expr> },
-    Slice { target: Box<Expr>, start: Option<Box<Expr>>, end: Option<Box<Expr>> },
+    MethodCall {
+        recv: Box<Expr>,
+        name: String,
+        args: Vec<Expr>,
+    },
+    New {
+        class: ClassId,
+        args: Vec<Expr>,
+    },
+    Field {
+        target: Box<Expr>,
+        name: String,
+    },
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Slice {
+        target: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
     /// When `parallel` is set the body is a one-parameter closure applied to each item.
-    Query { op: QueryOp, target: Box<Expr>, item: LocalId, body: Option<Box<Expr>>, parallel: bool },
+    Query {
+        op: QueryOp,
+        target: Box<Expr>,
+        item: LocalId,
+        body: Option<Box<Expr>>,
+        parallel: bool,
+    },
     /// Runs a zero-argument closure on another thread.
     Together(Box<Expr>),
     Await(Box<Expr>),

@@ -4,7 +4,7 @@
 //! slot: locals have one slot each, and every expression producing such a value
 //! gets a temporary slot. Slots are initialized on entry and dropped on exit.
 
-use super::runtime::{code, math, pack, DEPTH_OFFSET, MAX_DEPTH, STATUS_OFFSET, VALUE_SIZE};
+use super::runtime::{DEPTH_OFFSET, MAX_DEPTH, STATUS_OFFSET, VALUE_SIZE, code, math, pack};
 use super::{Batch, Compiler, Key, Rep, Scalar};
 use crate::check::builtins::Builtin;
 use crate::check::hir::{self, ExprKind, Place, Program, StmtKind};
@@ -12,7 +12,9 @@ use crate::check::types::Ty;
 use crate::source::Span;
 use crate::syntax::ast::{BinOp, QueryOp, UnaryOp};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{self, types, Block, Inst, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{
+    self, Block, Inst, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, types,
+};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId as ClifFunc, Module};
 use std::collections::HashMap;
@@ -22,12 +24,19 @@ type R<T> = Result<T, String>;
 
 pub fn substitute(ty: &Ty, subst: &[(u32, Ty)]) -> Ty {
     match ty {
-        Ty::Var(v) => subst.iter().find(|(k, _)| k == v).map(|(_, t)| t.clone()).unwrap_or(Ty::Var(*v)),
+        Ty::Var(v) => subst
+            .iter()
+            .find(|(k, _)| k == v)
+            .map(|(_, t)| t.clone())
+            .unwrap_or(Ty::Var(*v)),
         Ty::List(t) => Ty::list(substitute(t, subst)),
         Ty::Task(t) => Ty::task(substitute(t, subst)),
         Ty::Map(k, v) => Ty::map(substitute(k, subst), substitute(v, subst)),
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| substitute(t, subst)).collect()),
-        Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| substitute(p, subst)).collect(), substitute(r, subst)),
+        Ty::Func(ps, r) => Ty::func(
+            ps.iter().map(|p| substitute(p, subst)).collect(),
+            substitute(r, subst),
+        ),
         other => other.clone(),
     }
 }
@@ -71,10 +80,26 @@ struct Lower<'a, 'b> {
     slots: u32,
 }
 
-pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &Key, out: &mut ir::Function, fctx: &mut FunctionBuilderContext) -> R<()> {
-    let func = &prog.funcs[key.0 .0 as usize];
-    let param_slots: HashMap<usize, usize> = param_locals(func).into_iter().enumerate().map(|(arg, local)| (local, arg)).collect();
-    let subst: Vec<(u32, Ty)> = func.generics.iter().copied().zip(key.1.iter().cloned()).collect();
+pub(super) fn lower(
+    c: &mut Compiler,
+    prog: &Program,
+    batch: &mut Batch,
+    key: &Key,
+    out: &mut ir::Function,
+    fctx: &mut FunctionBuilderContext,
+) -> R<()> {
+    let func = &prog.funcs[key.0.0 as usize];
+    let param_slots: HashMap<usize, usize> = param_locals(func)
+        .into_iter()
+        .enumerate()
+        .map(|(arg, local)| (local, arg))
+        .collect();
+    let subst: Vec<(u32, Ty)> = func
+        .generics
+        .iter()
+        .copied()
+        .zip(key.1.iter().cloned())
+        .collect();
     let compiled = batch.pending[key].clone();
     let mut b = FunctionBuilder::new(out, fctx);
 
@@ -84,7 +109,11 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
     b.seal_block(entry);
     let params = b.block_params(entry).to_vec();
     let (ctx, caller_depth) = (params[0], params[1]);
-    let (ret_slot, args) = if compiled.ret == Rep::Obj { (Some(params[2]), &params[3..]) } else { (None, &params[2..]) };
+    let (ret_slot, args) = if compiled.ret == Rep::Obj {
+        (Some(params[2]), &params[3..])
+    } else {
+        (None, &params[2..])
+    };
     let args = args.to_vec();
     let depth = b.ins().iadd_imm_s(caller_depth, 1);
     let base = b.ins().iconst(types::I64, 0);
@@ -151,7 +180,11 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
         l.locals.push(slot);
     }
 
-    let mut private: Vec<_> = l.c.private_globals.get(&key.0).map(|set| set.iter().copied().collect()).unwrap_or_default();
+    let mut private: Vec<_> =
+        l.c.private_globals
+            .get(&key.0)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default();
     private.sort_by_key(|g| g.0);
     for g in private {
         let local = match Rep::of(&prog.globals[g.0 as usize].ty) {
@@ -170,8 +203,14 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
         l.private.insert(g.0, local);
     }
 
-    let too_deep = l.b.ins().icmp_imm_s(IntCC::UnsignedGreaterThan, depth, MAX_DEPTH as i64);
-    l.fail_if(too_deep, code::DEPTH, func.body.first().map(|s| s.span).unwrap_or_default());
+    let too_deep =
+        l.b.ins()
+            .icmp_imm_s(IntCC::UnsignedGreaterThan, depth, MAX_DEPTH as i64);
+    l.fail_if(
+        too_deep,
+        code::DEPTH,
+        func.body.first().map(|s| s.span).unwrap_or_default(),
+    );
 
     l.block(&func.body)?;
     if !l.terminated() {
@@ -183,7 +222,11 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
         let drop = l.c.helpers.slots_drop;
         l.call(drop, &[base, count]);
         frame_calls.push(l.last_inst());
-        let result = if failed { zero(&mut l.b, l.ret) } else { l.b.use_var(l.ret_var) };
+        let result = if failed {
+            zero(&mut l.b, l.ret)
+        } else {
+            l.b.use_var(l.ret_var)
+        };
         l.b.ins().return_(&[result]);
     }
 
@@ -193,9 +236,15 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
             l.b.func.layout.remove_inst(inst);
         }
     }
-    let frame = l.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (slots * VALUE_SIZE).max(8), 3));
+    let frame = l.b.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        (slots * VALUE_SIZE).max(8),
+        3,
+    ));
     l.b.func.replace(base_inst).stack_addr(types::I64, frame, 0);
-    l.b.func.replace(count_inst).iconst(types::I64, i64::from(slots));
+    l.b.func
+        .replace(count_inst)
+        .iconst(types::I64, i64::from(slots));
     l.b.seal_all_blocks();
     let config = l.c.module.isa().frontend_config();
     l.b.finalize(config);
@@ -204,7 +253,9 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
 
 /// The locals that receive arguments: the parameters, then a closure's captures.
 pub fn param_locals(func: &hir::Func) -> Vec<usize> {
-    (0..func.params).chain(func.captures.iter().map(|l| l.0 as usize)).collect()
+    (0..func.params)
+        .chain(func.captures.iter().map(|l| l.0 as usize))
+        .collect()
 }
 
 fn inst_of(b: &FunctionBuilder, v: ir::Value) -> Inst {
@@ -229,12 +280,20 @@ fn describe(kind: &ExprKind) -> &'static str {
 impl Lower<'_, '_> {
     fn last_inst(&self) -> Inst {
         let block = self.b.current_block().expect("positioned in a block");
-        self.b.func.layout.last_inst(block).expect("an instruction was just added")
+        self.b
+            .func
+            .layout
+            .last_inst(block)
+            .expect("an instruction was just added")
     }
 
     fn terminated(&self) -> bool {
         let block = self.b.current_block().expect("positioned in a block");
-        self.b.func.layout.last_inst(block).is_some_and(|i| self.b.func.dfg.insts[i].opcode().is_terminator())
+        self.b
+            .func
+            .layout
+            .last_inst(block)
+            .is_some_and(|i| self.b.func.dfg.insts[i].opcode().is_terminator())
     }
 
     /// Starts a fresh block after a terminator so later statements have somewhere to go.
@@ -280,7 +339,9 @@ impl Lower<'_, '_> {
     }
 
     fn slot_addr(&mut self, index: u32) -> ir::Value {
-        self.b.ins().iadd_imm_s(self.base, i64::from(index * VALUE_SIZE))
+        self.b
+            .ins()
+            .iadd_imm_s(self.base, i64::from(index * VALUE_SIZE))
     }
 
     fn temp(&mut self) -> ir::Value {
@@ -291,7 +352,9 @@ impl Lower<'_, '_> {
 
     /// Lets interpreted code called from here see this call's recursion depth.
     fn publish_depth(&mut self) {
-        self.b.ins().store(MemFlagsData::trusted(), self.depth, self.ctx, DEPTH_OFFSET);
+        self.b
+            .ins()
+            .store(MemFlagsData::trusted(), self.depth, self.ctx, DEPTH_OFFSET);
     }
 
     /// Raises error `code` when `cond` is true.
@@ -310,7 +373,10 @@ impl Lower<'_, '_> {
 
     /// Propagates an error raised by a call to the enclosing `try` or out of the function.
     fn check_status(&mut self) {
-        let status = self.b.ins().load(types::I8, MemFlagsData::trusted(), self.ctx, STATUS_OFFSET);
+        let status = self
+            .b
+            .ins()
+            .load(types::I8, MemFlagsData::trusted(), self.ctx, STATUS_OFFSET);
         let ok = self.b.create_block();
         self.b.ins().brif(status, self.fail, &[], ok, &[]);
         self.b.switch_to_block(ok);
@@ -318,9 +384,15 @@ impl Lower<'_, '_> {
 
     /// Stores `addrs` in a fresh stack array and returns its address.
     fn ptr_array(&mut self, addrs: &[ir::Value]) -> ir::Value {
-        let slot = self.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (addrs.len() as u32 * 8).max(8), 3));
+        let slot = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (addrs.len() as u32 * 8).max(8),
+            3,
+        ));
         for (i, a) in addrs.iter().enumerate() {
-            self.b.ins().stack_store(types::I64, *a, slot, (i * 8) as i32);
+            self.b
+                .ins()
+                .stack_store(types::I64, *a, slot, (i * 8) as i32);
         }
         self.b.ins().stack_addr(types::I64, slot, 0)
     }
@@ -350,7 +422,9 @@ impl Lower<'_, '_> {
     fn scalar(&mut self, v: Val, want: Scalar) -> ir::Value {
         match v {
             Val::S(x, s) if s == want => x,
-            Val::S(x, Scalar::Int) if want == Scalar::Float => self.b.ins().fcvt_from_sint(types::F64, x),
+            Val::S(x, Scalar::Int) if want == Scalar::Float => {
+                self.b.ins().fcvt_from_sint(types::F64, x)
+            }
             Val::S(_, _) => zero(&mut self.b, Rep::Scalar(want)),
             Val::O(addr, _) => {
                 let h = &self.c.helpers;
@@ -377,7 +451,11 @@ impl Lower<'_, '_> {
     fn write_slot(&mut self, dst: ir::Value, v: Val) {
         match v {
             Val::O(src, owned) => {
-                let f = if owned { self.c.helpers.take } else { self.c.helpers.clone };
+                let f = if owned {
+                    self.c.helpers.take
+                } else {
+                    self.c.helpers.clone
+                };
                 self.call(f, &[dst, src]);
             }
             Val::S(..) => {
@@ -420,7 +498,9 @@ impl Lower<'_, '_> {
     fn store(&mut self, place: &Place, v: Val, span: Span) -> R<()> {
         match place {
             Place::Local(l) => self.store_local(self.locals[l.0 as usize], v),
-            Place::Global(g) if self.private.contains_key(&g.0) => self.store_local(self.private[&g.0], v),
+            Place::Global(g) if self.private.contains_key(&g.0) => {
+                self.store_local(self.private[&g.0], v)
+            }
             Place::Global(g) => {
                 let src = self.boxed(v);
                 let g = self.i32const(g.0);
@@ -437,7 +517,9 @@ impl Lower<'_, '_> {
                 self.call(set, &[self.ctx, obj, ptr, len, src, span]);
                 self.check_status();
             }
-            Place::Index { target, index } if self.is_list(&target.ty) && self.rep(&index.ty) == Rep::Scalar(Scalar::Int) => {
+            Place::Index { target, index }
+                if self.is_list(&target.ty) && self.rep(&index.ty) == Rep::Scalar(Scalar::Int) =>
+            {
                 let obj = self.expr(target)?;
                 let obj = self.boxed(obj);
                 let idx = self.expr(index)?;
@@ -469,11 +551,19 @@ impl Lower<'_, '_> {
             StmtKind::Expr(e) => {
                 self.expr(e)?;
             }
-            StmtKind::Assign { place, op: None, value } => {
+            StmtKind::Assign {
+                place,
+                op: None,
+                value,
+            } => {
                 let v = self.expr(value)?;
                 self.store(place, v, span)?;
             }
-            StmtKind::Assign { place, op: Some(op), value } => {
+            StmtKind::Assign {
+                place,
+                op: Some(op),
+                value,
+            } => {
                 let current = match place {
                     Place::Local(l) => self.load_local(self.locals[l.0 as usize]),
                     Place::Global(g) => match self.private.get(&g.0) {
@@ -502,7 +592,10 @@ impl Lower<'_, '_> {
                 let end = self.c.helpers.show_end;
                 self.call(end, &[self.ctx]);
             }
-            StmtKind::If { branches, otherwise } => {
+            StmtKind::If {
+                branches,
+                otherwise,
+            } => {
                 let done = self.b.create_block();
                 for (cond, body) in branches {
                     let c = self.expr(cond)?;
@@ -544,7 +637,11 @@ impl Lower<'_, '_> {
                 self.counted_loop(zero, n, None, &var, span, |_, _| Ok(()), body)?;
             }
             StmtKind::For { var, iter, body } => {
-                if let ExprKind::CallBuiltin { builtin: Builtin::Range, args } = &iter.kind {
+                if let ExprKind::CallBuiltin {
+                    builtin: Builtin::Range,
+                    args,
+                } = &iter.kind
+                {
                     let mut vals = Vec::new();
                     for a in args {
                         let v = self.expr(a)?;
@@ -566,11 +663,19 @@ impl Lower<'_, '_> {
                     let n = self.list_len(items);
                     let zero = self.iconst(0);
                     let item = self.temp();
-                    self.counted_loop(zero, n, None, &Place::Local(hir::LocalId(u32::MAX)), span, |l, i| {
-                        let get = l.c.helpers.list_get;
-                        l.call(get, &[item, items, i]);
-                        l.store(var, Val::O(item, true), span)
-                    }, body)?;
+                    self.counted_loop(
+                        zero,
+                        n,
+                        None,
+                        &Place::Local(hir::LocalId(u32::MAX)),
+                        span,
+                        |l, i| {
+                            let get = l.c.helpers.list_get;
+                            l.call(get, &[item, items, i]);
+                            l.store(var, Val::O(item, true), span)
+                        },
+                        body,
+                    )?;
                 }
             }
             StmtKind::Return(value) => {
@@ -592,7 +697,11 @@ impl Lower<'_, '_> {
             }
             StmtKind::Break | StmtKind::Continue => {
                 let (cont, brk) = *self.loops.last().ok_or("break outside a loop")?;
-                let target = if matches!(stmt.kind, StmtKind::Break) { brk } else { cont };
+                let target = if matches!(stmt.kind, StmtKind::Break) {
+                    brk
+                } else {
+                    cont
+                };
                 self.b.ins().jump(target, &[]);
                 self.after_jump();
             }
@@ -771,7 +880,13 @@ impl Lower<'_, '_> {
     }
 
     /// Calls a helper of the form `f(ctx, dst, ...args, span)` that may fail, returning `dst`.
-    fn helper_into(&mut self, f: ClifFunc, args: &[ir::Value], span: Span, runs_user_code: bool) -> ir::Value {
+    fn helper_into(
+        &mut self,
+        f: ClifFunc,
+        args: &[ir::Value],
+        span: Span,
+        runs_user_code: bool,
+    ) -> ir::Value {
         if runs_user_code {
             self.publish_depth();
         }
@@ -799,7 +914,9 @@ impl Lower<'_, '_> {
         Ok(match &e.kind {
             ExprKind::Int(i) => Val::S(self.iconst(*i), Scalar::Int),
             ExprKind::Float(f) => Val::S(self.b.ins().f64const(*f), Scalar::Float),
-            ExprKind::Bool(v) => Val::S(self.b.ins().iconst(types::I8, i64::from(*v)), Scalar::Bool),
+            ExprKind::Bool(v) => {
+                Val::S(self.b.ins().iconst(types::I8, i64::from(*v)), Scalar::Bool)
+            }
             ExprKind::None => Val::S(self.iconst(0), Scalar::None),
             ExprKind::Str(s) => {
                 let t = self.temp();
@@ -842,7 +959,11 @@ impl Lower<'_, '_> {
                 let arr = self.ptr_array(&addrs);
                 let n = self.iconst(addrs.len() as i64);
                 let t = self.temp();
-                let f = if matches!(e.kind, ExprKind::List(_)) { self.c.helpers.make_list } else { self.c.helpers.make_tuple };
+                let f = if matches!(e.kind, ExprKind::List(_)) {
+                    self.c.helpers.make_list
+                } else {
+                    self.c.helpers.make_tuple
+                };
                 self.call(f, &[t, arr, n]);
                 Val::O(t, true)
             }
@@ -872,12 +993,18 @@ impl Lower<'_, '_> {
                 let v = self.expr(inner)?;
                 Val::S(self.scalar(v, Scalar::Float), Scalar::Float)
             }
-            ExprKind::Unary { op: UnaryOp::Not, operand } => {
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                operand,
+            } => {
                 let v = self.expr(operand)?;
                 let v = self.scalar(v, Scalar::Bool);
                 Val::S(self.b.ins().icmp_imm_s(IntCC::Equal, v, 0), Scalar::Bool)
             }
-            ExprKind::Unary { op: UnaryOp::Neg, operand } => match self.expr(operand)? {
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } => match self.expr(operand)? {
                 Val::S(v, Scalar::Int) => {
                     let min = self.b.ins().icmp_imm_s(IntCC::Equal, v, i64::MIN);
                     self.fail_if(min, code::OVERFLOW, span);
@@ -891,7 +1018,11 @@ impl Lower<'_, '_> {
                     self.result(t, &e.ty)
                 }
             },
-            ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
+            ExprKind::Binary {
+                op: op @ (BinOp::And | BinOp::Or),
+                lhs,
+                rhs,
+            } => {
                 let result = self.b.declare_var(types::I8);
                 let l = self.expr(lhs)?;
                 let l = self.scalar(l, Scalar::Bool);
@@ -926,9 +1057,15 @@ impl Lower<'_, '_> {
                 let t = self.helper_into(call, &[f, arr, n], span, true);
                 self.result(t, &e.ty)
             }
-            ExprKind::CallFunc { func, args, inst, .. } => self.call_func(*func, args, inst, &e.ty, span)?,
+            ExprKind::CallFunc {
+                func, args, inst, ..
+            } => self.call_func(*func, args, inst, &e.ty, span)?,
             ExprKind::CallBuiltin { builtin, args } => self.builtin(*builtin, args, &e.ty, span)?,
-            ExprKind::MethodCall { recv, name, args } if self.fast_method(&recv.ty, name, args.len()) => self.method_fast(recv, name, args, &e.ty, span)?,
+            ExprKind::MethodCall { recv, name, args }
+                if self.fast_method(&recv.ty, name, args.len()) =>
+            {
+                self.method_fast(recv, name, args, &e.ty, span)?
+            }
             ExprKind::MethodCall { recv, name, args } => {
                 let r = self.expr(recv)?;
                 let r = self.boxed(r);
@@ -955,22 +1092,28 @@ impl Lower<'_, '_> {
             ExprKind::Slice { target, start, end } => {
                 let obj = self.expr(target)?;
                 let obj = self.boxed(obj);
-                let bound = |l: &mut Self, b: &Option<Box<hir::Expr>>| -> R<(ir::Value, ir::Value)> {
-                    Ok(match b {
-                        Some(e) => {
-                            let v = l.expr(e)?;
-                            (l.b.ins().iconst(types::I8, 1), l.scalar(v, Scalar::Int))
-                        }
-                        None => (l.b.ins().iconst(types::I8, 0), l.iconst(0)),
-                    })
-                };
+                let bound =
+                    |l: &mut Self, b: &Option<Box<hir::Expr>>| -> R<(ir::Value, ir::Value)> {
+                        Ok(match b {
+                            Some(e) => {
+                                let v = l.expr(e)?;
+                                (l.b.ins().iconst(types::I8, 1), l.scalar(v, Scalar::Int))
+                            }
+                            None => (l.b.ins().iconst(types::I8, 0), l.iconst(0)),
+                        })
+                    };
                 let (has_start, s) = bound(self, start)?;
                 let (has_end, t) = bound(self, end)?;
                 let f = self.c.helpers.slice;
                 let dst = self.helper_into(f, &[obj, has_start, s, has_end, t], span, false);
                 Val::O(dst, true)
             }
-            ExprKind::Query { target, body: Some(body), parallel: true, .. } => {
+            ExprKind::Query {
+                target,
+                body: Some(body),
+                parallel: true,
+                ..
+            } => {
                 let items = self.items(target)?;
                 let f = self.expr(body)?;
                 let f = self.boxed(f);
@@ -978,7 +1121,13 @@ impl Lower<'_, '_> {
                 let t = self.helper_into(map, &[f, items], span, true);
                 Val::O(t, true)
             }
-            ExprKind::Query { op, target, item, body, .. } => self.query(*op, target, *item, body.as_deref(), &e.ty, span)?,
+            ExprKind::Query {
+                op,
+                target,
+                item,
+                body,
+                ..
+            } => self.query(*op, target, *item, body.as_deref(), &e.ty, span)?,
             ExprKind::RunParallel(items) => {
                 let addrs = self.boxed_all(items)?;
                 let arr = self.ptr_array(&addrs);
@@ -1038,7 +1187,14 @@ impl Lower<'_, '_> {
         }
     }
 
-    fn method_fast(&mut self, recv: &hir::Expr, name: &str, args: &[hir::Expr], ty: &Ty, span: Span) -> R<Val> {
+    fn method_fast(
+        &mut self,
+        recv: &hir::Expr,
+        name: &str,
+        args: &[hir::Expr],
+        ty: &Ty,
+        span: Span,
+    ) -> R<Val> {
         let r = self.expr(recv)?;
         let r = self.boxed(r);
         let mut addrs = Vec::new();
@@ -1068,7 +1224,9 @@ impl Lower<'_, '_> {
             }
             _ => {
                 let has = self.c.helpers.map_has;
-                let found = self.call(has, &[self.ctx, r, addrs[0], span_v]).expect("found");
+                let found = self
+                    .call(has, &[self.ctx, r, addrs[0], span_v])
+                    .expect("found");
                 self.check_status();
                 Val::S(found, Scalar::Bool)
             }
@@ -1108,9 +1266,20 @@ impl Lower<'_, '_> {
         Ok(Val::O(t, true))
     }
 
-    fn call_func(&mut self, func: hir::FuncId, args: &[hir::Expr], inst: &[Ty], ty: &Ty, span: Span) -> R<Val> {
+    fn call_func(
+        &mut self,
+        func: hir::FuncId,
+        args: &[hir::Expr],
+        inst: &[Ty],
+        ty: &Ty,
+        span: Span,
+    ) -> R<Val> {
         let inst: Vec<Ty> = inst.iter().map(|t| substitute(t, &self.subst)).collect();
-        let target = if inst.iter().any(super::has_vars) { None } else { self.c.request(self.prog, &(func, inst), self.batch)? };
+        let target = if inst.iter().any(super::has_vars) {
+            None
+        } else {
+            self.c.request(self.prog, &(func, inst), self.batch)?
+        };
         let Some(target) = target else {
             let addrs = self.boxed_all(args)?;
             let arr = self.ptr_array(&addrs);
@@ -1132,7 +1301,9 @@ impl Lower<'_, '_> {
                 Rep::Obj => self.boxed(v),
             });
         }
-        let result = self.call(target.id, &vals).expect("compiled functions return a value");
+        let result = self
+            .call(target.id, &vals)
+            .expect("compiled functions return a value");
         self.check_status();
         Ok(match (target.ret, result_slot) {
             (Rep::Scalar(s), _) => Val::S(result, s),
@@ -1156,10 +1327,19 @@ impl Lower<'_, '_> {
     }
 
     /// Arithmetic and comparisons on scalars; `None` when the operands need the generic path.
-    fn scalar_binary(&mut self, op: BinOp, l: (ir::Value, Scalar), r: (ir::Value, Scalar), span: Span) -> Option<Val> {
+    fn scalar_binary(
+        &mut self,
+        op: BinOp,
+        l: (ir::Value, Scalar),
+        r: (ir::Value, Scalar),
+        span: Span,
+    ) -> Option<Val> {
         let ints = l.1 == Scalar::Int && r.1 == Scalar::Int;
         let numeric = |s: Scalar| matches!(s, Scalar::Int | Scalar::Float);
-        let comparison = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
+        let comparison = matches!(
+            op,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+        );
         if !comparison && !(numeric(l.1) && numeric(r.1)) {
             return None;
         }
@@ -1237,7 +1417,9 @@ impl Lower<'_, '_> {
                 let f = self.c.helpers.powf;
                 Val::S(self.call(f, &[a, b]).unwrap(), Scalar::Float)
             }
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => return self.compare(op, l, r),
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                return self.compare(op, l, r);
+            }
             BinOp::And | BinOp::Or | BinOp::In | BinOp::MatMul => return None,
         })
     }
@@ -1250,9 +1432,17 @@ impl Lower<'_, '_> {
         self.b.ins().band(nonzero, opposite)
     }
 
-    fn compare(&mut self, op: BinOp, l: (ir::Value, Scalar), r: (ir::Value, Scalar)) -> Option<Val> {
+    fn compare(
+        &mut self,
+        op: BinOp,
+        l: (ir::Value, Scalar),
+        r: (ir::Value, Scalar),
+    ) -> Option<Val> {
         let v = match (l.1, r.1) {
-            (Scalar::None, Scalar::None) => self.b.ins().iconst(types::I8, i64::from(matches!(op, BinOp::Eq | BinOp::Le | BinOp::Ge))),
+            (Scalar::None, Scalar::None) => self.b.ins().iconst(
+                types::I8,
+                i64::from(matches!(op, BinOp::Eq | BinOp::Le | BinOp::Ge)),
+            ),
             (Scalar::Int, Scalar::Int) | (Scalar::Bool, Scalar::Bool) => {
                 let signed = l.1 == Scalar::Int;
                 let cc = match op {
@@ -1269,7 +1459,10 @@ impl Lower<'_, '_> {
                 };
                 self.b.ins().icmp(cc, l.0, r.0)
             }
-            (a, b) if matches!(a, Scalar::Int | Scalar::Float) && matches!(b, Scalar::Int | Scalar::Float) => {
+            (a, b)
+                if matches!(a, Scalar::Int | Scalar::Float)
+                    && matches!(b, Scalar::Int | Scalar::Float) =>
+            {
                 let (x, y) = (self.float(l), self.float(r));
                 let cc = match op {
                     BinOp::Eq => FloatCC::Equal,
@@ -1287,7 +1480,12 @@ impl Lower<'_, '_> {
     }
 
     fn builtin(&mut self, b: Builtin, args: &[hir::Expr], ty: &Ty, span: Span) -> R<Val> {
-        if b == Builtin::Len && matches!(substitute(&args[0].ty, &self.subst), Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_)) {
+        if b == Builtin::Len
+            && matches!(
+                substitute(&args[0].ty, &self.subst),
+                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_)
+            )
+        {
             let v = self.expr(&args[0])?;
             let v = self.boxed(v);
             let span = self.span(span);
@@ -1296,7 +1494,9 @@ impl Lower<'_, '_> {
             self.check_status();
             return Ok(Val::S(n, Scalar::Int));
         }
-        let all_scalar = args.iter().all(|a| matches!(self.rep(&a.ty), Rep::Scalar(_)));
+        let all_scalar = args
+            .iter()
+            .all(|a| matches!(self.rep(&a.ty), Rep::Scalar(_)));
         if all_scalar || b == Builtin::Assert {
             if let Some(v) = self.scalar_builtin(b, args, span)? {
                 return Ok(v);
@@ -1340,15 +1540,23 @@ impl Lower<'_, '_> {
         if !inline || (matches!(b, Builtin::Min | Builtin::Max) && args.len() < 2) {
             return Ok(None);
         }
-        if b == Builtin::Assert && !matches!(args.get(1).map(|a| &a.kind), None | Some(ExprKind::Str(_))) {
+        if b == Builtin::Assert
+            && !matches!(args.get(1).map(|a| &a.kind), None | Some(ExprKind::Str(_)))
+        {
             return Ok(None);
         }
-        let lowered = if b == Builtin::Assert { &args[..1] } else { args };
+        let lowered = if b == Builtin::Assert {
+            &args[..1]
+        } else {
+            args
+        };
         let mut vals = Vec::with_capacity(lowered.len());
         for a in lowered {
             match self.expr(a)? {
                 Val::S(x, s) => vals.push((x, s)),
-                Val::O(addr, owned) if b == Builtin::Assert => vals.push((self.scalar(Val::O(addr, owned), Scalar::Bool), Scalar::Bool)),
+                Val::O(addr, owned) if b == Builtin::Assert => {
+                    vals.push((self.scalar(Val::O(addr, owned), Scalar::Bool), Scalar::Bool))
+                }
                 Val::O(..) => return Err("internal: object argument to a scalar builtin".into()),
             }
         }
@@ -1376,9 +1584,13 @@ impl Lower<'_, '_> {
                         return Ok(None);
                     }
                     let take = match (s, b) {
-                        (Scalar::Int, Builtin::Max) => self.b.ins().icmp(IntCC::SignedGreaterThan, *v, acc),
+                        (Scalar::Int, Builtin::Max) => {
+                            self.b.ins().icmp(IntCC::SignedGreaterThan, *v, acc)
+                        }
                         (Scalar::Int, _) => self.b.ins().icmp(IntCC::SignedLessThan, *v, acc),
-                        (Scalar::Float, Builtin::Max) => self.b.ins().fcmp(FloatCC::GreaterThan, *v, acc),
+                        (Scalar::Float, Builtin::Max) => {
+                            self.b.ins().fcmp(FloatCC::GreaterThan, *v, acc)
+                        }
                         (Scalar::Float, _) => self.b.ins().fcmp(FloatCC::LessThan, *v, acc),
                         _ => return Ok(None),
                     };
@@ -1410,10 +1622,16 @@ impl Lower<'_, '_> {
             },
             Builtin::ToBool => match vals[0].1 {
                 Scalar::Bool => Val::S(vals[0].0, Scalar::Bool),
-                Scalar::Int => Val::S(self.b.ins().icmp_imm_s(IntCC::NotEqual, vals[0].0, 0), Scalar::Bool),
+                Scalar::Int => Val::S(
+                    self.b.ins().icmp_imm_s(IntCC::NotEqual, vals[0].0, 0),
+                    Scalar::Bool,
+                ),
                 Scalar::Float => {
                     let zero = self.b.ins().f64const(0.0);
-                    Val::S(self.b.ins().fcmp(FloatCC::NotEqual, vals[0].0, zero), Scalar::Bool)
+                    Val::S(
+                        self.b.ins().fcmp(FloatCC::NotEqual, vals[0].0, zero),
+                        Scalar::Bool,
+                    )
                 }
                 Scalar::None => Val::S(self.b.ins().iconst(types::I8, 0), Scalar::Bool),
             },
@@ -1435,10 +1653,18 @@ impl Lower<'_, '_> {
             }
             Builtin::MathFloor | Builtin::MathCeil => {
                 let v = f64_of(self, 0);
-                let r = if b == Builtin::MathFloor { self.b.ins().floor(v) } else { self.b.ins().ceil(v) };
+                let r = if b == Builtin::MathFloor {
+                    self.b.ins().floor(v)
+                } else {
+                    self.b.ins().ceil(v)
+                };
                 Val::S(self.b.ins().fcvt_to_sint_sat(types::I64, r), Scalar::Int)
             }
-            Builtin::MathSin | Builtin::MathCos | Builtin::MathTan | Builtin::MathLog | Builtin::MathExp => {
+            Builtin::MathSin
+            | Builtin::MathCos
+            | Builtin::MathTan
+            | Builtin::MathLog
+            | Builtin::MathExp => {
                 let v = f64_of(self, 0);
                 let op = match b {
                     Builtin::MathSin => math::SIN,
@@ -1487,11 +1713,22 @@ impl Lower<'_, '_> {
     }
 
     /// Lowers `where`, `select` and the aggregates as loops over the items.
-    fn query(&mut self, op: QueryOp, target: &hir::Expr, item: hir::LocalId, body: Option<&hir::Expr>, ty: &Ty, span: Span) -> R<Val> {
+    fn query(
+        &mut self,
+        op: QueryOp,
+        target: &hir::Expr,
+        item: hir::LocalId,
+        body: Option<&hir::Expr>,
+        ty: &Ty,
+        span: Span,
+    ) -> R<Val> {
         let items = self.items(target)?;
         let n = self.list_len(items);
         let local = self.locals[item.0 as usize];
-        let collected = matches!(op, QueryOp::Where | QueryOp::Select | QueryOp::Min | QueryOp::Max);
+        let collected = matches!(
+            op,
+            QueryOp::Where | QueryOp::Select | QueryOp::Min | QueryOp::Max
+        );
         let out = if collected {
             let t = self.temp();
             let arr = self.ptr_array(&[]);
@@ -1508,7 +1745,9 @@ impl Lower<'_, '_> {
             _ => Rep::Obj,
         };
         let acc_var = match sum_rep {
-            Rep::Scalar(s @ (Scalar::Int | Scalar::Float)) if matches!(op, QueryOp::Sum | QueryOp::Average) => {
+            Rep::Scalar(s @ (Scalar::Int | Scalar::Float))
+                if matches!(op, QueryOp::Sum | QueryOp::Average) =>
+            {
                 let var = self.b.declare_var(s.clif());
                 let z = zero(&mut self.b, Rep::Scalar(s));
                 self.b.def_var(var, z);
@@ -1535,61 +1774,75 @@ impl Lower<'_, '_> {
         let element = self.temp();
         let marker = Place::Local(hir::LocalId(u32::MAX));
         let empty_body: hir::Block = Vec::new();
-        self.counted_loop(zero_i, n, None, &marker, span, |l, i| {
-            let get = l.c.helpers.list_get;
-            l.call(get, &[element, items, i]);
-            l.store_local(local, Val::O(element, true));
-            let value = match body {
-                Some(b) => l.expr(b)?,
-                None => l.load_local(local),
-            };
-            match op {
-                QueryOp::Where => {
-                    let keep = l.scalar(value, Scalar::Bool);
-                    let yes = l.b.create_block();
-                    let no = l.b.create_block();
-                    l.b.ins().brif(keep, yes, &[], no, &[]);
-                    l.b.switch_to_block(yes);
-                    let current = l.load_local(local);
-                    let addr = l.boxed(current);
-                    let push = l.c.helpers.list_push;
-                    l.call(push, &[out.unwrap(), addr]);
-                    l.b.ins().jump(no, &[]);
-                    l.b.switch_to_block(no);
-                }
-                QueryOp::Select | QueryOp::Min | QueryOp::Max => {
-                    let addr = l.boxed(value);
-                    let push = l.c.helpers.list_push;
-                    l.call(push, &[out.unwrap(), addr]);
-                }
-                QueryOp::Sum | QueryOp::Average => match (acc_var, acc_slot) {
-                    (Some((var, s)), _) => {
-                        let acc = l.b.use_var(var);
-                        let item = l.scalar(value, s);
-                        let next = l.scalar_binary(BinOp::Add, (acc, s), (item, s), span).unwrap_or(Val::S(acc, s));
-                        let x = l.scalar(next, s);
-                        l.b.def_var(var, x);
+        self.counted_loop(
+            zero_i,
+            n,
+            None,
+            &marker,
+            span,
+            |l, i| {
+                let get = l.c.helpers.list_get;
+                l.call(get, &[element, items, i]);
+                l.store_local(local, Val::O(element, true));
+                let value = match body {
+                    Some(b) => l.expr(b)?,
+                    None => l.load_local(local),
+                };
+                match op {
+                    QueryOp::Where => {
+                        let keep = l.scalar(value, Scalar::Bool);
+                        let yes = l.b.create_block();
+                        let no = l.b.create_block();
+                        l.b.ins().brif(keep, yes, &[], no, &[]);
+                        l.b.switch_to_block(yes);
+                        let current = l.load_local(local);
+                        let addr = l.boxed(current);
+                        let push = l.c.helpers.list_push;
+                        l.call(push, &[out.unwrap(), addr]);
+                        l.b.ins().jump(no, &[]);
+                        l.b.switch_to_block(no);
                     }
-                    (None, Some(slot)) => {
+                    QueryOp::Select | QueryOp::Min | QueryOp::Max => {
                         let addr = l.boxed(value);
-                        let op = l.i32const(BinOp::Add.index());
-                        let f = l.c.helpers.binary;
-                        let t = l.helper_into(f, &[op, slot, addr], span, false);
-                        let take = l.c.helpers.take;
-                        l.call(take, &[slot, t]);
+                        let push = l.c.helpers.list_push;
+                        l.call(push, &[out.unwrap(), addr]);
                     }
-                    _ => unreachable!("sums have an accumulator"),
-                },
-            }
-            Ok(())
-        }, &empty_body)?;
+                    QueryOp::Sum | QueryOp::Average => match (acc_var, acc_slot) {
+                        (Some((var, s)), _) => {
+                            let acc = l.b.use_var(var);
+                            let item = l.scalar(value, s);
+                            let next = l
+                                .scalar_binary(BinOp::Add, (acc, s), (item, s), span)
+                                .unwrap_or(Val::S(acc, s));
+                            let x = l.scalar(next, s);
+                            l.b.def_var(var, x);
+                        }
+                        (None, Some(slot)) => {
+                            let addr = l.boxed(value);
+                            let op = l.i32const(BinOp::Add.index());
+                            let f = l.c.helpers.binary;
+                            let t = l.helper_into(f, &[op, slot, addr], span, false);
+                            let take = l.c.helpers.take;
+                            l.call(take, &[slot, t]);
+                        }
+                        _ => unreachable!("sums have an accumulator"),
+                    },
+                }
+                Ok(())
+            },
+            &empty_body,
+        )?;
 
         Ok(match op {
             QueryOp::Where | QueryOp::Select => Val::O(out.unwrap(), true),
             QueryOp::Min | QueryOp::Max => {
                 let arr = self.ptr_array(&[out.unwrap()]);
                 let one = self.iconst(1);
-                let b = if op == QueryOp::Max { Builtin::Max } else { Builtin::Min };
+                let b = if op == QueryOp::Max {
+                    Builtin::Max
+                } else {
+                    Builtin::Min
+                };
                 let id = self.i32const(b.index());
                 let f = self.c.helpers.builtin;
                 let t = self.helper_into(f, &[id, arr, one], span, false);

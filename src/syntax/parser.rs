@@ -8,7 +8,12 @@ type PResult<T> = Result<T, Diagnostic>;
 
 pub fn parse(file: FileId, src: &str) -> PResult<Module> {
     let tokens = lexer::tokenize(file, src)?;
-    let mut parser = Parser { tokens, pos: 0, file, src };
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        file,
+        src,
+    };
     let mut stmts = Vec::new();
     parser.skip_newlines();
     while !parser.at(&Tok::Eof) {
@@ -77,7 +82,8 @@ impl<'a> Parser<'a> {
     }
 
     fn unexpected(&self, message: &str) -> Diagnostic {
-        Diagnostic::error(self.span(), message.to_string()).with_label(format!("found {}", self.peek()))
+        Diagnostic::error(self.span(), message.to_string())
+            .with_label(format!("found {}", self.peek()))
     }
 
     fn skip_newlines(&mut self) {
@@ -113,7 +119,9 @@ impl<'a> Parser<'a> {
         self.bump();
         self.skip_newlines();
         if !self.eat(&Tok::Indent) {
-            return Err(self.unexpected("expected an indented block").with_help("indent the lines that belong to this block"));
+            return Err(self
+                .unexpected("expected an indented block")
+                .with_help("indent the lines that belong to this block"));
         }
         let mut stmts = Vec::new();
         loop {
@@ -134,7 +142,10 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let cond = self.expression()?;
                 let body = self.block()?;
-                Ok(Stmt { kind: StmtKind::While { cond, body }, span: lo.to(self.prev_span()) })
+                Ok(Stmt {
+                    kind: StmtKind::While { cond, body },
+                    span: lo.to(self.prev_span()),
+                })
             }
             Tok::Repeat => {
                 self.bump();
@@ -144,7 +155,10 @@ impl<'a> Parser<'a> {
                 }
                 self.bump();
                 let body = self.block()?;
-                Ok(Stmt { kind: StmtKind::Repeat { count, body }, span: lo.to(self.prev_span()) })
+                Ok(Stmt {
+                    kind: StmtKind::Repeat { count, body },
+                    span: lo.to(self.prev_span()),
+                })
             }
             Tok::For => {
                 self.bump();
@@ -155,12 +169,18 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::In, "after the loop variable")?;
                 let iter = self.expression()?;
                 let body = self.block()?;
-                Ok(Stmt { kind: StmtKind::For { vars, iter, body }, span: lo.to(self.prev_span()) })
+                Ok(Stmt {
+                    kind: StmtKind::For { vars, iter, body },
+                    span: lo.to(self.prev_span()),
+                })
             }
             Tok::Function | Tok::Task => {
                 let def = self.function_def()?;
                 let span = def.span;
-                Ok(Stmt { kind: StmtKind::Function(def), span })
+                Ok(Stmt {
+                    kind: StmtKind::Function(def),
+                    span,
+                })
             }
             Tok::Class => self.class_def(),
             Tok::Try => {
@@ -170,7 +190,10 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::Catch, "after the try block")?;
                 let var = self.ident("for the caught error")?;
                 let handler = self.block()?;
-                Ok(Stmt { kind: StmtKind::Try { body, var, handler }, span: lo.to(self.prev_span()) })
+                Ok(Stmt {
+                    kind: StmtKind::Try { body, var, handler },
+                    span: lo.to(self.prev_span()),
+                })
             }
             _ => {
                 let stmt = self.simple_statement()?;
@@ -232,7 +255,10 @@ impl<'a> Parser<'a> {
             items.push(self.expression()?);
         }
         let span = items[0].span.to(self.prev_span());
-        Ok(Expr { kind: ExprKind::Tuple(items), span })
+        Ok(Expr {
+            kind: ExprKind::Tuple(items),
+            span,
+        })
     }
 
     fn expression_statement(&mut self) -> PResult<StmtKind> {
@@ -241,9 +267,15 @@ impl<'a> Parser<'a> {
             match &e.kind {
                 ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => Ok(()),
                 ExprKind::Tuple(items) => items.iter().try_for_each(|i| check_target(p, i)),
-                _ => Err(Diagnostic::error(e.span, "cannot assign to this expression")
-                    .with_label("not a variable, field or element")
-                    .with_help(if matches!(p.peek(), Tok::Assign) { "use `==` to compare values" } else { "assign to a variable instead" })),
+                _ => Err(
+                    Diagnostic::error(e.span, "cannot assign to this expression")
+                        .with_label("not a variable, field or element")
+                        .with_help(if matches!(p.peek(), Tok::Assign) {
+                            "use `==` to compare values"
+                        } else {
+                            "assign to a variable instead"
+                        }),
+                ),
             }
         }
         let aug = match self.peek() {
@@ -255,7 +287,11 @@ impl<'a> Parser<'a> {
         };
         if let Some(op) = aug {
             if matches!(target.kind, ExprKind::Tuple(_)) {
-                return Err(Diagnostic::error(target.span, "cannot update several variables at once").with_help("update each one on its own line"));
+                return Err(Diagnostic::error(
+                    target.span,
+                    "cannot update several variables at once",
+                )
+                .with_help("update each one on its own line"));
             }
             check_target(self, &target)?;
             self.bump();
@@ -267,13 +303,21 @@ impl<'a> Parser<'a> {
             let ty = self.type_expr()?;
             self.expect(&Tok::Assign, "after the type annotation")?;
             let value = self.expression()?;
-            return Ok(StmtKind::Assign { target, ty: Some(ty), value });
+            return Ok(StmtKind::Assign {
+                target,
+                ty: Some(ty),
+                value,
+            });
         }
         if self.at(&Tok::Assign) {
             check_target(self, &target)?;
             self.bump();
             let value = self.expression_list()?;
-            return Ok(StmtKind::Assign { target, ty: None, value });
+            return Ok(StmtKind::Assign {
+                target,
+                ty: None,
+                value,
+            });
         }
         Ok(StmtKind::Expr(target))
     }
@@ -281,7 +325,11 @@ impl<'a> Parser<'a> {
     fn use_statement(&mut self) -> PResult<StmtKind> {
         self.bump();
         let alias = |p: &mut Self| -> PResult<Option<Ident>> {
-            if p.eat(&Tok::As) { Ok(Some(p.ident("after `as`")?)) } else { Ok(None) }
+            if p.eat(&Tok::As) {
+                Ok(Some(p.ident("after `as`")?))
+            } else {
+                Ok(None)
+            }
         };
         if self.eat(&Tok::Python) {
             let mut module = self.ident("for the Python module")?.name;
@@ -321,7 +369,13 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(Stmt { kind: StmtKind::If { branches, otherwise }, span: lo.to(self.prev_span()) })
+        Ok(Stmt {
+            kind: StmtKind::If {
+                branches,
+                otherwise,
+            },
+            span: lo.to(self.prev_span()),
+        })
     }
 
     fn function_def(&mut self) -> PResult<FunctionDef> {
@@ -332,25 +386,50 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         while !self.at(&Tok::RParen) {
             let pname = self.ident("for the parameter")?;
-            let ty = if self.eat(&Tok::Colon) { Some(self.type_expr()?) } else { None };
-            let default = if self.eat(&Tok::Assign) { Some(self.expression()?) } else { None };
-            params.push(Param { name: pname, ty, default });
+            let ty = if self.eat(&Tok::Colon) {
+                Some(self.type_expr()?)
+            } else {
+                None
+            };
+            let default = if self.eat(&Tok::Assign) {
+                Some(self.expression()?)
+            } else {
+                None
+            };
+            params.push(Param {
+                name: pname,
+                ty,
+                default,
+            });
             if !self.eat(&Tok::Comma) {
                 break;
             }
         }
         self.expect(&Tok::RParen, "to close the parameter list")?;
-        let ret = if self.eat(&Tok::Arrow) { Some(self.type_expr()?) } else { None };
+        let ret = if self.eat(&Tok::Arrow) {
+            Some(self.type_expr()?)
+        } else {
+            None
+        };
         let body = if self.at(&Tok::FatArrow) {
             let arrow = self.bump().span;
             let value = self.expression()?;
             let span = arrow.to(value.span);
             self.end_of_statement()?;
-            vec![Stmt { kind: StmtKind::Return(Some(value)), span }]
+            vec![Stmt {
+                kind: StmtKind::Return(Some(value)),
+                span,
+            }]
         } else {
             self.block()?
         };
-        Ok(FunctionDef { name, params, ret, body, span: lo.to(self.prev_span()) })
+        Ok(FunctionDef {
+            name,
+            params,
+            ret,
+            body,
+            span: lo.to(self.prev_span()),
+        })
     }
 
     fn class_def(&mut self) -> PResult<Stmt> {
@@ -378,20 +457,45 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Ident(_) => {
                     let fname = self.ident("for the field")?;
-                    let ty = if self.eat(&Tok::Colon) { Some(self.type_expr()?) } else { None };
-                    let default = if self.eat(&Tok::Assign) { Some(self.expression()?) } else { None };
+                    let ty = if self.eat(&Tok::Colon) {
+                        Some(self.type_expr()?)
+                    } else {
+                        None
+                    };
+                    let default = if self.eat(&Tok::Assign) {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
                     if ty.is_none() && default.is_none() {
-                        return Err(Diagnostic::error(fname.span, "field needs a type or a default value")
-                            .with_help(format!("write `{}: Int` or `{} = 0`", fname.name, fname.name)));
+                        return Err(Diagnostic::error(
+                            fname.span,
+                            "field needs a type or a default value",
+                        )
+                        .with_help(format!(
+                            "write `{}: Int` or `{} = 0`",
+                            fname.name, fname.name
+                        )));
                     }
                     self.end_of_statement()?;
-                    fields.push(FieldDef { name: fname, ty, default });
+                    fields.push(FieldDef {
+                        name: fname,
+                        ty,
+                        default,
+                    });
                 }
                 _ => return Err(self.unexpected("expected a field or a method in the class body")),
             }
         }
         let span = lo.to(self.prev_span());
-        Ok(Stmt { kind: StmtKind::Class(ClassDef { name, fields, methods }), span })
+        Ok(Stmt {
+            kind: StmtKind::Class(ClassDef {
+                name,
+                fields,
+                methods,
+            }),
+            span,
+        })
     }
 
     fn type_expr(&mut self) -> PResult<TypeExpr> {
@@ -405,7 +509,11 @@ impl<'a> Parser<'a> {
                 args.push(self.type_expr()?);
             }
             self.expect(&Tok::RParen, "to close the tuple type")?;
-            return Ok(TypeExpr { name: "Tuple".into(), args, span: lo.to(self.prev_span()) });
+            return Ok(TypeExpr {
+                name: "Tuple".into(),
+                args,
+                span: lo.to(self.prev_span()),
+            });
         }
         let name = match self.peek().clone() {
             Tok::Ident(n) => n,
@@ -423,7 +531,11 @@ impl<'a> Parser<'a> {
             }
             self.expect(&Tok::RBracket, "to close the type arguments")?;
         }
-        Ok(TypeExpr { name, args, span: lo.to(self.prev_span()) })
+        Ok(TypeExpr {
+            name,
+            args,
+            span: lo.to(self.prev_span()),
+        })
     }
 
     pub fn expression(&mut self) -> PResult<Expr> {
@@ -432,12 +544,25 @@ impl<'a> Parser<'a> {
             if let Tok::Ident(word) = self.peek() {
                 if let Some(op) = QueryOp::from_word(word) {
                     self.bump();
-                    let body = if self.starts_expression() { Some(Box::new(self.or_expr()?)) } else { None };
+                    let body = if self.starts_expression() {
+                        Some(Box::new(self.or_expr()?))
+                    } else {
+                        None
+                    };
                     if body.is_none() && matches!(op, QueryOp::Where | QueryOp::Select) {
-                        return Err(self.unexpected(&format!("expected an expression after `{}`", op.word())));
+                        return Err(self
+                            .unexpected(&format!("expected an expression after `{}`", op.word())));
                     }
                     let span = expr.span.to(self.prev_span());
-                    expr = Expr { kind: ExprKind::Query { op, target: Box::new(expr), body, parallel: false }, span };
+                    expr = Expr {
+                        kind: ExprKind::Query {
+                            op,
+                            target: Box::new(expr),
+                            body,
+                            parallel: false,
+                        },
+                        span,
+                    };
                     continue;
                 }
             }
@@ -445,13 +570,30 @@ impl<'a> Parser<'a> {
                 let tspan = self.bump().span;
                 let span = expr.span.to(tspan);
                 expr = match expr.kind {
-                    ExprKind::Query { op: QueryOp::Select, target, body, .. } => {
-                        Expr { kind: ExprKind::Query { op: QueryOp::Select, target, body, parallel: true }, span }
-                    }
-                    ExprKind::List(items) => Expr { kind: ExprKind::RunParallel(items), span },
+                    ExprKind::Query {
+                        op: QueryOp::Select,
+                        target,
+                        body,
+                        ..
+                    } => Expr {
+                        kind: ExprKind::Query {
+                            op: QueryOp::Select,
+                            target,
+                            body,
+                            parallel: true,
+                        },
+                        span,
+                    },
+                    ExprKind::List(items) => Expr {
+                        kind: ExprKind::RunParallel(items),
+                        span,
+                    },
                     _ => {
-                        return Err(Diagnostic::error(span, "postfix `together` needs a list or a `select` query")
-                            .with_help("use `together f(x)` to run a single call in the background"));
+                        return Err(Diagnostic::error(
+                            span,
+                            "postfix `together` needs a list or a `select` query",
+                        )
+                        .with_help("use `together f(x)` to run a single call in the background"));
                     }
                 };
                 continue;
@@ -464,15 +606,35 @@ impl<'a> Parser<'a> {
     fn starts_expression(&self) -> bool {
         match self.peek() {
             Tok::Ident(w) => QueryOp::from_word(w).is_none(),
-            Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::FStr(_) | Tok::True | Tok::False | Tok::None => true,
-            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::Pipe | Tok::Minus | Tok::Not | Tok::Await | Tok::Together => true,
+            Tok::Int(_)
+            | Tok::Float(_)
+            | Tok::Str(_)
+            | Tok::FStr(_)
+            | Tok::True
+            | Tok::False
+            | Tok::None => true,
+            Tok::LParen
+            | Tok::LBracket
+            | Tok::LBrace
+            | Tok::Pipe
+            | Tok::Minus
+            | Tok::Not
+            | Tok::Await
+            | Tok::Together => true,
             _ => false,
         }
     }
 
     fn binary(lhs: Expr, op: BinOp, rhs: Expr) -> Expr {
         let span = lhs.span.to(rhs.span);
-        Expr { kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span }
+        Expr {
+            kind: ExprKind::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            span,
+        }
     }
 
     fn or_expr(&mut self) -> PResult<Expr> {
@@ -498,7 +660,13 @@ impl<'a> Parser<'a> {
             let lo = self.bump().span;
             let operand = self.not_expr()?;
             let span = lo.to(operand.span);
-            return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) }, span });
+            return Ok(Expr {
+                kind: ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    operand: Box::new(operand),
+                },
+                span,
+            });
         }
         self.comparison()
     }
@@ -519,7 +687,9 @@ impl<'a> Parser<'a> {
 
     fn comparison(&mut self) -> PResult<Expr> {
         let lhs = self.additive()?;
-        let Some((op, negated)) = self.comparison_op() else { return Ok(lhs) };
+        let Some((op, negated)) = self.comparison_op() else {
+            return Ok(lhs);
+        };
         self.bump();
         if negated {
             self.bump();
@@ -528,11 +698,19 @@ impl<'a> Parser<'a> {
         let mut expr = Self::binary(lhs, op, rhs);
         if negated {
             let span = expr.span;
-            expr = Expr { kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(expr) }, span };
+            expr = Expr {
+                kind: ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    operand: Box::new(expr),
+                },
+                span,
+            };
         }
         if self.comparison_op().is_some() {
-            return Err(Diagnostic::error(self.span(), "comparisons cannot be chained")
-                .with_help("combine them with `and`, for example `a < b and b < c`"));
+            return Err(
+                Diagnostic::error(self.span(), "comparisons cannot be chained")
+                    .with_help("combine them with `and`, for example `a < b and b < c`"),
+            );
         }
         Ok(expr)
     }
@@ -580,7 +758,10 @@ impl<'a> Parser<'a> {
                 let kind = match operand.kind {
                     ExprKind::Int(n) => ExprKind::Int(n.wrapping_neg()),
                     ExprKind::Float(f) => ExprKind::Float(-f),
-                    _ => ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) },
+                    _ => ExprKind::Unary {
+                        op: UnaryOp::Neg,
+                        operand: Box::new(operand),
+                    },
                 };
                 Ok(Expr { kind, span })
             }
@@ -588,13 +769,19 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let operand = self.unary()?;
                 let span = lo.to(operand.span);
-                Ok(Expr { kind: ExprKind::Together(Box::new(operand)), span })
+                Ok(Expr {
+                    kind: ExprKind::Together(Box::new(operand)),
+                    span,
+                })
             }
             Tok::Await => {
                 self.bump();
                 let operand = self.unary()?;
                 let span = lo.to(operand.span);
-                Ok(Expr { kind: ExprKind::Await(Box::new(operand)), span })
+                Ok(Expr {
+                    kind: ExprKind::Await(Box::new(operand)),
+                    span,
+                })
             }
             _ => self.power(),
         }
@@ -617,22 +804,43 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let args = self.call_args()?;
                     let span = expr.span.to(self.prev_span());
-                    expr = Expr { kind: ExprKind::Call { callee: Box::new(expr), args }, span };
+                    expr = Expr {
+                        kind: ExprKind::Call {
+                            callee: Box::new(expr),
+                            args,
+                        },
+                        span,
+                    };
                 }
                 Tok::LBracket => {
                     self.bump();
                     let items = self.index_items()?;
                     let span = expr.span.to(self.prev_span());
-                    expr = Expr { kind: ExprKind::Index { target: Box::new(expr), items }, span };
+                    expr = Expr {
+                        kind: ExprKind::Index {
+                            target: Box::new(expr),
+                            items,
+                        },
+                        span,
+                    };
                 }
                 Tok::Dot => {
                     self.bump();
                     let name = match self.peek().keyword_text() {
-                        Some(word) => Ident { name: word.to_string(), span: self.bump().span },
+                        Some(word) => Ident {
+                            name: word.to_string(),
+                            span: self.bump().span,
+                        },
                         None => self.ident("after `.`")?,
                     };
                     let span = expr.span.to(name.span);
-                    expr = Expr { kind: ExprKind::Field { target: Box::new(expr), name }, span };
+                    expr = Expr {
+                        kind: ExprKind::Field {
+                            target: Box::new(expr),
+                            name,
+                        },
+                        span,
+                    };
                 }
                 _ => break,
             }
@@ -649,12 +857,18 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let value = self.expression()?;
                 seen_named = true;
-                args.push(Arg { name: Some(name), value });
+                args.push(Arg {
+                    name: Some(name),
+                    value,
+                });
             } else {
                 let value = self.expression()?;
                 if seen_named {
-                    return Err(Diagnostic::error(value.span, "positional argument after a named argument")
-                        .with_help("put positional arguments first"));
+                    return Err(Diagnostic::error(
+                        value.span,
+                        "positional argument after a named argument",
+                    )
+                    .with_help("put positional arguments first"));
                 }
                 args.push(Arg { name: None, value });
             }
@@ -669,9 +883,17 @@ impl<'a> Parser<'a> {
     fn index_items(&mut self) -> PResult<Vec<IndexItem>> {
         let mut items = Vec::new();
         loop {
-            let start = if self.at(&Tok::Colon) { None } else { Some(self.expression()?) };
+            let start = if self.at(&Tok::Colon) {
+                None
+            } else {
+                Some(self.expression()?)
+            };
             if self.eat(&Tok::Colon) {
-                let end = if matches!(self.peek(), Tok::Comma | Tok::RBracket) { None } else { Some(self.expression()?) };
+                let end = if matches!(self.peek(), Tok::Comma | Tok::RBracket) {
+                    None
+                } else {
+                    Some(self.expression()?)
+                };
                 items.push(IndexItem::Slice { start, end });
             } else {
                 items.push(IndexItem::Single(start.expect("index expression")));
@@ -742,10 +964,16 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(&Tok::RParen, "to close the tuple")?;
-                    return Ok(Expr { kind: ExprKind::Tuple(items), span: lo.to(self.prev_span()) });
+                    return Ok(Expr {
+                        kind: ExprKind::Tuple(items),
+                        span: lo.to(self.prev_span()),
+                    });
                 }
                 self.expect(&Tok::RParen, "to close the parenthesis")?;
-                return Ok(Expr { kind: inner.kind, span: lo.to(self.prev_span()) });
+                return Ok(Expr {
+                    kind: inner.kind,
+                    span: lo.to(self.prev_span()),
+                });
             }
             Tok::LBracket => {
                 self.bump();
@@ -761,18 +989,29 @@ impl<'a> Parser<'a> {
                 let mut types = Vec::new();
                 while !self.at(&Tok::Pipe) {
                     params.push(self.ident("for the closure parameter")?);
-                    types.push(if self.eat(&Tok::Colon) { Some(self.type_expr()?) } else { None });
+                    types.push(if self.eat(&Tok::Colon) {
+                        Some(self.type_expr()?)
+                    } else {
+                        None
+                    });
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
                 }
                 self.expect(&Tok::Pipe, "to close the closure parameters")?;
                 let body = self.expression()?;
-                ExprKind::Lambda { params, types, body: Box::new(body) }
+                ExprKind::Lambda {
+                    params,
+                    types,
+                    body: Box::new(body),
+                }
             }
             _ => return Err(self.unexpected("expected an expression")),
         };
-        Ok(Expr { kind, span: lo.to(self.prev_span()) })
+        Ok(Expr {
+            kind,
+            span: lo.to(self.prev_span()),
+        })
     }
 
     fn sequence(&mut self, close: &Tok) -> PResult<Vec<Expr>> {
@@ -793,7 +1032,10 @@ impl<'a> Parser<'a> {
             let key = match self.peek().clone() {
                 Tok::Ident(name) if self.peek_nth(1) == &Tok::Colon => {
                     let span = self.bump().span;
-                    Expr { kind: ExprKind::Str(name), span }
+                    Expr {
+                        kind: ExprKind::Str(name),
+                        span,
+                    }
                 }
                 _ => self.expression()?,
             };
@@ -815,7 +1057,12 @@ impl<'a> Parser<'a> {
                 FPart::Lit(s) => out.push(FStrPart::Lit(s)),
                 FPart::Expr { lo, hi, spec } => {
                     let tokens = lexer::tokenize_fragment(self.file, self.src, lo, hi)?;
-                    let mut sub = Parser { tokens, pos: 0, file: self.file, src: self.src };
+                    let mut sub = Parser {
+                        tokens,
+                        pos: 0,
+                        file: self.file,
+                        src: self.src,
+                    };
                     let expr = sub.expression()?;
                     if !sub.at(&Tok::Eof) {
                         return Err(sub.unexpected("unexpected text in f-string expression"));

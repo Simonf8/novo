@@ -1,4 +1,4 @@
-use super::value::{compare, equal, Key, Value};
+use super::value::{Key, Value, compare, equal};
 use crate::syntax::ast::BinOp;
 use std::cmp::Ordering;
 
@@ -14,22 +14,41 @@ fn zero() -> String {
 
 fn floor_div(a: i64, b: i64) -> Option<i64> {
     let q = a.checked_div(b)?;
-    if a % b != 0 && ((a < 0) != (b < 0)) { q.checked_sub(1) } else { Some(q) }
+    if a % b != 0 && ((a < 0) != (b < 0)) {
+        q.checked_sub(1)
+    } else {
+        Some(q)
+    }
 }
 
 fn floor_mod(a: i64, b: i64) -> Option<i64> {
     let r = a.checked_rem(b)?;
-    if r != 0 && ((r < 0) != (b < 0)) { Some(r + b) } else { Some(r) }
+    if r != 0 && ((r < 0) != (b < 0)) {
+        Some(r + b)
+    } else {
+        Some(r)
+    }
 }
 
 fn float_mod(a: f64, b: f64) -> f64 {
     let r = a % b;
-    if r != 0.0 && ((r < 0.0) != (b < 0.0)) { r + b } else { r }
+    if r != 0.0 && ((r < 0.0) != (b < 0.0)) {
+        r + b
+    } else {
+        r
+    }
 }
 
 pub fn binary(op: BinOp, a: &Value, b: &Value) -> R {
     use Value::*;
-    let bad = || Err(format!("cannot apply `{}` to a {} and a {}", op.symbol(), a.type_name(), b.type_name()));
+    let bad = || {
+        Err(format!(
+            "cannot apply `{}` to a {} and a {}",
+            op.symbol(),
+            a.type_name(),
+            b.type_name()
+        ))
+    };
     match op {
         BinOp::Add => match (a, b) {
             (Int(x), Int(y)) => x.checked_add(*y).map(Int).ok_or_else(overflow),
@@ -47,7 +66,9 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> R {
         },
         BinOp::Mul => match (a, b) {
             (Int(x), Int(y)) => x.checked_mul(*y).map(Int).ok_or_else(overflow),
-            (Str(s), Int(n)) | (Int(n), Str(s)) => Ok(Value::Str(s.repeat((*n).max(0) as usize).into())),
+            (Str(s), Int(n)) | (Int(n), Str(s)) => {
+                Ok(Value::Str(s.repeat((*n).max(0) as usize).into()))
+            }
             _ => float_op(a, b, |x, y| x * y).map_or_else(bad, Ok),
         },
         BinOp::Div => match (a.as_f64(), b.as_f64()) {
@@ -74,8 +95,14 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> R {
             },
         },
         BinOp::Pow => match (a, b) {
-            (Int(_), Int(e)) if *e < 0 => Err("negative exponent for an Int power; use a Float base".into()),
-            (Int(x), Int(e)) => u32::try_from(*e).ok().and_then(|e| x.checked_pow(e)).map(Int).ok_or_else(overflow),
+            (Int(_), Int(e)) if *e < 0 => {
+                Err("negative exponent for an Int power; use a Float base".into())
+            }
+            (Int(x), Int(e)) => u32::try_from(*e)
+                .ok()
+                .and_then(|e| x.checked_pow(e))
+                .map(Int)
+                .ok_or_else(overflow),
             _ => float_op(a, b, f64::powf).map_or_else(bad, Ok),
         },
         BinOp::Eq => Ok(Bool(equal(a, b))),
@@ -99,7 +126,10 @@ pub fn contains(container: &Value, item: &Value) -> Result<bool, String> {
         (Value::List(items), _) => Ok(items.read().iter().any(|x| equal(x, item))),
         (Value::Map(dict), _) => Ok(dict.read().get(&Key::from_value(item)?).is_some()),
         (Value::Str(s), Value::Str(sub)) => Ok(s.contains(&**sub)),
-        _ => Err(format!("cannot test membership in a {}", container.type_name())),
+        _ => Err(format!(
+            "cannot test membership in a {}",
+            container.type_name()
+        )),
     }
 }
 

@@ -39,22 +39,33 @@ mod modern {
             Value::Float(f) => Ok(f.into_py(py)),
             Value::Str(s) => Ok(s.as_ref().into_py(py)),
             Value::List(list) => {
-                let items = list.read().iter().map(|v| to_py(py, v)).collect::<Result<Vec<_>, _>>()?;
+                let items = list
+                    .read()
+                    .iter()
+                    .map(|v| to_py(py, v))
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(items.into_py(py))
             }
             Value::Tuple(items) => {
-                let items = items.iter().map(|v| to_py(py, v)).collect::<Result<Vec<_>, _>>()?;
+                let items = items
+                    .iter()
+                    .map(|v| to_py(py, v))
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(PyTuple::new(py, items).into_py(py))
             }
             Value::Map(map) => {
                 let dict = PyDict::new(py);
                 for (k, v) in map.read().iter() {
-                    dict.set_item(to_py(py, &k.to_value())?, to_py(py, v)?).map_err(|e| e.to_string())?;
+                    dict.set_item(to_py(py, &k.to_value())?, to_py(py, v)?)
+                        .map_err(|e| e.to_string())?;
                 }
                 Ok(dict.into_py(py))
             }
             Value::Py(obj) => Ok(obj.0.clone_ref(py)),
-            other => Err(format!("a {} cannot be passed to Python", other.type_name())),
+            other => Err(format!(
+                "a {} cannot be passed to Python",
+                other.type_name()
+            )),
         }
     }
 
@@ -93,7 +104,10 @@ mod modern {
             None
         };
         if let Some(items) = seq {
-            let values = items.into_iter().map(|o| from_py(py, o)).collect::<Result<Vec<_>, _>>()?;
+            let values = items
+                .into_iter()
+                .map(|o| from_py(py, o))
+                .collect::<Result<Vec<_>, _>>()?;
             return Ok(Value::list(values));
         }
         Ok(Value::Py(PyHandle(obj)))
@@ -102,15 +116,22 @@ mod modern {
     pub fn import_module(module: &str) -> Result<Value, String> {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let m = PyModule::import(py, module).map_err(|e| format!("failed to import Python module `{module}`: {e}"))?;
+            let m = PyModule::import(py, module)
+                .map_err(|e| format!("failed to import Python module `{module}`: {e}"))?;
             Ok(Value::Py(PyHandle(m.into_py(py))))
         })
     }
 
     pub fn call(obj: &PyHandle, args: &[Value]) -> Result<Value, String> {
         Python::with_gil(|py| {
-            let args = args.iter().map(|a| to_py(py, a)).collect::<Result<Vec<_>, _>>()?;
-            let result = obj.0.call1(py, PyTuple::new(py, args)).map_err(|e| format!("Python error: {e}"))?;
+            let args = args
+                .iter()
+                .map(|a| to_py(py, a))
+                .collect::<Result<Vec<_>, _>>()?;
+            let result = obj
+                .0
+                .call1(py, PyTuple::new(py, args))
+                .map_err(|e| format!("Python error: {e}"))?;
             from_py(py, result)
         })
     }
@@ -135,7 +156,10 @@ mod modern {
     pub fn get_item(obj: &PyHandle, key: &Value) -> Result<Value, String> {
         Python::with_gil(|py| {
             let key = to_py(py, key)?;
-            let item = obj.0.call_method1(py, "__getitem__", (key,)).map_err(|e| format!("Python index error: {e}"))?;
+            let item = obj
+                .0
+                .call_method1(py, "__getitem__", (key,))
+                .map_err(|e| format!("Python index error: {e}"))?;
             from_py(py, item)
         })
     }
@@ -143,13 +167,19 @@ mod modern {
     pub fn set_item(obj: &PyHandle, key: &Value, value: &Value) -> Result<(), String> {
         Python::with_gil(|py| {
             let (key, value) = (to_py(py, key)?, to_py(py, value)?);
-            obj.0.call_method1(py, "__setitem__", (key, value)).map(|_| ()).map_err(|e| e.to_string())
+            obj.0
+                .call_method1(py, "__setitem__", (key, value))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         })
     }
 
     pub fn to_list(obj: &PyHandle) -> Result<Vec<Value>, String> {
         Python::with_gil(|py| {
-            let items = obj.0.extract::<Vec<PyObject>>(py).map_err(|_| "Python object is not iterable".to_string())?;
+            let items = obj
+                .0
+                .extract::<Vec<PyObject>>(py)
+                .map_err(|_| "Python object is not iterable".to_string())?;
             items.into_iter().map(|o| from_py(py, o)).collect()
         })
     }
@@ -171,12 +201,24 @@ mod modern {
             ">=" => "ge",
             "<=" => "le",
             "in" => "contains",
-            _ => return Err(format!("operator `{op}` is not supported on Python objects")),
+            _ => {
+                return Err(format!(
+                    "operator `{op}` is not supported on Python objects"
+                ));
+            }
         };
         Python::with_gil(|py| {
-            let (a, b) = if op == "in" { (to_py(py, r)?, to_py(py, l)?) } else { (to_py(py, l)?, to_py(py, r)?) };
-            let func = PyModule::import(py, "operator").and_then(|m| m.getattr(name)).map_err(|e| e.to_string())?;
-            let result = func.call1((a, b)).map_err(|e| format!("Python error: {e}"))?;
+            let (a, b) = if op == "in" {
+                (to_py(py, r)?, to_py(py, l)?)
+            } else {
+                (to_py(py, l)?, to_py(py, r)?)
+            };
+            let func = PyModule::import(py, "operator")
+                .and_then(|m| m.getattr(name))
+                .map_err(|e| e.to_string())?;
+            let result = func
+                .call1((a, b))
+                .map_err(|e| format!("Python error: {e}"))?;
             from_py(py, result.into_py(py))
         })
     }
@@ -187,7 +229,8 @@ mod modern {
     use super::PyHandle;
     use crate::eval::value::Value;
 
-    const DISABLED: &str = "Python interop is not enabled; rebuild with `cargo build --features python`";
+    const DISABLED: &str =
+        "Python interop is not enabled; rebuild with `cargo build --features python`";
 
     pub fn import_module(_module: &str) -> Result<Value, String> {
         Err(DISABLED.to_string())
@@ -218,6 +261,8 @@ mod modern {
     }
 
     pub fn binary_op(_l: &Value, _r: &Value, op: &str) -> Result<Value, String> {
-        Err(format!("operator `{op}` on a Python object needs Python interop; {DISABLED}"))
+        Err(format!(
+            "operator `{op}` on a Python object needs Python interop; {DISABLED}"
+        ))
     }
 }

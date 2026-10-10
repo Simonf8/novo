@@ -23,6 +23,7 @@ Usage:
     novo test [path]                 Run test_*.nv and *_test.nv files
     novo bench <file.nv> [-n N]      Time repeated runs of a program
     novo new <name>                  Create a project
+    novo [repl]                      Start the interactive prompt
 
 Options:
     -h, --help       Show this help
@@ -32,7 +33,8 @@ Options:
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
-        None | Some("-h" | "--help" | "help") => {
+        None | Some("repl") => cmd_repl(),
+        Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             0
         }
@@ -74,7 +76,10 @@ fn cmd_run(args: &[String]) -> i32 {
         Err(code) => return code,
     };
     let program_args: Vec<String> = args.iter().skip_while(|a| *a != file).cloned().collect();
-    let native = !args.iter().take_while(|a| *a != file).any(|a| a == "--interp");
+    let native = !args
+        .iter()
+        .take_while(|a| *a != file)
+        .any(|a| a == "--interp");
     let mut sources = SourceMap::default();
     let program = match check::check(&mut sources, Path::new(file)) {
         Ok(p) => p,
@@ -86,16 +91,112 @@ fn cmd_run(args: &[String]) -> i32 {
     match eval::run(program, program_args, native) {
         Ok(()) => 0,
         Err(e) => {
-            let mut diag = Diagnostic::error(e.span, e.message);
-            for (function, call) in &e.trace {
-                let file = sources.get(call.file);
-                let (line, col) = file.line_col(call.lo as usize);
-                diag = diag.with_note(format!("in `{function}`, called from {}:{line}:{col}", file.path.display()));
-            }
-            render(&sources, &[diag]);
+            render_runtime_error(&sources, e);
             1
         }
     }
+}
+
+fn render_runtime_error(sources: &SourceMap, e: eval::RtError) {
+    let mut diag = Diagnostic::error(e.span, e.message);
+    for (function, call) in &e.trace {
+        let file = sources.get(call.file);
+        let (line, col) = file.line_col(call.lo as usize);
+        diag = diag.with_note(format!(
+            "in `{function}`, called from {}:{line}:{col}",
+            file.path.display()
+        ));
+    }
+    render(sources, &[diag]);
+}
+
+/// Reads inputs from stdin and runs each against the state the earlier ones left.
+fn cmd_repl() -> i32 {
+    let interactive = std::io::stdin().is_terminal();
+    if interactive {
+        println!(
+            "Novo {} interactive prompt. Enter :quit or press Ctrl-D to leave.",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    let mut checker = check::session::Session::default();
+    let mut runner = eval::Session::default();
+    let mut lines = std::io::stdin().lines();
+    loop {
+        let Some(input) = read_input(&mut lines, interactive) else {
+            return 0;
+        };
+        match input.trim() {
+            "" => continue,
+            ":quit" | ":q" | "exit" => return 0,
+            _ => {}
+        }
+        match checker.submit(&input) {
+            Ok(snippet) => {
+                if let Err(e) = runner.run(snippet.program, snippet.run) {
+                    render_runtime_error(checker.sources(), e);
+                }
+            }
+            Err(diags) => render(checker.sources(), &diags),
+        }
+    }
+}
+
+/// Reads one input: a line, or a block that continues until a blank line
+/// when the first line opens one or leaves brackets unclosed.
+fn read_input(
+    lines: &mut impl Iterator<Item = std::io::Result<String>>,
+    interactive: bool,
+) -> Option<String> {
+    use std::io::Write;
+    let prompt = |p: &str| {
+        if interactive {
+            print!("{p}");
+            let _ = std::io::stdout().flush();
+        }
+    };
+    prompt(">>> ");
+    let first = lines.next()?.ok()?;
+    let mut text = first.clone() + "\n";
+    let mut depth = bracket_depth(&first);
+    let block = first.trim_end().ends_with(':');
+    if depth > 0 || block {
+        loop {
+            prompt("... ");
+            let Some(Ok(line)) = lines.next() else { break };
+            if line.trim().is_empty() && depth <= 0 {
+                break;
+            }
+            depth += bracket_depth(&line);
+            text.push_str(&line);
+            text.push('\n');
+            if depth <= 0 && !block {
+                break;
+            }
+        }
+    }
+    Some(text)
+}
+
+fn bracket_depth(line: &str) -> i32 {
+    let mut depth = 0;
+    let mut quote = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                chars.next();
+            }
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '#') => break,
+            (None, '(' | '[' | '{') => depth += 1,
+            (None, ')' | ']' | '}') => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
 }
 
 fn cmd_check(args: &[String]) -> i32 {
@@ -127,11 +228,14 @@ fn cmd_check(args: &[String]) -> i32 {
 
 fn is_test_file(path: &Path) -> bool {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    path.extension().is_some_and(|e| e == "nv") && (stem.starts_with("test_") || stem.ends_with("_test"))
+    path.extension().is_some_and(|e| e == "nv")
+        && (stem.starts_with("test_") || stem.ends_with("_test"))
 }
 
 fn collect_tests(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut entries: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
     entries.sort();
     for path in entries {
@@ -144,7 +248,12 @@ fn collect_tests(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn cmd_test(args: &[String]) -> i32 {
-    let target = PathBuf::from(args.iter().find(|a| !a.starts_with('-')).map(String::as_str).unwrap_or("tests"));
+    let target = PathBuf::from(
+        args.iter()
+            .find(|a| !a.starts_with('-'))
+            .map(String::as_str)
+            .unwrap_or("tests"),
+    );
     let mut files = Vec::new();
     if target.is_file() {
         files.push(target.clone());
@@ -152,7 +261,10 @@ fn cmd_test(args: &[String]) -> i32 {
         collect_tests(&target, &mut files);
     }
     if files.is_empty() {
-        eprintln!("error: no test files (test_*.nv or *_test.nv) under {}", target.display());
+        eprintln!(
+            "error: no test files (test_*.nv or *_test.nv) under {}",
+            target.display()
+        );
         return 1;
     }
     let exe = std::env::current_exe().expect("current executable");
@@ -194,7 +306,11 @@ fn cmd_bench(args: &[String]) -> i32 {
     let mut times = Vec::with_capacity(runs);
     for _ in 0..runs {
         let start = Instant::now();
-        let status = Command::new(&exe).arg("run").arg(file).stdout(std::process::Stdio::null()).status();
+        let status = Command::new(&exe)
+            .arg("run")
+            .arg(file)
+            .stdout(std::process::Stdio::null())
+            .status();
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
         match status {
             Ok(s) if s.success() => times.push(elapsed),
@@ -208,7 +324,9 @@ fn cmd_bench(args: &[String]) -> i32 {
     let min = times.iter().copied().fold(f64::INFINITY, f64::min);
     let max = times.iter().copied().fold(0.0, f64::max);
     let sd = (times.iter().map(|t| (t - mean).powi(2)).sum::<f64>() / runs as f64).sqrt();
-    println!("{file}: {runs} runs, mean {mean:.2} ms, min {min:.2} ms, max {max:.2} ms, std dev {sd:.2} ms");
+    println!(
+        "{file}: {runs} runs, mean {mean:.2} ms, min {min:.2} ms, max {max:.2} ms, std dev {sd:.2} ms"
+    );
     0
 }
 
@@ -223,15 +341,29 @@ fn cmd_new(args: &[String]) -> i32 {
         return 1;
     }
     let files = [
-        ("src/greeting.nv", "function greet(name: String) -> String:\n    return f\"Hello, {name}!\"\n".to_string()),
-        ("src/main.nv", "use \"greeting.nv\"\n\nshow greeting.greet(\"Novo\")\n".to_string()),
-        ("tests/greeting_test.nv", "use \"../src/greeting.nv\"\n\nassert_eq(greeting.greet(\"Ada\"), \"Hello, Ada!\")\n".to_string()),
-        ("novo.toml", format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"src/main.nv\"\n")),
+        (
+            "src/greeting.nv",
+            "function greet(name: String) -> String:\n    return f\"Hello, {name}!\"\n".to_string(),
+        ),
+        (
+            "src/main.nv",
+            "use \"greeting.nv\"\n\nshow greeting.greet(\"Novo\")\n".to_string(),
+        ),
+        (
+            "tests/greeting_test.nv",
+            "use \"../src/greeting.nv\"\n\nassert_eq(greeting.greet(\"Ada\"), \"Hello, Ada!\")\n"
+                .to_string(),
+        ),
+        (
+            "novo.toml",
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"src/main.nv\"\n"),
+        ),
         (".gitignore", "target/\n".to_string()),
     ];
     for (path, text) in &files {
         let path = root.join(path);
-        let written = std::fs::create_dir_all(path.parent().expect("file has a parent")).and_then(|_| std::fs::write(&path, text));
+        let written = std::fs::create_dir_all(path.parent().expect("file has a parent"))
+            .and_then(|_| std::fs::write(&path, text));
         if let Err(e) = written {
             eprintln!("error: cannot write {}: {e}", path.display());
             return 1;

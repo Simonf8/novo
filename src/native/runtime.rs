@@ -8,11 +8,11 @@
 use crate::check::builtins::Builtin;
 use crate::check::hir::{self, FuncId, GlobalId, ModuleId};
 use crate::check::types::ClassId;
-use crate::eval::value::{format_float, Closure, Dict, Instance, Key, Value};
+use crate::eval::value::{Closure, Dict, Instance, Key, Value, format_float};
 use crate::eval::{Interp, RtError};
 use crate::source::{FileId, Span};
 use crate::syntax::ast::BinOp;
-use cranelift_codegen::ir::{types, AbiParam, Signature};
+use cranelift_codegen::ir::{AbiParam, Signature, types};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId as ClifFunc, Linkage, Module, ModuleResult};
 use parking_lot::RwLock;
@@ -61,7 +61,14 @@ pub const DEPTH_OFFSET: i32 = 8;
 
 impl Ctx {
     pub fn new(depth: u64, interp: &Interp) -> Ctx {
-        Ctx { status: 0, depth, interp, error: None, line: String::new(), fstrings: Vec::new() }
+        Ctx {
+            status: 0,
+            depth,
+            interp,
+            error: None,
+            line: String::new(),
+            fstrings: Vec::new(),
+        }
     }
 
     pub fn take_error(&mut self) -> Option<RtError> {
@@ -82,7 +89,11 @@ impl Ctx {
         match result {
             Ok(v) => Some(v),
             Err(message) => {
-                self.raise(RtError { message, span: unpack(span), trace: Vec::new() });
+                self.raise(RtError {
+                    message,
+                    span: unpack(span),
+                    trace: Vec::new(),
+                });
                 None
             }
         }
@@ -106,7 +117,11 @@ pub fn pack(span: Span) -> i64 {
 }
 
 fn unpack(word: u64) -> Span {
-    Span { file: FileId((word >> 48) as u32), lo: ((word >> 24) & 0xFF_FFFF) as u32, hi: (word & 0xFF_FFFF) as u32 }
+    Span {
+        file: FileId((word >> 48) as u32),
+        lo: ((word >> 24) & 0xFF_FFFF) as u32,
+        hi: (word & 0xFF_FFFF) as u32,
+    }
 }
 
 // The helpers below are called only by generated code, which passes a live
@@ -130,13 +145,21 @@ unsafe fn text<'a>(ptr: *const u8, len: usize) -> &'a str {
 
 unsafe extern "C" fn novo_fail(c: *mut Ctx, code: u32, span: u64) {
     let c = unsafe { ctx(c) };
-    c.raise(RtError { message: message(code).to_string(), span: unpack(span), trace: Vec::new() });
+    c.raise(RtError {
+        message: message(code).to_string(),
+        span: unpack(span),
+        trace: Vec::new(),
+    });
 }
 
 unsafe extern "C" fn novo_fail_msg(c: *mut Ctx, ptr: *const u8, len: usize, span: u64) {
     let c = unsafe { ctx(c) };
     let message = unsafe { text(ptr, len) }.to_string();
-    c.raise(RtError { message, span: unpack(span), trace: Vec::new() });
+    c.raise(RtError {
+        message,
+        span: unpack(span),
+        trace: Vec::new(),
+    });
 }
 
 unsafe extern "C" fn novo_ipow(c: *mut Ctx, base: i64, exp: i64, span: u64) -> i64 {
@@ -155,7 +178,11 @@ unsafe extern "C" fn novo_ipow(c: *mut Ctx, base: i64, exp: i64, span: u64) -> i
 
 extern "C" fn novo_fmod(a: f64, b: f64) -> f64 {
     let r = a % b;
-    if r != 0.0 && ((r < 0.0) != (b < 0.0)) { r + b } else { r }
+    if r != 0.0 && ((r < 0.0) != (b < 0.0)) {
+        r + b
+    } else {
+        r
+    }
 }
 
 pub mod math {
@@ -186,11 +213,17 @@ extern "C" fn novo_round_digits(x: f64, digits: i64) -> f64 {
 }
 
 extern "C" fn novo_time_now() -> f64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 extern "C" fn novo_time_now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 // ---- output ------------------------------------------------------------------------------
@@ -204,7 +237,9 @@ unsafe extern "C" fn novo_show_float(c: *mut Ctx, v: f64) {
 }
 
 unsafe extern "C" fn novo_show_bool(c: *mut Ctx, v: u8) {
-    unsafe { ctx(c) }.line.push_str(if v != 0 { "true" } else { "false" });
+    unsafe { ctx(c) }
+        .line
+        .push_str(if v != 0 { "true" } else { "false" });
 }
 
 unsafe extern "C" fn novo_show_str(c: *mut Ctx, ptr: *const u8, len: usize) {
@@ -294,9 +329,20 @@ unsafe extern "C" fn novo_get_bool(src: *mut Value) -> u8 {
 
 // ---- operations --------------------------------------------------------------------------
 
-unsafe extern "C" fn novo_binary(c: *mut Ctx, dst: *mut Value, op: u32, a: *mut Value, b: *mut Value, span: u64) {
+unsafe extern "C" fn novo_binary(
+    c: *mut Ctx,
+    dst: *mut Value,
+    op: u32,
+    a: *mut Value,
+    b: *mut Value,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
-    let result = c.interp().binary_values(BinOp::ALL[op as usize], unsafe { slot(a) }, unsafe { slot(b) });
+    let result = c
+        .interp()
+        .binary_values(BinOp::ALL[op as usize], unsafe { slot(a) }, unsafe {
+            slot(b)
+        });
     if let Some(v) = c.check(result, span) {
         *unsafe { slot(dst) } = v;
     }
@@ -310,23 +356,48 @@ unsafe extern "C" fn novo_negate(c: *mut Ctx, dst: *mut Value, a: *mut Value, sp
     }
 }
 
-unsafe extern "C" fn novo_index(c: *mut Ctx, dst: *mut Value, obj: *mut Value, idx: *mut Value, span: u64) {
+unsafe extern "C" fn novo_index(
+    c: *mut Ctx,
+    dst: *mut Value,
+    obj: *mut Value,
+    idx: *mut Value,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
-    let result = c.interp().get_index(unsafe { slot(obj) }, unsafe { slot(idx) });
+    let result = c
+        .interp()
+        .get_index(unsafe { slot(obj) }, unsafe { slot(idx) });
     if let Some(v) = c.check(result, span) {
         *unsafe { slot(dst) } = v;
     }
 }
 
-unsafe extern "C" fn novo_set_index(c: *mut Ctx, obj: *mut Value, idx: *mut Value, v: *mut Value, span: u64) {
+unsafe extern "C" fn novo_set_index(
+    c: *mut Ctx,
+    obj: *mut Value,
+    idx: *mut Value,
+    v: *mut Value,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let value = unsafe { slot(v) }.clone();
-    let result = c.interp().set_index(unsafe { slot(obj) }, unsafe { slot(idx) }, value);
+    let result = c
+        .interp()
+        .set_index(unsafe { slot(obj) }, unsafe { slot(idx) }, value);
     c.check(result, span);
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "C" fn novo_slice(c: *mut Ctx, dst: *mut Value, obj: *mut Value, has_start: u8, start: i64, has_end: u8, end: i64, span: u64) {
+unsafe extern "C" fn novo_slice(
+    c: *mut Ctx,
+    dst: *mut Value,
+    obj: *mut Value,
+    has_start: u8,
+    start: i64,
+    has_end: u8,
+    end: i64,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let start = (has_start != 0).then_some(start);
     let end = (has_end != 0).then_some(end);
@@ -336,57 +407,118 @@ unsafe extern "C" fn novo_slice(c: *mut Ctx, dst: *mut Value, obj: *mut Value, h
     }
 }
 
-unsafe extern "C" fn novo_field(c: *mut Ctx, dst: *mut Value, obj: *mut Value, name: *const u8, len: usize, span: u64) {
+unsafe extern "C" fn novo_field(
+    c: *mut Ctx,
+    dst: *mut Value,
+    obj: *mut Value,
+    name: *const u8,
+    len: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
-    let result = c.interp().get_field(unsafe { slot(obj) }, unsafe { text(name, len) });
+    let result = c
+        .interp()
+        .get_field(unsafe { slot(obj) }, unsafe { text(name, len) });
     if let Some(v) = c.check(result, span) {
         *unsafe { slot(dst) } = v;
     }
 }
 
-unsafe extern "C" fn novo_set_field(c: *mut Ctx, obj: *mut Value, name: *const u8, len: usize, v: *mut Value, span: u64) {
+unsafe extern "C" fn novo_set_field(
+    c: *mut Ctx,
+    obj: *mut Value,
+    name: *const u8,
+    len: usize,
+    v: *mut Value,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let value = unsafe { slot(v) }.clone();
-    let result = c.interp().set_field(unsafe { slot(obj) }, unsafe { text(name, len) }, value);
+    let result = c
+        .interp()
+        .set_field(unsafe { slot(obj) }, unsafe { text(name, len) }, value);
     c.check(result, span);
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe extern "C" fn novo_method(c: *mut Ctx, dst: *mut Value, recv: *mut Value, name: *const u8, len: usize, args: *const *const Value, n: usize, span: u64) {
+unsafe extern "C" fn novo_method(
+    c: *mut Ctx,
+    dst: *mut Value,
+    recv: *mut Value,
+    name: *const u8,
+    len: usize,
+    args: *const *const Value,
+    n: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let args = unsafe { values(args, n) };
     let interp = c.interp();
-    let result = Interp::at_depth(c.depth as usize, || interp.call_method(unsafe { slot(recv) }, unsafe { text(name, len) }, args, unpack(span)));
+    let result = Interp::at_depth(c.depth as usize, || {
+        interp.call_method(
+            unsafe { slot(recv) },
+            unsafe { text(name, len) },
+            args,
+            unpack(span),
+        )
+    });
     if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = v;
     }
 }
 
-unsafe extern "C" fn novo_builtin(c: *mut Ctx, dst: *mut Value, id: u32, args: *const *const Value, n: usize, span: u64) {
+unsafe extern "C" fn novo_builtin(
+    c: *mut Ctx,
+    dst: *mut Value,
+    id: u32,
+    args: *const *const Value,
+    n: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let args = unsafe { values(args, n) };
     let interp = c.interp();
-    let result = Interp::at_depth(c.depth as usize, || interp.call_builtin(Builtin::ALL[id as usize], args));
+    let result = Interp::at_depth(c.depth as usize, || {
+        interp.call_builtin(Builtin::ALL[id as usize], args)
+    });
     if let Some(v) = c.check(result, span) {
         *unsafe { slot(dst) } = v;
     }
 }
 
-unsafe extern "C" fn novo_call_value(c: *mut Ctx, dst: *mut Value, callee: *mut Value, args: *const *const Value, n: usize, span: u64) {
+unsafe extern "C" fn novo_call_value(
+    c: *mut Ctx,
+    dst: *mut Value,
+    callee: *mut Value,
+    args: *const *const Value,
+    n: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let args = unsafe { values(args, n) };
     let interp = c.interp();
-    let result = Interp::at_depth(c.depth as usize, || interp.call_value(unsafe { slot(callee) }, args, unpack(span)));
+    let result = Interp::at_depth(c.depth as usize, || {
+        interp.call_value(unsafe { slot(callee) }, args, unpack(span))
+    });
     if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = v;
     }
 }
 
-unsafe extern "C" fn novo_call_interp(c: *mut Ctx, dst: *mut Value, func: u32, args: *const *const Value, n: usize, span: u64) {
+unsafe extern "C" fn novo_call_interp(
+    c: *mut Ctx,
+    dst: *mut Value,
+    func: u32,
+    args: *const *const Value,
+    n: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let args = unsafe { values(args, n) };
     let interp = c.interp();
-    let result = Interp::at_depth(c.depth as usize, || interp.call_func(FuncId(func), args, None, unpack(span)));
+    let result = Interp::at_depth(c.depth as usize, || {
+        interp.call_func(FuncId(func), args, None, unpack(span))
+    });
     if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = v;
     }
@@ -394,7 +526,10 @@ unsafe extern "C" fn novo_call_interp(c: *mut Ctx, dst: *mut Value, func: u32, a
 
 unsafe extern "C" fn novo_new(dst: *mut Value, class: u32, args: *const *const Value, n: usize) {
     let fields = unsafe { values(args, n) };
-    *unsafe { slot(dst) } = Value::Instance(Arc::new(Instance { class: ClassId(class), fields: RwLock::new(fields) }));
+    *unsafe { slot(dst) } = Value::Instance(Arc::new(Instance {
+        class: ClassId(class),
+        fields: RwLock::new(fields),
+    }));
 }
 
 unsafe extern "C" fn novo_make_list(dst: *mut Value, args: *const *const Value, n: usize) {
@@ -405,7 +540,14 @@ unsafe extern "C" fn novo_make_tuple(dst: *mut Value, args: *const *const Value,
     *unsafe { slot(dst) } = Value::Tuple(unsafe { values(args, n) }.into());
 }
 
-unsafe extern "C" fn novo_make_map(c: *mut Ctx, dst: *mut Value, keys: *const *const Value, vals: *const *const Value, n: usize, span: u64) {
+unsafe extern "C" fn novo_make_map(
+    c: *mut Ctx,
+    dst: *mut Value,
+    keys: *const *const Value,
+    vals: *const *const Value,
+    n: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let (keys, vals) = unsafe { (values(keys, n), values(vals, n)) };
     let mut dict = Dict::default();
@@ -418,9 +560,17 @@ unsafe extern "C" fn novo_make_map(c: *mut Ctx, dst: *mut Value, keys: *const *c
     *unsafe { slot(dst) } = Value::map(dict);
 }
 
-unsafe extern "C" fn novo_make_closure(dst: *mut Value, func: u32, args: *const *const Value, n: usize) {
+unsafe extern "C" fn novo_make_closure(
+    dst: *mut Value,
+    func: u32,
+    args: *const *const Value,
+    n: usize,
+) {
     let captures = unsafe { values(args, n) };
-    *unsafe { slot(dst) } = Value::Func(Arc::new(Closure { func: FuncId(func), captures }));
+    *unsafe { slot(dst) } = Value::Func(Arc::new(Closure {
+        func: FuncId(func),
+        captures,
+    }));
 }
 
 unsafe extern "C" fn novo_global_get(c: *mut Ctx, dst: *mut Value, g: u32) {
@@ -468,29 +618,55 @@ unsafe extern "C" fn novo_len(c: *mut Ctx, v: *mut Value, span: u64) -> i64 {
         Value::List(items) => Ok(items.read().len() as i64),
         Value::Map(m) => Ok(m.read().len() as i64),
         Value::Tuple(items) => Ok(items.len() as i64),
-        other => Err(format!("`len` needs a list, string, map or tensor, found a {}", other.type_name())),
+        other => Err(format!(
+            "`len` needs a list, string, map or tensor, found a {}",
+            other.type_name()
+        )),
     };
     unsafe { ctx(c) }.check(n, span).unwrap_or(0)
 }
 
-unsafe extern "C" fn novo_map_get(c: *mut Ctx, dst: *mut Value, map: *mut Value, key: *mut Value, default: *mut Value, span: u64) {
+unsafe extern "C" fn novo_map_get(
+    c: *mut Ctx,
+    dst: *mut Value,
+    map: *mut Value,
+    key: *mut Value,
+    default: *mut Value,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
-    let Value::Map(m) = (unsafe { slot(map) }) else { return };
-    let Some(key) = c.check(Key::from_value(unsafe { slot(key) }), span) else { return };
+    let Value::Map(m) = (unsafe { slot(map) }) else {
+        return;
+    };
+    let Some(key) = c.check(Key::from_value(unsafe { slot(key) }), span) else {
+        return;
+    };
     let found = m.read().get(&key).cloned();
     *unsafe { slot(dst) } = found.unwrap_or_else(|| unsafe { slot(default) }.clone());
 }
 
 unsafe extern "C" fn novo_map_has(c: *mut Ctx, map: *mut Value, key: *mut Value, span: u64) -> u8 {
     let c = unsafe { ctx(c) };
-    let Value::Map(m) = (unsafe { slot(map) }) else { return 0 };
-    let Some(key) = c.check(Key::from_value(unsafe { slot(key) }), span) else { return 0 };
+    let Value::Map(m) = (unsafe { slot(map) }) else {
+        return 0;
+    };
+    let Some(key) = c.check(Key::from_value(unsafe { slot(key) }), span) else {
+        return 0;
+    };
     u8::from(m.read().get(&key).is_some())
 }
 
-unsafe extern "C" fn novo_list_index(c: *mut Ctx, dst: *mut Value, list: *mut Value, i: i64, span: u64) {
+unsafe extern "C" fn novo_list_index(
+    c: *mut Ctx,
+    dst: *mut Value,
+    list: *mut Value,
+    i: i64,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
-    let Value::List(items) = (unsafe { slot(list) }) else { return };
+    let Value::List(items) = (unsafe { slot(list) }) else {
+        return;
+    };
     let items = items.read();
     if let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) {
         let v = items[at].clone();
@@ -499,32 +675,58 @@ unsafe extern "C" fn novo_list_index(c: *mut Ctx, dst: *mut Value, list: *mut Va
     }
 }
 
-unsafe extern "C" fn novo_list_set(c: *mut Ctx, list: *mut Value, i: i64, v: *mut Value, span: u64) {
+unsafe extern "C" fn novo_list_set(
+    c: *mut Ctx,
+    list: *mut Value,
+    i: i64,
+    v: *mut Value,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
-    let Value::List(items) = (unsafe { slot(list) }) else { return };
+    let Value::List(items) = (unsafe { slot(list) }) else {
+        return;
+    };
     let mut items = items.write();
     if let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) {
         items[at] = unsafe { slot(v) }.clone();
     }
 }
 
-unsafe extern "C" fn novo_run_parallel(c: *mut Ctx, dst: *mut Value, funcs: *const *const Value, n: usize, span: u64) {
+unsafe extern "C" fn novo_run_parallel(
+    c: *mut Ctx,
+    dst: *mut Value,
+    funcs: *const *const Value,
+    n: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
-    let jobs = unsafe { values(funcs, n) }.into_iter().map(|f| (f, Vec::new())).collect();
+    let jobs = unsafe { values(funcs, n) }
+        .into_iter()
+        .map(|f| (f, Vec::new()))
+        .collect();
     let result = c.interp().run_parallel(jobs, unpack(span));
     if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = Value::list(v);
     }
 }
 
-unsafe extern "C" fn novo_parallel_map(c: *mut Ctx, dst: *mut Value, f: *mut Value, list: *mut Value, span: u64) {
+unsafe extern "C" fn novo_parallel_map(
+    c: *mut Ctx,
+    dst: *mut Value,
+    f: *mut Value,
+    list: *mut Value,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let f = unsafe { slot(f) }.clone();
     let items = match unsafe { slot(list) } {
         Value::List(items) => items.read().clone(),
         _ => Vec::new(),
     };
-    let jobs = items.into_iter().map(|item| (f.clone(), vec![item])).collect();
+    let jobs = items
+        .into_iter()
+        .map(|item| (f.clone(), vec![item]))
+        .collect();
     let result = c.interp().run_parallel(jobs, unpack(span));
     if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = Value::list(v);
@@ -543,14 +745,18 @@ unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value) {
 unsafe extern "C" fn novo_init_module(c: *mut Ctx, m: u32, span: u64) {
     let c = unsafe { ctx(c) };
     let interp = c.interp();
-    let result = Interp::at_depth(c.depth as usize, || interp.init_module(ModuleId(m), unpack(span)));
+    let result = Interp::at_depth(c.depth as usize, || {
+        interp.init_module(ModuleId(m), unpack(span))
+    });
     c.check_rt(result);
 }
 
 unsafe extern "C" fn novo_eval_closed(c: *mut Ctx, dst: *mut Value, expr: *const hir::Expr) {
     let c = unsafe { ctx(c) };
     let interp = c.interp();
-    let result = Interp::at_depth(c.depth as usize, || interp.eval(unsafe { &*expr }, &mut crate::eval::Frame::empty()));
+    let result = Interp::at_depth(c.depth as usize, || {
+        interp.eval(unsafe { &*expr }, &mut crate::eval::Frame::empty())
+    });
     if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = v;
     }
@@ -558,7 +764,9 @@ unsafe extern "C" fn novo_eval_closed(c: *mut Ctx, dst: *mut Value, expr: *const
 
 unsafe extern "C" fn novo_together(c: *mut Ctx, dst: *mut Value, closure: *mut Value, span: u64) {
     let c = unsafe { ctx(c) };
-    let result = c.interp().spawn_task(unsafe { slot(closure) }, unpack(span));
+    let result = c
+        .interp()
+        .spawn_task(unsafe { slot(closure) }, unpack(span));
     if let Some(v) = c.check_rt(result) {
         *unsafe { slot(dst) } = v;
     }
@@ -568,7 +776,10 @@ unsafe extern "C" fn novo_await(c: *mut Ctx, dst: *mut Value, task: *mut Value, 
     let c = unsafe { ctx(c) };
     let result = match unsafe { slot(task) } {
         Value::Task(t) => t.wait(),
-        other => Err(format!("`await` needs a Task, found a {}", other.type_name())),
+        other => Err(format!(
+            "`await` needs a Task, found a {}",
+            other.type_name()
+        )),
     };
     if let Some(v) = c.check(result, span) {
         *unsafe { slot(dst) } = v;
@@ -586,11 +797,21 @@ unsafe extern "C" fn novo_fstr_lit(c: *mut Ctx, ptr: *const u8, len: usize) {
     }
 }
 
-unsafe extern "C" fn novo_fstr_value(c: *mut Ctx, v: *mut Value, spec: *const u8, spec_len: usize, span: u64) {
+unsafe extern "C" fn novo_fstr_value(
+    c: *mut Ctx,
+    v: *mut Value,
+    spec: *const u8,
+    spec_len: usize,
+    span: u64,
+) {
     let c = unsafe { ctx(c) };
     let value = unsafe { slot(v) };
     let shown = c.interp().display(value);
-    let piece = if spec.is_null() { Ok(shown) } else { crate::eval::builtins::format_spec(shown, value, unsafe { text(spec, spec_len) }) };
+    let piece = if spec.is_null() {
+        Ok(shown)
+    } else {
+        crate::eval::builtins::format_spec(shown, value, unsafe { text(spec, spec_len) })
+    };
     if let Some(piece) = c.check(piece, span) {
         if let Some(top) = c.fstrings.last_mut() {
             top.push_str(&piece);

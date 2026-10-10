@@ -1,6 +1,6 @@
 use super::builtins::Builtin;
 use super::hir::{self, ExprKind, FuncId, LocalId};
-use super::solve::{arity_error, Constraint};
+use super::solve::{Constraint, arity_error};
 use super::types::{ClassId, Ty};
 use super::{Checker, FnCtx, FnState, Item, Resolved, Scheme};
 use crate::diagnostic::Diagnostic;
@@ -24,7 +24,7 @@ enum Member {
     Value(hir::Expr),
 }
 
-impl<'s> Checker<'s> {
+impl Checker {
     pub(super) fn infer_expr(&mut self, e: &ast::Expr) -> hir::Expr {
         let span = e.span;
         match &e.kind {
@@ -38,7 +38,10 @@ impl<'s> Checker<'s> {
                     .iter()
                     .map(|p| match p {
                         ast::FStrPart::Lit(s) => hir::FStrPart::Lit(s.clone()),
-                        ast::FStrPart::Expr { expr, spec } => hir::FStrPart::Expr { expr: self.infer_expr(expr), spec: spec.clone() },
+                        ast::FStrPart::Expr { expr, spec } => hir::FStrPart::Expr {
+                            expr: self.infer_expr(expr),
+                            spec: spec.clone(),
+                        },
                     })
                     .collect();
                 expr(ExprKind::FStr(parts), Ty::Str, span)
@@ -51,9 +54,16 @@ impl<'s> Checker<'s> {
                 expr(ExprKind::Tuple(items), ty, span)
             }
             ast::ExprKind::Map(entries) => {
-                let (keys, values): (Vec<_>, Vec<_>) = entries.iter().map(|(k, v)| (self.infer_expr(k), self.infer_expr(v))).unzip();
+                let (keys, values): (Vec<_>, Vec<_>) = entries
+                    .iter()
+                    .map(|(k, v)| (self.infer_expr(k), self.infer_expr(v)))
+                    .unzip();
                 let (k, v) = (self.element_type(&keys), self.element_type(&values));
-                let entries = keys.into_iter().zip(values).map(|(key, value)| (self.coerce(key, &k), self.coerce(value, &v))).collect();
+                let entries = keys
+                    .into_iter()
+                    .zip(values)
+                    .map(|(key, value)| (self.coerce(key, &k), self.coerce(value, &v)))
+                    .collect();
                 expr(ExprKind::Map(entries), Ty::map(k, v), span)
             }
             ast::ExprKind::Unary { op, operand } => {
@@ -61,12 +71,30 @@ impl<'s> Checker<'s> {
                 match op {
                     UnaryOp::Not => {
                         self.expect_bool(&operand, "`not` needs a `Bool`");
-                        expr(ExprKind::Unary { op: *op, operand: Box::new(operand) }, Ty::Bool, span)
+                        expr(
+                            ExprKind::Unary {
+                                op: *op,
+                                operand: Box::new(operand),
+                            },
+                            Ty::Bool,
+                            span,
+                        )
                     }
                     UnaryOp::Neg => {
                         let out = self.infer.fresh();
-                        self.add_constraint(Constraint::Neg { operand: operand.ty.clone(), out: out.clone(), span });
-                        expr(ExprKind::Unary { op: *op, operand: Box::new(operand) }, out, span)
+                        self.add_constraint(Constraint::Neg {
+                            operand: operand.ty.clone(),
+                            out: out.clone(),
+                            span,
+                        });
+                        expr(
+                            ExprKind::Unary {
+                                op: *op,
+                                operand: Box::new(operand),
+                            },
+                            out,
+                            span,
+                        )
                     }
                 }
             }
@@ -78,8 +106,12 @@ impl<'s> Checker<'s> {
             ast::ExprKind::Call { callee, args } => self.infer_call(callee, args, span),
             ast::ExprKind::Field { target, name } => match self.member(target, name) {
                 Some(Member::Value(v)) => v,
-                Some(Member::Builtin(b)) if b.is_constant() => self.call_builtin(b, Vec::new(), span),
-                Some(Member::Builtin(b)) => self.not_a_value(&format!("built-in `{}`", b.name()), span),
+                Some(Member::Builtin(b)) if b.is_constant() => {
+                    self.call_builtin(b, Vec::new(), span)
+                }
+                Some(Member::Builtin(b)) => {
+                    self.not_a_value(&format!("built-in `{}`", b.name()), span)
+                }
                 Some(Member::Item(item)) => self.item_value(item, &name.name, span),
                 None => {
                     let target = self.infer_expr(target);
@@ -90,15 +122,32 @@ impl<'s> Checker<'s> {
                 let target = self.infer_expr(target);
                 self.index(target, items, span)
             }
-            ast::ExprKind::Lambda { params, types, body } => self.lambda(params, types, body, span),
-            ast::ExprKind::Query { op, target, body, parallel } => self.query(*op, target, body.as_deref(), *parallel, span),
+            ast::ExprKind::Lambda {
+                params,
+                types,
+                body,
+            } => self.lambda(params, types, body, span),
+            ast::ExprKind::Query {
+                op,
+                target,
+                body,
+                parallel,
+            } => self.query(*op, target, body.as_deref(), *parallel, span),
             ast::ExprKind::Together(inner) => {
                 let module = self.module_of_ctx();
-                self.stack.push(FnCtx { module: module.0, is_closure: true, ..FnCtx::default() });
+                self.stack.push(FnCtx {
+                    module: module.0,
+                    is_closure: true,
+                    ..FnCtx::default()
+                });
                 let inner = self.infer_expr(inner);
                 let ty = inner.ty.clone();
-                let block = vec![hir::Stmt { span: inner.span, kind: hir::StmtKind::Return(Some(inner)) }];
-                let closure = self.finish_closure("<task>", 0, Ty::func(vec![], ty.clone()), block, span);
+                let block = vec![hir::Stmt {
+                    span: inner.span,
+                    kind: hir::StmtKind::Return(Some(inner)),
+                }];
+                let closure =
+                    self.finish_closure("<task>", 0, Ty::func(vec![], ty.clone()), block, span);
                 expr(ExprKind::Together(Box::new(closure)), Ty::task(ty), span)
             }
             ast::ExprKind::Await(inner) => {
@@ -106,7 +155,10 @@ impl<'s> Checker<'s> {
                 let out = self.infer.fresh();
                 if !self.infer.unify(&inner.ty, &Ty::task(out.clone())) {
                     let msg = format!("`await` needs a `Task`, found `{}`", self.show(&inner.ty));
-                    self.error(Diagnostic::error(inner.span, msg).with_help("create a task with `together f(x)`"));
+                    self.error(
+                        Diagnostic::error(inner.span, msg)
+                            .with_help("create a task with `together f(x)`"),
+                    );
                 }
                 expr(ExprKind::Await(Box::new(inner)), out, span)
             }
@@ -116,11 +168,24 @@ impl<'s> Checker<'s> {
                 let items = items
                     .iter()
                     .map(|i| {
-                        self.stack.push(FnCtx { module: module.0, is_closure: true, ..FnCtx::default() });
+                        self.stack.push(FnCtx {
+                            module: module.0,
+                            is_closure: true,
+                            ..FnCtx::default()
+                        });
                         let item = self.infer_expr(i);
                         let item = self.coerce(item, &elem);
-                        let block = vec![hir::Stmt { span: item.span, kind: hir::StmtKind::Return(Some(item)) }];
-                        self.finish_closure("<parallel>", 0, Ty::func(vec![], elem.clone()), block, i.span)
+                        let block = vec![hir::Stmt {
+                            span: item.span,
+                            kind: hir::StmtKind::Return(Some(item)),
+                        }];
+                        self.finish_closure(
+                            "<parallel>",
+                            0,
+                            Ty::func(vec![], elem.clone()),
+                            block,
+                            i.span,
+                        )
                     })
                     .collect();
                 expr(ExprKind::RunParallel(items), Ty::list(elem), span)
@@ -131,32 +196,71 @@ impl<'s> Checker<'s> {
     fn expect_bool(&mut self, e: &hir::Expr, message: &str) {
         if !self.infer.unify(&e.ty, &Ty::Bool) {
             let label = format!("this is `{}`", self.show(&e.ty));
-            self.error(Diagnostic::error(e.span, message.to_string()).with_label(label).with_help("compare explicitly, for example `x != 0` or `items.length() > 0`"));
+            self.error(
+                Diagnostic::error(e.span, message.to_string())
+                    .with_label(label)
+                    .with_help("compare explicitly, for example `x != 0` or `items.length() > 0`"),
+            );
         }
     }
 
-    pub(super) fn binary(&mut self, op: BinOp, lhs: hir::Expr, rhs: hir::Expr, span: Span) -> hir::Expr {
+    pub(super) fn binary(
+        &mut self,
+        op: BinOp,
+        lhs: hir::Expr,
+        rhs: hir::Expr,
+        span: Span,
+    ) -> hir::Expr {
         if matches!(op, BinOp::And | BinOp::Or) {
             let msg = format!("`{}` needs `Bool` operands", op.symbol());
             self.expect_bool(&lhs, &msg);
             self.expect_bool(&rhs, &msg);
-            return expr(ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, Ty::Bool, span);
+            return expr(
+                ExprKind::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                Ty::Bool,
+                span,
+            );
         }
         let out = self.infer.fresh();
-        self.add_constraint(Constraint::Binary { op, lhs: lhs.ty.clone(), rhs: rhs.ty.clone(), out: out.clone(), span });
-        expr(ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, out, span)
+        self.add_constraint(Constraint::Binary {
+            op,
+            lhs: lhs.ty.clone(),
+            rhs: rhs.ty.clone(),
+            out: out.clone(),
+            span,
+        });
+        expr(
+            ExprKind::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            out,
+            span,
+        )
     }
 
     /// The element type for a literal's items: their common type, `Float` when
     /// `Int`s and `Float`s mix, or `Any` when their kinds conflict.
     fn element_type(&mut self, items: &[hir::Expr]) -> Ty {
-        let heads: Vec<Ty> = items.iter().map(|i| self.infer.shallow(&i.ty)).filter(|t| !matches!(t, Ty::Var(_))).collect();
+        let heads: Vec<Ty> = items
+            .iter()
+            .map(|i| self.infer.shallow(&i.ty))
+            .filter(|t| !matches!(t, Ty::Var(_)))
+            .collect();
         let kind = |t: &Ty| std::mem::discriminant(t);
         let numeric = heads.iter().all(Ty::is_numeric);
         if numeric && heads.contains(&Ty::Float) {
             return Ty::Float;
         }
-        if heads.windows(2).any(|w| kind(&w[0]) != kind(&w[1]) || matches!((&w[0], &w[1]), (Ty::Class(a), Ty::Class(b)) if a != b)) {
+        if heads.windows(2).any(|w| {
+            kind(&w[0]) != kind(&w[1])
+                || matches!((&w[0], &w[1]), (Ty::Class(a), Ty::Class(b)) if a != b)
+        }) {
             return Ty::Any;
         }
         self.infer.fresh()
@@ -170,7 +274,10 @@ impl<'s> Checker<'s> {
     }
 
     fn not_a_value(&mut self, what: &str, span: Span) -> hir::Expr {
-        self.error(Diagnostic::error(span, format!("{what} cannot be used as a value")).with_help("call it, or wrap it in a closure like `|x| f(x)`"));
+        self.error(
+            Diagnostic::error(span, format!("{what} cannot be used as a value"))
+                .with_help("call it, or wrap it in a closure like `|x| f(x)`"),
+        );
         error_expr(span)
     }
 
@@ -185,7 +292,9 @@ impl<'s> Checker<'s> {
             Some(Resolved::Class(c)) => self.item_value(Item::Class(c), name, span),
             Some(Resolved::Module(m)) => self.item_value(Item::Module(m), name, span),
             Some(Resolved::Std(s)) => self.item_value(Item::Std(s), name, span),
-            Some(Resolved::Builtin(b)) => self.not_a_value(&format!("built-in `{}`", b.name()), span),
+            Some(Resolved::Builtin(b)) => {
+                self.not_a_value(&format!("built-in `{}`", b.name()), span)
+            }
             Some(Resolved::Recurse(ty)) => {
                 if self.stack.last().is_some_and(|c| c.self_name.is_none()) {
                     let msg = format!("cannot refer to `{name}` from a closure inside it");
@@ -197,7 +306,9 @@ impl<'s> Checker<'s> {
             None => {
                 let mut diag = Diagnostic::error(span, format!("unknown name `{name}`"));
                 if name == "it" {
-                    diag = diag.with_help("`it` is only available inside `repeat` blocks and query bodies");
+                    diag = diag.with_help(
+                        "`it` is only available inside `repeat` blocks and query bodies",
+                    );
                 } else if let Some(similar) = self.similar_name(name) {
                     diag = diag.with_help(format!("did you mean `{similar}`?"));
                 }
@@ -229,11 +340,17 @@ impl<'s> Checker<'s> {
                 expr(ExprKind::Func { func: f, inst }, ty, span)
             }
             Item::Class(_) => {
-                self.error(Diagnostic::error(span, format!("class `{name}` cannot be used as a value")).with_help(format!("create an instance with `{name}(...)`")));
+                self.error(
+                    Diagnostic::error(span, format!("class `{name}` cannot be used as a value"))
+                        .with_help(format!("create an instance with `{name}(...)`")),
+                );
                 error_expr(span)
             }
             Item::Module(_) | Item::Std(_) => {
-                self.error(Diagnostic::error(span, format!("module `{name}` cannot be used as a value")).with_help(format!("use its members, like `{name}.something`")));
+                self.error(
+                    Diagnostic::error(span, format!("module `{name}` cannot be used as a value"))
+                        .with_help(format!("use its members, like `{name}.something`")),
+                );
                 error_expr(span)
             }
         }
@@ -241,16 +358,20 @@ impl<'s> Checker<'s> {
 
     /// Resolves `target.name` statically when `target` names a module.
     fn member(&mut self, target: &ast::Expr, name: &ast::Ident) -> Option<Member> {
-        let ast::ExprKind::Name(module_name) = &target.kind else { return None };
+        let ast::ExprKind::Name(module_name) = &target.kind else {
+            return None;
+        };
         match self.lookup(module_name)? {
-            Resolved::Module(m) => match self.modules[m.0 as usize].names.get(&name.name).copied() {
-                Some(item) => Some(Member::Item(item)),
-                None => {
-                    let msg = format!("module `{module_name}` has no member `{}`", name.name);
-                    self.error(Diagnostic::error(name.span, msg));
-                    Some(Member::Value(error_expr(name.span)))
+            Resolved::Module(m) => {
+                match self.modules[m.0 as usize].names.get(&name.name).copied() {
+                    Some(item) => Some(Member::Item(item)),
+                    None => {
+                        let msg = format!("module `{module_name}` has no member `{}`", name.name);
+                        self.error(Diagnostic::error(name.span, msg));
+                        Some(Member::Value(error_expr(name.span)))
+                    }
                 }
-            },
+            }
             Resolved::Std(s) => match s.member(&name.name) {
                 Some(b) => Some(Member::Builtin(b)),
                 None => {
@@ -265,13 +386,28 @@ impl<'s> Checker<'s> {
 
     fn field(&mut self, target: hir::Expr, name: &ast::Ident, span: Span) -> hir::Expr {
         let out = self.infer.fresh();
-        self.add_constraint(Constraint::Field { recv: target.ty.clone(), name: name.name.clone(), out: out.clone(), span: name.span });
-        expr(ExprKind::Field { target: Box::new(target), name: name.name.clone() }, out, span)
+        self.add_constraint(Constraint::Field {
+            recv: target.ty.clone(),
+            name: name.name.clone(),
+            out: out.clone(),
+            span: name.span,
+        });
+        expr(
+            ExprKind::Field {
+                target: Box::new(target),
+                name: name.name.clone(),
+            },
+            out,
+            span,
+        )
     }
 
     fn index(&mut self, target: hir::Expr, items: &[ast::IndexItem], span: Span) -> hir::Expr {
         if items.len() != 1 {
-            self.error(Diagnostic::error(span, "multi-dimensional indexing needs tensors, which are not available yet"));
+            self.error(Diagnostic::error(
+                span,
+                "multi-dimensional indexing needs tensors, which are not available yet",
+            ));
             return error_expr(span);
         }
         match &items[0] {
@@ -282,8 +418,21 @@ impl<'s> Checker<'s> {
                     _ => None,
                 };
                 let out = self.infer.fresh();
-                self.add_constraint(Constraint::Index { target: target.ty.clone(), index: index.ty.clone(), out: out.clone(), literal, span });
-                expr(ExprKind::Index { target: Box::new(target), index: Box::new(index) }, out, span)
+                self.add_constraint(Constraint::Index {
+                    target: target.ty.clone(),
+                    index: index.ty.clone(),
+                    out: out.clone(),
+                    literal,
+                    span,
+                });
+                expr(
+                    ExprKind::Index {
+                        target: Box::new(target),
+                        index: Box::new(index),
+                    },
+                    out,
+                    span,
+                )
             }
             ast::IndexItem::Slice { start, end } => {
                 let bound = |c: &mut Self, e: &Option<ast::Expr>| {
@@ -294,20 +443,36 @@ impl<'s> Checker<'s> {
                 };
                 let start = bound(self, start);
                 let end = bound(self, end);
-                self.add_constraint(Constraint::Slice { target: target.ty.clone(), span });
+                self.add_constraint(Constraint::Slice {
+                    target: target.ty.clone(),
+                    span,
+                });
                 let ty = target.ty.clone();
-                expr(ExprKind::Slice { target: Box::new(target), start, end }, ty, span)
+                expr(
+                    ExprKind::Slice {
+                        target: Box::new(target),
+                        start,
+                        end,
+                    },
+                    ty,
+                    span,
+                )
             }
         }
     }
 
     fn infer_args(&mut self, args: &[ast::Arg]) -> Vec<Arg> {
-        args.iter().map(|a| (a.name.clone(), self.infer_expr(&a.value))).collect()
+        args.iter()
+            .map(|a| (a.name.clone(), self.infer_expr(&a.value)))
+            .collect()
     }
 
     fn no_named_args(&mut self, args: &[Arg], what: &str) -> bool {
         if let Some((Some(n), _)) = args.iter().find(|(n, _)| n.is_some()) {
-            self.error(Diagnostic::error(n.span, format!("{what} does not take named arguments")));
+            self.error(Diagnostic::error(
+                n.span,
+                format!("{what} does not take named arguments"),
+            ));
             return false;
         }
         true
@@ -372,17 +537,33 @@ impl<'s> Checker<'s> {
             let ret = self.infer.fresh();
             let want = Ty::func(args.iter().map(|a| a.ty.clone()).collect(), ret.clone());
             if !self.infer.unify(&callee.ty, &want) {
-                let msg = format!("cannot call a `{}` with these arguments", self.show(&callee.ty));
+                let msg = format!(
+                    "cannot call a `{}` with these arguments",
+                    self.show(&callee.ty)
+                );
                 let label = format!("arguments are `{}`", self.show(&want));
                 self.error(Diagnostic::error(span, msg).with_label(label));
             }
             ret
         };
-        expr(ExprKind::Call { callee: Box::new(callee), args }, ret, span)
+        expr(
+            ExprKind::Call {
+                callee: Box::new(callee),
+                args,
+            },
+            ret,
+            span,
+        )
     }
 
     /// Matches positional and named arguments to parameters. `None` marks a parameter left to its default.
-    fn bind_args(&mut self, what: &str, params: &[(String, bool)], args: Vec<Arg>, span: Span) -> Option<Vec<Option<hir::Expr>>> {
+    fn bind_args(
+        &mut self,
+        what: &str,
+        params: &[(String, bool)],
+        args: Vec<Arg>,
+        span: Span,
+    ) -> Option<Vec<Option<hir::Expr>>> {
         let mut slots: Vec<Option<hir::Expr>> = vec![None; params.len()];
         let mut ok = true;
         let mut next = 0;
@@ -400,12 +581,18 @@ impl<'s> Checker<'s> {
                 }
                 Some(n) => match params.iter().position(|(p, _)| *p == n.name) {
                     Some(i) if slots[i].is_some() => {
-                        self.error(Diagnostic::error(n.span, format!("argument `{}` is given twice", n.name)));
+                        self.error(Diagnostic::error(
+                            n.span,
+                            format!("argument `{}` is given twice", n.name),
+                        ));
                         ok = false;
                     }
                     Some(i) => slots[i] = Some(value),
                     None => {
-                        self.error(Diagnostic::error(n.span, format!("`{what}` has no parameter named `{}`", n.name)));
+                        self.error(Diagnostic::error(
+                            n.span,
+                            format!("`{what}` has no parameter named `{}`", n.name),
+                        ));
                         ok = false;
                     }
                 },
@@ -413,20 +600,37 @@ impl<'s> Checker<'s> {
         }
         for (i, (name, has_default)) in params.iter().enumerate() {
             if slots[i].is_none() && !has_default {
-                self.error(Diagnostic::error(span, format!("missing argument `{name}` in call to `{what}`")));
+                self.error(Diagnostic::error(
+                    span,
+                    format!("missing argument `{name}` in call to `{what}`"),
+                ));
                 ok = false;
             }
         }
         ok.then_some(slots)
     }
 
-    pub(super) fn call_func(&mut self, f: FuncId, args: Vec<Arg>, recv: Option<hir::Expr>, span: Span) -> hir::Expr {
+    pub(super) fn call_func(
+        &mut self,
+        f: FuncId,
+        args: Vec<Arg>,
+        recv: Option<hir::Expr>,
+        span: Span,
+    ) -> hir::Expr {
         let scheme = self.func_scheme(f);
         let (fty, inst) = self.instantiate(&scheme);
-        let Ty::Func(param_tys, ret) = fty else { unreachable!("functions have function types") };
-        let params: Vec<(String, bool)> = self.funcs[f.0 as usize].params.iter().map(|p| (p.name.clone(), p.default.is_some())).collect();
+        let Ty::Func(param_tys, ret) = fty else {
+            unreachable!("functions have function types")
+        };
+        let params: Vec<(String, bool)> = self.funcs[f.0 as usize]
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), p.default.is_some()))
+            .collect();
         let name = self.funcs[f.0 as usize].name.clone();
-        let Some(bound) = self.bind_args(&name, &params, args, span) else { return expr(ExprKind::None, *ret, span) };
+        let Some(bound) = self.bind_args(&name, &params, args, span) else {
+            return expr(ExprKind::None, *ret, span);
+        };
         let offset = usize::from(recv.is_some());
         let mut out = Vec::with_capacity(bound.len() + offset);
         if let Some(r) = recv {
@@ -436,34 +640,73 @@ impl<'s> Checker<'s> {
         for (i, slot) in bound.into_iter().enumerate() {
             let arg = match slot {
                 Some(e) => self.coerce(e, &param_tys[i + offset]),
-                None => self.funcs[f.0 as usize].params[i].default.clone().expect("default exists"),
+                None => self.funcs[f.0 as usize].params[i]
+                    .default
+                    .clone()
+                    .expect("default exists"),
             };
             out.push(arg);
         }
-        expr(ExprKind::CallFunc { func: f, args: out, inst, native: Default::default() }, *ret, span)
+        expr(
+            ExprKind::CallFunc {
+                func: f,
+                args: out,
+                inst,
+                native: Default::default(),
+            },
+            *ret,
+            span,
+        )
     }
 
     fn construct(&mut self, c: ClassId, args: Vec<Arg>, span: Span) -> hir::Expr {
         let class = &self.classes[c.0 as usize];
         let name = class.name.clone();
-        let params: Vec<(String, bool)> = class.fields.iter().map(|f| (f.name.clone(), f.default.is_some())).collect();
-        let Some(bound) = self.bind_args(&name, &params, args, span) else { return expr(ExprKind::None, Ty::Class(c), span) };
+        let params: Vec<(String, bool)> = class
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.default.is_some()))
+            .collect();
+        let Some(bound) = self.bind_args(&name, &params, args, span) else {
+            return expr(ExprKind::None, Ty::Class(c), span);
+        };
         let mut out = Vec::with_capacity(bound.len());
         for (i, slot) in bound.into_iter().enumerate() {
             let field_ty = self.classes[c.0 as usize].fields[i].ty.clone();
             let arg = match slot {
                 Some(e) => self.coerce(e, &field_ty),
-                None => self.classes[c.0 as usize].fields[i].default.clone().expect("default exists"),
+                None => self.classes[c.0 as usize].fields[i]
+                    .default
+                    .clone()
+                    .expect("default exists"),
             };
             out.push(arg);
         }
-        expr(ExprKind::New { class: c, args: out }, Ty::Class(c), span)
+        expr(
+            ExprKind::New {
+                class: c,
+                args: out,
+            },
+            Ty::Class(c),
+            span,
+        )
     }
 
-    fn method_call(&mut self, recv: hir::Expr, name: &ast::Ident, args: Vec<Arg>, span: Span) -> hir::Expr {
+    fn method_call(
+        &mut self,
+        recv: hir::Expr,
+        name: &ast::Ident,
+        args: Vec<Arg>,
+        span: Span,
+    ) -> hir::Expr {
         if let Ty::Class(c) = self.infer.shallow(&recv.ty) {
             let class = &self.classes[c.0 as usize];
-            if let Some(m) = class.methods.iter().find(|(n, _)| *n == name.name).map(|(_, f)| *f) {
+            if let Some(m) = class
+                .methods
+                .iter()
+                .find(|(n, _)| *n == name.name)
+                .map(|(_, f)| *f)
+            {
                 return self.call_func(m, args, Some(recv), span);
             }
             if class.fields.iter().any(|f| f.name == name.name) {
@@ -484,7 +727,15 @@ impl<'s> Checker<'s> {
             out: out.clone(),
             span: name.span,
         });
-        expr(ExprKind::MethodCall { recv: Box::new(recv), name: name.name.clone(), args }, out, span)
+        expr(
+            ExprKind::MethodCall {
+                recv: Box::new(recv),
+                name: name.name.clone(),
+                args,
+            },
+            out,
+            span,
+        )
     }
 
     fn builtin_call(&mut self, b: Builtin, args: Vec<Arg>, span: Span) -> hir::Expr {
@@ -507,7 +758,11 @@ impl<'s> Checker<'s> {
             if !arity(self, required, params.len()) {
                 return error_expr(span);
             }
-            let args = args.into_iter().zip(&params).map(|(a, p)| self.coerce(a, p)).collect();
+            let args = args
+                .into_iter()
+                .zip(&params)
+                .map(|(a, p)| self.coerce(a, p))
+                .collect();
             return expr(ExprKind::CallBuiltin { builtin: b, args }, ret, span);
         }
         let ty = match b {
@@ -515,7 +770,10 @@ impl<'s> Checker<'s> {
                 if !arity(self, 1, 1) {
                     return error_expr(span);
                 }
-                self.add_constraint(Constraint::Len { ty: args[0].ty.clone(), span });
+                self.add_constraint(Constraint::Len {
+                    ty: args[0].ty.clone(),
+                    span,
+                });
                 Ty::Int
             }
             Builtin::Range => {
@@ -523,7 +781,11 @@ impl<'s> Checker<'s> {
                     return error_expr(span);
                 }
                 let args = args.into_iter().map(|a| self.coerce(a, &Ty::Int)).collect();
-                return expr(ExprKind::CallBuiltin { builtin: b, args }, Ty::list(Ty::Int), span);
+                return expr(
+                    ExprKind::CallBuiltin { builtin: b, args },
+                    Ty::list(Ty::Int),
+                    span,
+                );
             }
             Builtin::ToStr | Builtin::TypeOf | Builtin::JsonStringify => {
                 if !arity(self, 1, 1) {
@@ -545,14 +807,20 @@ impl<'s> Checker<'s> {
                 if !arity(self, 1, 1) {
                     return error_expr(span);
                 }
-                self.add_constraint(Constraint::Numeric { ty: args[0].ty.clone(), span });
+                self.add_constraint(Constraint::Numeric {
+                    ty: args[0].ty.clone(),
+                    span,
+                });
                 args[0].ty.clone()
             }
             Builtin::Round => {
                 if !arity(self, 1, 2) {
                     return error_expr(span);
                 }
-                self.add_constraint(Constraint::Numeric { ty: args[0].ty.clone(), span });
+                self.add_constraint(Constraint::Numeric {
+                    ty: args[0].ty.clone(),
+                    span,
+                });
                 if args.len() == 2 {
                     let mut args = args;
                     let digits = args.pop().unwrap();
@@ -573,7 +841,11 @@ impl<'s> Checker<'s> {
                     item
                 } else {
                     let has_float = args.iter().any(|a| self.infer.shallow(&a.ty) == Ty::Float);
-                    let ty = if has_float { Ty::Float } else { self.infer.fresh() };
+                    let ty = if has_float {
+                        Ty::Float
+                    } else {
+                        self.infer.fresh()
+                    };
                     let args = args.into_iter().map(|a| self.coerce(a, &ty)).collect();
                     return expr(ExprKind::CallBuiltin { builtin: b, args }, ty, span);
                 }
@@ -582,7 +854,13 @@ impl<'s> Checker<'s> {
                 if !arity(self, 2, 3) {
                     return error_expr(span);
                 }
-                self.add_constraint(Constraint::Binary { op: BinOp::Eq, lhs: args[0].ty.clone(), rhs: args[1].ty.clone(), out: Ty::Bool, span });
+                self.add_constraint(Constraint::Binary {
+                    op: BinOp::Eq,
+                    lhs: args[0].ty.clone(),
+                    rhs: args[1].ty.clone(),
+                    out: Ty::Bool,
+                    span,
+                });
                 if args.len() == 3 {
                     self.unify_at(args[2].span, &Ty::Str, &args[2].ty);
                 }
@@ -598,7 +876,10 @@ impl<'s> Checker<'s> {
                     Builtin::Enumerate => Ty::list(Ty::Tuple(vec![Ty::Int, item])),
                     Builtin::Reversed => Ty::list(item),
                     _ => {
-                        self.add_constraint(Constraint::Summable { ty: item.clone(), span });
+                        self.add_constraint(Constraint::Summable {
+                            ty: item.clone(),
+                            span,
+                        });
                         item
                     }
                 }
@@ -630,7 +911,11 @@ impl<'s> Checker<'s> {
                 }
                 let item = self.infer.fresh();
                 self.unify_at(args[0].span, &Ty::list(item.clone()), &args[0].ty);
-                if b == Builtin::RandomChoice { item } else { Ty::None }
+                if b == Builtin::RandomChoice {
+                    item
+                } else {
+                    Ty::None
+                }
             }
             Builtin::Fail => {
                 if !arity(self, 1, 1) {
@@ -644,9 +929,19 @@ impl<'s> Checker<'s> {
         expr(ExprKind::CallBuiltin { builtin: b, args }, ty, span)
     }
 
-    fn lambda(&mut self, params: &[ast::Ident], types: &[Option<ast::TypeExpr>], body: &ast::Expr, span: Span) -> hir::Expr {
+    fn lambda(
+        &mut self,
+        params: &[ast::Ident],
+        types: &[Option<ast::TypeExpr>],
+        body: &ast::Expr,
+        span: Span,
+    ) -> hir::Expr {
         let module = self.module_of_ctx();
-        let mut ctx = FnCtx { module: module.0, is_closure: true, ..FnCtx::default() };
+        let mut ctx = FnCtx {
+            module: module.0,
+            is_closure: true,
+            ..FnCtx::default()
+        };
         let mut param_tys = Vec::new();
         for (p, annotation) in params.iter().zip(types) {
             let ty = match annotation {
@@ -661,12 +956,28 @@ impl<'s> Checker<'s> {
         let body = self.infer_expr(body);
         let ret = body.ty.clone();
         let body_span = body.span;
-        let block = vec![hir::Stmt { kind: hir::StmtKind::Return(Some(body)), span: body_span }];
-        self.finish_closure("<closure>", params.len(), Ty::func(param_tys, ret), block, span)
+        let block = vec![hir::Stmt {
+            kind: hir::StmtKind::Return(Some(body)),
+            span: body_span,
+        }];
+        self.finish_closure(
+            "<closure>",
+            params.len(),
+            Ty::func(param_tys, ret),
+            block,
+            span,
+        )
     }
 
     /// Pops a closure context and returns the expression that creates the closure.
-    pub(super) fn finish_closure(&mut self, name: &str, params: usize, ty: Ty, body: hir::Block, span: Span) -> hir::Expr {
+    pub(super) fn finish_closure(
+        &mut self,
+        name: &str,
+        params: usize,
+        ty: Ty,
+        body: hir::Block,
+        span: Span,
+    ) -> hir::Expr {
         let ctx = self.stack.pop().expect("closure context");
         self.ctx().pending.extend(ctx.pending);
         let module = super::hir::ModuleId(ctx.module);
@@ -680,7 +991,11 @@ impl<'s> Checker<'s> {
             })
             .collect();
         let slot = &mut self.funcs[func.0 as usize];
-        slot.state = FnState::Done(Scheme { vars: vec![], ty: ty.clone(), constraints: vec![] });
+        slot.state = FnState::Done(Scheme {
+            vars: vec![],
+            ty: ty.clone(),
+            constraints: vec![],
+        });
         slot.hir = Some(hir::Func {
             name: name.to_string(),
             generics: Vec::new(),
@@ -694,13 +1009,24 @@ impl<'s> Checker<'s> {
         expr(ExprKind::Closure { func, captures }, ty, span)
     }
 
-    fn query(&mut self, op: QueryOp, target: &ast::Expr, body: Option<&ast::Expr>, parallel: bool, span: Span) -> hir::Expr {
+    fn query(
+        &mut self,
+        op: QueryOp,
+        target: &ast::Expr,
+        body: Option<&ast::Expr>,
+        parallel: bool,
+        span: Span,
+    ) -> hir::Expr {
         let target = self.infer_expr(target);
         let item_ty = self.infer.fresh();
         if self.infer.shallow(&target.ty) == Ty::Tensor {
             self.infer.unify(&item_ty, &Ty::Tensor);
         } else if !self.infer.unify(&target.ty, &Ty::list(item_ty.clone())) {
-            let msg = format!("`{}` works on lists and tensors, found `{}`", op.word(), self.show(&target.ty));
+            let msg = format!(
+                "`{}` works on lists and tensors, found `{}`",
+                op.word(),
+                self.show(&target.ty)
+            );
             self.error(Diagnostic::error(target.span, msg));
         }
         let item = self.ctx().add_local("it", item_ty.clone());
@@ -708,7 +1034,10 @@ impl<'s> Checker<'s> {
             return self.parallel_select(target, item, item_ty, body, span);
         }
         let body = body.map(|b| self.query_body(b, item, &item_ty));
-        let elem = body.as_ref().map(|b| b.ty.clone()).unwrap_or_else(|| item_ty.clone());
+        let elem = body
+            .as_ref()
+            .map(|b| b.ty.clone())
+            .unwrap_or_else(|| item_ty.clone());
         let ty = match op {
             QueryOp::Where => {
                 if let Some(b) = &body {
@@ -718,7 +1047,10 @@ impl<'s> Checker<'s> {
             }
             QueryOp::Select => Ty::list(elem),
             QueryOp::Sum => {
-                self.add_constraint(Constraint::Summable { ty: elem.clone(), span });
+                self.add_constraint(Constraint::Summable {
+                    ty: elem.clone(),
+                    span,
+                });
                 elem
             }
             QueryOp::Average => {
@@ -727,13 +1059,34 @@ impl<'s> Checker<'s> {
             }
             QueryOp::Min | QueryOp::Max => elem,
         };
-        expr(ExprKind::Query { op, target: Box::new(target), item, body: body.map(Box::new), parallel }, ty, span)
+        expr(
+            ExprKind::Query {
+                op,
+                target: Box::new(target),
+                item,
+                body: body.map(Box::new),
+                parallel,
+            },
+            ty,
+            span,
+        )
     }
 
     /// A parallel `select` runs its body as a one-parameter closure on many threads.
-    fn parallel_select(&mut self, target: hir::Expr, item: LocalId, item_ty: Ty, body: Option<&ast::Expr>, span: Span) -> hir::Expr {
+    fn parallel_select(
+        &mut self,
+        target: hir::Expr,
+        item: LocalId,
+        item_ty: Ty,
+        body: Option<&ast::Expr>,
+        span: Span,
+    ) -> hir::Expr {
         let module = self.module_of_ctx();
-        let mut ctx = FnCtx { module: module.0, is_closure: true, ..FnCtx::default() };
+        let mut ctx = FnCtx {
+            module: module.0,
+            is_closure: true,
+            ..FnCtx::default()
+        };
         let param = ctx.add_local("it", item_ty.clone());
         self.stack.push(ctx);
         let value = match body {
@@ -741,17 +1094,40 @@ impl<'s> Checker<'s> {
             None => expr(ExprKind::Local(param), item_ty.clone(), span),
         };
         let out = value.ty.clone();
-        let block = vec![hir::Stmt { span: value.span, kind: hir::StmtKind::Return(Some(value)) }];
-        let closure = self.finish_closure("<select>", 1, Ty::func(vec![item_ty], out.clone()), block, span);
-        let kind = ExprKind::Query { op: QueryOp::Select, target: Box::new(target), item, body: Some(Box::new(closure)), parallel: true };
+        let block = vec![hir::Stmt {
+            span: value.span,
+            kind: hir::StmtKind::Return(Some(value)),
+        }];
+        let closure = self.finish_closure(
+            "<select>",
+            1,
+            Ty::func(vec![item_ty], out.clone()),
+            block,
+            span,
+        );
+        let kind = ExprKind::Query {
+            op: QueryOp::Select,
+            target: Box::new(target),
+            item,
+            body: Some(Box::new(closure)),
+            parallel: true,
+        };
         expr(kind, Ty::list(out), span)
     }
 
     /// Checks a query body with the current item bound to `item`, as `it` or as a closure parameter.
     fn query_body(&mut self, body: &ast::Expr, item: LocalId, item_ty: &Ty) -> hir::Expr {
-        if let ast::ExprKind::Lambda { params, body: inner, .. } = &body.kind {
+        if let ast::ExprKind::Lambda {
+            params,
+            body: inner,
+            ..
+        } = &body.kind
+        {
             if params.len() != 1 {
-                self.error(Diagnostic::error(body.span, "a query closure takes exactly one parameter"));
+                self.error(Diagnostic::error(
+                    body.span,
+                    "a query closure takes exactly one parameter",
+                ));
                 return error_expr(body.span);
             }
             self.ctx().scopes.push((params[0].name.clone(), item));
@@ -777,7 +1153,11 @@ fn edit_distance(a: &str, b: &str) -> usize {
     for (i, ca) in a.chars().enumerate() {
         let mut cur = vec![i + 1];
         for (j, cb) in b.iter().enumerate() {
-            cur.push((prev[j] + usize::from(ca != *cb)).min(prev[j + 1] + 1).min(cur[j] + 1));
+            cur.push(
+                (prev[j] + usize::from(ca != *cb))
+                    .min(prev[j + 1] + 1)
+                    .min(cur[j] + 1),
+            );
         }
         prev = cur;
     }

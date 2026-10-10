@@ -65,7 +65,10 @@ pub struct TyDisplay<'a> {
 
 impl<'a> fmt::Display for TyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let sub = |ty: &'a Ty| TyDisplay { ty, classes: self.classes };
+        let sub = |ty: &'a Ty| TyDisplay {
+            ty,
+            classes: self.classes,
+        };
         match self.ty {
             Ty::Int => f.write_str("Int"),
             Ty::Float => f.write_str("Float"),
@@ -97,7 +100,12 @@ impl<'a> fmt::Display for TyDisplay<'a> {
                 }
                 write!(f, ") -> {}", sub(r))
             }
-            Ty::Class(id) => f.write_str(self.classes.get(id.0 as usize).map(String::as_str).unwrap_or("<class>")),
+            Ty::Class(id) => f.write_str(
+                self.classes
+                    .get(id.0 as usize)
+                    .map(String::as_str)
+                    .unwrap_or("<class>"),
+            ),
             Ty::Task(t) => write!(f, "Task[{}]", sub(t)),
             Ty::Tensor => f.write_str("Tensor"),
             Ty::Optimizer => f.write_str("Optimizer"),
@@ -190,9 +198,13 @@ impl Infer {
             (Ty::Any, _) | (_, Ty::Any) => true,
             (Ty::List(x), Ty::List(y)) | (Ty::Task(x), Ty::Task(y)) => self.unify(x, y),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => self.unify(k1, k2) && self.unify(v1, v2),
-            (Ty::Tuple(x), Ty::Tuple(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| self.unify(p, q)),
+            (Ty::Tuple(x), Ty::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(p, q)| self.unify(p, q))
+            }
             (Ty::Func(p1, r1), Ty::Func(p2, r2)) => {
-                p1.len() == p2.len() && p1.iter().zip(p2).all(|(x, y)| self.unify(x, y)) && self.unify(r1, r2)
+                p1.len() == p2.len()
+                    && p1.iter().zip(p2).all(|(x, y)| self.unify(x, y))
+                    && self.unify(r1, r2)
             }
             _ => a == b,
         }
@@ -201,12 +213,19 @@ impl Infer {
     /// Replaces the given variables with fresh ones throughout `ty`.
     pub fn substitute(&self, ty: &Ty, map: &[(u32, Ty)]) -> Ty {
         match self.shallow(ty) {
-            Ty::Var(v) => map.iter().find(|(k, _)| *k == v).map(|(_, t)| t.clone()).unwrap_or(Ty::Var(v)),
+            Ty::Var(v) => map
+                .iter()
+                .find(|(k, _)| *k == v)
+                .map(|(_, t)| t.clone())
+                .unwrap_or(Ty::Var(v)),
             Ty::List(t) => Ty::list(self.substitute(&t, map)),
             Ty::Task(t) => Ty::task(self.substitute(&t, map)),
             Ty::Map(k, v) => Ty::map(self.substitute(&k, map), self.substitute(&v, map)),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.substitute(t, map)).collect()),
-            Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| self.substitute(p, map)).collect(), self.substitute(&r, map)),
+            Ty::Func(ps, r) => Ty::func(
+                ps.iter().map(|p| self.substitute(p, map)).collect(),
+                self.substitute(&r, map),
+            ),
             other => other,
         }
     }

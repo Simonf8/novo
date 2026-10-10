@@ -3,8 +3,8 @@ use crate::check::types::ClassId;
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
 use std::fmt::Write;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -294,7 +294,12 @@ fn write_value(out: &mut String, v: &Value, prog: &Program, depth: usize) {
             let class = &prog.classes[inst.class.0 as usize];
             out.push_str(&class.name);
             out.push('(');
-            for (i, (field, val)) in class.fields.iter().zip(inst.fields.read().iter()).enumerate() {
+            for (i, (field, val)) in class
+                .fields
+                .iter()
+                .zip(inst.fields.read().iter())
+                .enumerate()
+            {
                 if i > 0 {
                     out.push_str(", ");
                 }
@@ -318,7 +323,9 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Value::None, Value::None) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => a.as_f64() == b.as_f64(),
+        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
+            a.as_f64() == b.as_f64()
+        }
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::List(x), Value::List(y)) => {
             if Arc::ptr_eq(x, y) {
@@ -327,7 +334,9 @@ pub fn equal(a: &Value, b: &Value) -> bool {
             let (x, y) = (x.read().clone(), y.read().clone());
             x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| equal(p, q))
         }
-        (Value::Tuple(x), Value::Tuple(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| equal(p, q)),
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| equal(p, q))
+        }
         (Value::Map(x), Value::Map(y)) => {
             if Arc::ptr_eq(x, y) {
                 return true;
@@ -357,13 +366,19 @@ fn compare_seq(x: &[Value], y: &[Value]) -> Result<Ordering, String> {
 pub fn compare(a: &Value, b: &Value) -> Result<Ordering, String> {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => Ok(x.cmp(y)),
-        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
-            a.as_f64().unwrap().partial_cmp(&b.as_f64().unwrap()).ok_or_else(|| "cannot order NaN".to_string())
-        }
+        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => a
+            .as_f64()
+            .unwrap()
+            .partial_cmp(&b.as_f64().unwrap())
+            .ok_or_else(|| "cannot order NaN".to_string()),
         (Value::Str(x), Value::Str(y)) => Ok(x.cmp(y)),
         (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
         (Value::List(x), Value::List(y)) => compare_seq(&x.read().clone(), &y.read().clone()),
         (Value::Tuple(x), Value::Tuple(y)) => compare_seq(x, y),
-        _ => Err(format!("cannot compare a {} with a {}", a.type_name(), b.type_name())),
+        _ => Err(format!(
+            "cannot compare a {} with a {}",
+            a.type_name(),
+            b.type_name()
+        )),
     }
 }

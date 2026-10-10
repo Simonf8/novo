@@ -2,27 +2,70 @@
 //! may not be known yet. Constraints still open when a function is generalized
 //! travel with its scheme and are re-checked at every use.
 
+use super::Checker;
 use super::builtins::method_signature;
 use super::types::{Infer, Ty};
-use super::Checker;
 use crate::diagnostic::Diagnostic;
 use crate::source::Span;
 use crate::syntax::ast::BinOp;
 
 #[derive(Debug, Clone)]
 pub enum Constraint {
-    Binary { op: BinOp, lhs: Ty, rhs: Ty, out: Ty, span: Span },
-    Neg { operand: Ty, out: Ty, span: Span },
-    Method { recv: Ty, name: String, args: Vec<Ty>, out: Ty, span: Span },
-    Field { recv: Ty, name: String, out: Ty, span: Span },
+    Binary {
+        op: BinOp,
+        lhs: Ty,
+        rhs: Ty,
+        out: Ty,
+        span: Span,
+    },
+    Neg {
+        operand: Ty,
+        out: Ty,
+        span: Span,
+    },
+    Method {
+        recv: Ty,
+        name: String,
+        args: Vec<Ty>,
+        out: Ty,
+        span: Span,
+    },
+    Field {
+        recv: Ty,
+        name: String,
+        out: Ty,
+        span: Span,
+    },
     /// `literal` is the index when it is written as a number, which tuples require.
-    Index { target: Ty, index: Ty, out: Ty, literal: Option<i64>, span: Span },
-    Slice { target: Ty, span: Span },
-    Iter { iterable: Ty, item: Ty, span: Span },
-    Len { ty: Ty, span: Span },
-    Numeric { ty: Ty, span: Span },
+    Index {
+        target: Ty,
+        index: Ty,
+        out: Ty,
+        literal: Option<i64>,
+        span: Span,
+    },
+    Slice {
+        target: Ty,
+        span: Span,
+    },
+    Iter {
+        iterable: Ty,
+        item: Ty,
+        span: Span,
+    },
+    Len {
+        ty: Ty,
+        span: Span,
+    },
+    Numeric {
+        ty: Ty,
+        span: Span,
+    },
     /// A number or a tensor, as `sum` accepts.
-    Summable { ty: Ty, span: Span },
+    Summable {
+        ty: Ty,
+        span: Span,
+    },
 }
 
 enum Outcome {
@@ -36,37 +79,112 @@ impl Constraint {
         match self {
             Constraint::Binary { lhs, rhs, out, .. } => vec![lhs, rhs, out],
             Constraint::Neg { operand, out, .. } => vec![operand, out],
-            Constraint::Method { recv, args, out, .. } => std::iter::once(recv).chain(args).chain(std::iter::once(out)).collect(),
+            Constraint::Method {
+                recv, args, out, ..
+            } => std::iter::once(recv)
+                .chain(args)
+                .chain(std::iter::once(out))
+                .collect(),
             Constraint::Field { recv, out, .. } => vec![recv, out],
-            Constraint::Index { target, index, out, .. } => vec![target, index, out],
+            Constraint::Index {
+                target, index, out, ..
+            } => vec![target, index, out],
             Constraint::Slice { target, .. } => vec![target],
             Constraint::Iter { iterable, item, .. } => vec![iterable, item],
-            Constraint::Len { ty, .. } | Constraint::Numeric { ty, .. } | Constraint::Summable { ty, .. } => vec![ty],
+            Constraint::Len { ty, .. }
+            | Constraint::Numeric { ty, .. }
+            | Constraint::Summable { ty, .. } => vec![ty],
         }
     }
 
     pub fn substitute(&self, infer: &Infer, map: &[(u32, Ty)]) -> Constraint {
         let s = |t: &Ty| infer.substitute(t, map);
         match self {
-            Constraint::Binary { op, lhs, rhs, out, span } => Constraint::Binary { op: *op, lhs: s(lhs), rhs: s(rhs), out: s(out), span: *span },
-            Constraint::Neg { operand, out, span } => Constraint::Neg { operand: s(operand), out: s(out), span: *span },
-            Constraint::Method { recv, name, args, out, span } => {
-                Constraint::Method { recv: s(recv), name: name.clone(), args: args.iter().map(s).collect(), out: s(out), span: *span }
-            }
-            Constraint::Field { recv, name, out, span } => Constraint::Field { recv: s(recv), name: name.clone(), out: s(out), span: *span },
-            Constraint::Index { target, index, out, literal, span } => {
-                Constraint::Index { target: s(target), index: s(index), out: s(out), literal: *literal, span: *span }
-            }
-            Constraint::Slice { target, span } => Constraint::Slice { target: s(target), span: *span },
-            Constraint::Iter { iterable, item, span } => Constraint::Iter { iterable: s(iterable), item: s(item), span: *span },
-            Constraint::Len { ty, span } => Constraint::Len { ty: s(ty), span: *span },
-            Constraint::Numeric { ty, span } => Constraint::Numeric { ty: s(ty), span: *span },
-            Constraint::Summable { ty, span } => Constraint::Summable { ty: s(ty), span: *span },
+            Constraint::Binary {
+                op,
+                lhs,
+                rhs,
+                out,
+                span,
+            } => Constraint::Binary {
+                op: *op,
+                lhs: s(lhs),
+                rhs: s(rhs),
+                out: s(out),
+                span: *span,
+            },
+            Constraint::Neg { operand, out, span } => Constraint::Neg {
+                operand: s(operand),
+                out: s(out),
+                span: *span,
+            },
+            Constraint::Method {
+                recv,
+                name,
+                args,
+                out,
+                span,
+            } => Constraint::Method {
+                recv: s(recv),
+                name: name.clone(),
+                args: args.iter().map(s).collect(),
+                out: s(out),
+                span: *span,
+            },
+            Constraint::Field {
+                recv,
+                name,
+                out,
+                span,
+            } => Constraint::Field {
+                recv: s(recv),
+                name: name.clone(),
+                out: s(out),
+                span: *span,
+            },
+            Constraint::Index {
+                target,
+                index,
+                out,
+                literal,
+                span,
+            } => Constraint::Index {
+                target: s(target),
+                index: s(index),
+                out: s(out),
+                literal: *literal,
+                span: *span,
+            },
+            Constraint::Slice { target, span } => Constraint::Slice {
+                target: s(target),
+                span: *span,
+            },
+            Constraint::Iter {
+                iterable,
+                item,
+                span,
+            } => Constraint::Iter {
+                iterable: s(iterable),
+                item: s(item),
+                span: *span,
+            },
+            Constraint::Len { ty, span } => Constraint::Len {
+                ty: s(ty),
+                span: *span,
+            },
+            Constraint::Numeric { ty, span } => Constraint::Numeric {
+                ty: s(ty),
+                span: *span,
+            },
+            Constraint::Summable { ty, span } => Constraint::Summable {
+                ty: s(ty),
+                span: *span,
+            },
         }
     }
 }
 
-impl<'s> Checker<'s> {
+impl Checker {
     pub(super) fn add_constraint(&mut self, c: Constraint) {
         match self.solve(&c) {
             Outcome::Done => {}
@@ -106,20 +224,44 @@ impl<'s> Checker<'s> {
     }
 
     fn mismatch_diag(&self, span: Span, expected: &Ty, found: &Ty) -> Diagnostic {
-        let msg = format!("expected `{}`, found `{}`", self.show(expected), self.show(found));
+        let msg = format!(
+            "expected `{}`, found `{}`",
+            self.show(expected),
+            self.show(found)
+        );
         Diagnostic::error(span, "mismatched types").with_label(msg)
     }
 
     fn solve(&mut self, c: &Constraint) -> Outcome {
         match c {
-            Constraint::Binary { op, lhs, rhs, out, span } => self.solve_binary(*op, lhs, rhs, out, *span),
+            Constraint::Binary {
+                op,
+                lhs,
+                rhs,
+                out,
+                span,
+            } => self.solve_binary(*op, lhs, rhs, out, *span),
             Constraint::Neg { operand, out, span } => match self.infer.shallow(operand) {
                 Ty::Var(_) => Outcome::Wait,
                 t @ (Ty::Int | Ty::Float | Ty::Tensor | Ty::Any) => self.settle(out, &t, *span),
-                t => Outcome::Fail(Diagnostic::error(*span, format!("cannot negate a `{}`", self.show(&t)))),
+                t => Outcome::Fail(Diagnostic::error(
+                    *span,
+                    format!("cannot negate a `{}`", self.show(&t)),
+                )),
             },
-            Constraint::Method { recv, name, args, out, span } => self.solve_method(recv, name, args, out, *span),
-            Constraint::Field { recv, name, out, span } => match self.infer.shallow(recv) {
+            Constraint::Method {
+                recv,
+                name,
+                args,
+                out,
+                span,
+            } => self.solve_method(recv, name, args, out, *span),
+            Constraint::Field {
+                recv,
+                name,
+                out,
+                span,
+            } => match self.infer.shallow(recv) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::Any => self.settle(out, &Ty::Any, *span),
                 Ty::Class(cid) => {
@@ -129,21 +271,34 @@ impl<'s> Checker<'s> {
                         return self.settle(out, &ty, *span);
                     }
                     let msg = if class.methods.iter().any(|(m, _)| m == name) {
-                        format!("`{name}` is a method of `{}`; call it with `()`", class.name)
+                        format!(
+                            "`{name}` is a method of `{}`; call it with `()`",
+                            class.name
+                        )
                     } else {
                         format!("`{}` has no field `{name}`", class.name)
                     };
                     Outcome::Fail(Diagnostic::error(*span, msg))
                 }
                 t => {
-                    let mut diag = Diagnostic::error(*span, format!("`{}` has no field `{name}`", self.show(&t)));
+                    let mut diag = Diagnostic::error(
+                        *span,
+                        format!("`{}` has no field `{name}`", self.show(&t)),
+                    );
                     if method_signature(&t, name).is_some() {
-                        diag = diag.with_help(format!("`{name}` is a method; call it with `{name}()`"));
+                        diag = diag
+                            .with_help(format!("`{name}` is a method; call it with `{name}()`"));
                     }
                     Outcome::Fail(diag)
                 }
             },
-            Constraint::Index { target, index, out, literal, span } => match self.infer.shallow(target) {
+            Constraint::Index {
+                target,
+                index,
+                out,
+                literal,
+                span,
+            } => match self.infer.shallow(target) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::Any => self.settle(out, &Ty::Any, *span),
                 Ty::Tuple(items) => {
@@ -153,19 +308,35 @@ impl<'s> Checker<'s> {
                             let at = if *i < 0 { i + n } else { *i } as usize;
                             self.settle(out, &items[at], *span)
                         }
-                        Some(i) => Outcome::Fail(Diagnostic::error(*span, format!("index {i} is out of range for a tuple of {n}"))),
-                        None => Outcome::Fail(Diagnostic::error(*span, "a tuple index must be a number written in the code").with_help("write `pair[0]`, or unpack it: `a, b = pair`")),
+                        Some(i) => Outcome::Fail(Diagnostic::error(
+                            *span,
+                            format!("index {i} is out of range for a tuple of {n}"),
+                        )),
+                        None => Outcome::Fail(
+                            Diagnostic::error(
+                                *span,
+                                "a tuple index must be a number written in the code",
+                            )
+                            .with_help("write `pair[0]`, or unpack it: `a, b = pair`"),
+                        ),
                     }
                 }
                 Ty::List(e) => {
                     if !self.infer.unify(index, &Ty::Int) {
-                        return Outcome::Fail(Diagnostic::error(*span, format!("list index must be an `Int`, found `{}`", self.show(index))));
+                        return Outcome::Fail(Diagnostic::error(
+                            *span,
+                            format!("list index must be an `Int`, found `{}`", self.show(index)),
+                        ));
                     }
                     self.settle(out, &e, *span)
                 }
                 t @ (Ty::Str | Ty::Tensor) => {
                     if !self.infer.unify(index, &Ty::Int) {
-                        let msg = format!("{} index must be an `Int`, found `{}`", if t == Ty::Str { "string" } else { "tensor" }, self.show(index));
+                        let msg = format!(
+                            "{} index must be an `Int`, found `{}`",
+                            if t == Ty::Str { "string" } else { "tensor" },
+                            self.show(index)
+                        );
                         return Outcome::Fail(Diagnostic::error(*span, msg));
                     }
                     self.settle(out, &t, *span)
@@ -176,14 +347,24 @@ impl<'s> Checker<'s> {
                     }
                     self.settle(out, &v, *span)
                 }
-                t => Outcome::Fail(Diagnostic::error(*span, format!("cannot index into a `{}`", self.show(&t)))),
+                t => Outcome::Fail(Diagnostic::error(
+                    *span,
+                    format!("cannot index into a `{}`", self.show(&t)),
+                )),
             },
             Constraint::Slice { target, span } => match self.infer.shallow(target) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::List(_) | Ty::Str | Ty::Tensor | Ty::Any => Outcome::Done,
-                t => Outcome::Fail(Diagnostic::error(*span, format!("cannot slice a `{}`", self.show(&t)))),
+                t => Outcome::Fail(Diagnostic::error(
+                    *span,
+                    format!("cannot slice a `{}`", self.show(&t)),
+                )),
             },
-            Constraint::Iter { iterable, item, span } => match self.infer.shallow(iterable) {
+            Constraint::Iter {
+                iterable,
+                item,
+                span,
+            } => match self.infer.shallow(iterable) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::Any => self.settle(item, &Ty::Any, *span),
                 Ty::List(e) => self.settle(item, &e, *span),
@@ -191,23 +372,41 @@ impl<'s> Checker<'s> {
                 Ty::Tensor => self.settle(item, &Ty::Tensor, *span),
                 Ty::Map(k, _) => self.settle(item, &k, *span),
                 t => Outcome::Fail(
-                    Diagnostic::error(*span, format!("cannot iterate over a `{}`", self.show(&t))).with_help("loops work over lists, strings, maps and `range(...)`"),
+                    Diagnostic::error(*span, format!("cannot iterate over a `{}`", self.show(&t)))
+                        .with_help("loops work over lists, strings, maps and `range(...)`"),
                 ),
             },
             Constraint::Len { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
-                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_) | Ty::Tensor | Ty::Any => Outcome::Done,
-                t => Outcome::Fail(Diagnostic::error(*span, format!("`len` needs a list, string, map or tensor, found `{}`", self.show(&t)))),
+                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_) | Ty::Tensor | Ty::Any => {
+                    Outcome::Done
+                }
+                t => Outcome::Fail(Diagnostic::error(
+                    *span,
+                    format!(
+                        "`len` needs a list, string, map or tensor, found `{}`",
+                        self.show(&t)
+                    ),
+                )),
             },
             Constraint::Numeric { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::Int | Ty::Float | Ty::Any => Outcome::Done,
-                t => Outcome::Fail(Diagnostic::error(*span, format!("expected a number, found `{}`", self.show(&t)))),
+                t => Outcome::Fail(Diagnostic::error(
+                    *span,
+                    format!("expected a number, found `{}`", self.show(&t)),
+                )),
             },
             Constraint::Summable { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
                 Ty::Int | Ty::Float | Ty::Tensor | Ty::Any => Outcome::Done,
-                t => Outcome::Fail(Diagnostic::error(*span, format!("expected numbers or tensors to sum, found `{}`", self.show(&t)))),
+                t => Outcome::Fail(Diagnostic::error(
+                    *span,
+                    format!(
+                        "expected numbers or tensors to sum, found `{}`",
+                        self.show(&t)
+                    ),
+                )),
             },
         }
     }
@@ -224,7 +423,12 @@ impl<'s> Checker<'s> {
         let l = self.infer.shallow(lhs);
         let r = self.infer.shallow(rhs);
         let bad = |c: &Self| {
-            let msg = format!("cannot apply `{}` to `{}` and `{}`", op.symbol(), c.show(&l), c.show(&r));
+            let msg = format!(
+                "cannot apply `{}` to `{}` and `{}`",
+                op.symbol(),
+                c.show(&l),
+                c.show(&r)
+            );
             Outcome::Fail(Diagnostic::error(span, msg))
         };
         let is_var = |t: &Ty| matches!(t, Ty::Var(_));
@@ -262,8 +466,12 @@ impl<'s> Checker<'s> {
                 }
                 match (&l, &r) {
                     (Ty::Int, Ty::Int) => self.settle(out, &Ty::Int, span),
-                    (Ty::Int | Ty::Float, Ty::Int | Ty::Float) => self.settle(out, &Ty::Float, span),
-                    (a, b) if (is_var(a) || a.is_numeric()) && (is_var(b) || b.is_numeric()) => Outcome::Wait,
+                    (Ty::Int | Ty::Float, Ty::Int | Ty::Float) => {
+                        self.settle(out, &Ty::Float, span)
+                    }
+                    (a, b) if (is_var(a) || a.is_numeric()) && (is_var(b) || b.is_numeric()) => {
+                        Outcome::Wait
+                    }
                     _ => bad(self),
                 }
             }
@@ -274,7 +482,9 @@ impl<'s> Checker<'s> {
                 match (&l, &r) {
                     (Ty::Any, _) | (_, Ty::Any) => Outcome::Done,
                     (a, b) if a.is_numeric() && b.is_numeric() => Outcome::Done,
-                    (a, b) if (is_var(a) || a.is_numeric()) && (is_var(b) || b.is_numeric()) => Outcome::Wait,
+                    (a, b) if (is_var(a) || a.is_numeric()) && (is_var(b) || b.is_numeric()) => {
+                        Outcome::Wait
+                    }
                     _ => bad(self),
                 }
             }
@@ -293,9 +503,15 @@ impl<'s> Checker<'s> {
                         }
                     }
                     (Ty::Tuple(_) | Ty::List(_), _) | (_, Ty::Tuple(_) | Ty::List(_)) => {
-                        if self.infer.unify(&l, &r) { Outcome::Done } else { bad(self) }
+                        if self.infer.unify(&l, &r) {
+                            Outcome::Done
+                        } else {
+                            bad(self)
+                        }
                     }
-                    (a, b) if (is_var(a) || a.is_numeric()) && (is_var(b) || b.is_numeric()) => Outcome::Wait,
+                    (a, b) if (is_var(a) || a.is_numeric()) && (is_var(b) || b.is_numeric()) => {
+                        Outcome::Wait
+                    }
                     _ => bad(self),
                 }
             }
@@ -305,7 +521,9 @@ impl<'s> Checker<'s> {
                 }
                 match (&l, &r) {
                     (a, b) if a.is_numeric() && b.is_numeric() => Outcome::Done,
-                    (a, b) if (is_var(a) && b.is_numeric()) || (a.is_numeric() && is_var(b)) => Outcome::Wait,
+                    (a, b) if (is_var(a) && b.is_numeric()) || (a.is_numeric() && is_var(b)) => {
+                        Outcome::Wait
+                    }
                     _ => {
                         if self.infer.unify(&l, &r) {
                             Outcome::Done
@@ -330,7 +548,10 @@ impl<'s> Checker<'s> {
                 if ok { Outcome::Done } else { bad(self) }
             }
             BinOp::And | BinOp::Or => {
-                if self.infer.unify(&l, &Ty::Bool) && self.infer.unify(&r, &Ty::Bool) && self.infer.unify(out, &Ty::Bool) {
+                if self.infer.unify(&l, &Ty::Bool)
+                    && self.infer.unify(&r, &Ty::Bool)
+                    && self.infer.unify(out, &Ty::Bool)
+                {
                     Outcome::Done
                 } else {
                     bad(self)
@@ -365,9 +586,17 @@ impl<'s> Checker<'s> {
             _ => false,
         };
         if !ok {
-            let msg = format!("cannot apply `{}` to `{}` and `{}`", op.symbol(), self.show(l), self.show(r));
+            let msg = format!(
+                "cannot apply `{}` to `{}` and `{}`",
+                op.symbol(),
+                self.show(l),
+                self.show(r)
+            );
             let mut diag = Diagnostic::error(span, msg);
-            if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+            if matches!(
+                op,
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            ) {
                 diag = diag.with_help("compare tensors element-wise with `a.eq(b)`");
             }
             return Outcome::Fail(diag);
@@ -375,7 +604,14 @@ impl<'s> Checker<'s> {
         self.settle(out, &Ty::Tensor, span)
     }
 
-    fn solve_method(&mut self, recv: &Ty, name: &str, args: &[Ty], out: &Ty, span: Span) -> Outcome {
+    fn solve_method(
+        &mut self,
+        recv: &Ty,
+        name: &str,
+        args: &[Ty],
+        out: &Ty,
+        span: Span,
+    ) -> Outcome {
         let recv = self.infer.shallow(recv);
         match &recv {
             Ty::Var(_) => Outcome::Wait,
@@ -386,10 +622,22 @@ impl<'s> Checker<'s> {
                     let fid = *fid;
                     let scheme = self.func_scheme(fid);
                     let (fty, _) = self.instantiate(&scheme);
-                    let Ty::Func(params, ret) = fty else { unreachable!("methods have function types") };
-                    let required = 1 + self.funcs[fid.0 as usize].params.iter().filter(|p| p.default.is_none()).count();
+                    let Ty::Func(params, ret) = fty else {
+                        unreachable!("methods have function types")
+                    };
+                    let required = 1 + self.funcs[fid.0 as usize]
+                        .params
+                        .iter()
+                        .filter(|p| p.default.is_none())
+                        .count();
                     if args.len() + 1 < required || args.len() + 1 > params.len() {
-                        return Outcome::Fail(arity_error(span, name, required - 1, params.len() - 1, args.len()));
+                        return Outcome::Fail(arity_error(
+                            span,
+                            name,
+                            required - 1,
+                            params.len() - 1,
+                            args.len(),
+                        ));
                     }
                     self.infer.unify(&params[0], &recv);
                     for (p, a) in params[1..].iter().zip(args) {
@@ -402,16 +650,32 @@ impl<'s> Checker<'s> {
                 if let Some(f) = class.fields.iter().find(|f| f.name == name) {
                     let fty = f.ty.clone();
                     let want = Ty::func(args.to_vec(), out.clone());
-                    return if self.infer.unify(&fty, &want) { Outcome::Done } else { Outcome::Fail(self.mismatch_diag(span, &fty, &want)) };
+                    return if self.infer.unify(&fty, &want) {
+                        Outcome::Done
+                    } else {
+                        Outcome::Fail(self.mismatch_diag(span, &fty, &want))
+                    };
                 }
-                Outcome::Fail(Diagnostic::error(span, format!("`{}` has no method `{name}`", class.name)))
+                Outcome::Fail(Diagnostic::error(
+                    span,
+                    format!("`{}` has no method `{name}`", class.name),
+                ))
             }
             Ty::Str | Ty::List(_) | Ty::Map(..) | Ty::Tensor | Ty::Optimizer => {
                 let Some((params, required, ret)) = method_signature(&recv, name) else {
-                    return Outcome::Fail(Diagnostic::error(span, format!("`{}` has no method `{name}`", self.show(&recv))));
+                    return Outcome::Fail(Diagnostic::error(
+                        span,
+                        format!("`{}` has no method `{name}`", self.show(&recv)),
+                    ));
                 };
                 if args.len() < required || args.len() > params.len() {
-                    return Outcome::Fail(arity_error(span, name, required, params.len(), args.len()));
+                    return Outcome::Fail(arity_error(
+                        span,
+                        name,
+                        required,
+                        params.len(),
+                        args.len(),
+                    ));
                 }
                 for (p, a) in params.iter().zip(args) {
                     if !self.unify_arg(p, a) {
@@ -420,14 +684,29 @@ impl<'s> Checker<'s> {
                 }
                 self.settle(out, &ret, span)
             }
-            t => Outcome::Fail(Diagnostic::error(span, format!("`{}` has no method `{name}`", self.show(t)))),
+            t => Outcome::Fail(Diagnostic::error(
+                span,
+                format!("`{}` has no method `{name}`", self.show(t)),
+            )),
         }
     }
 }
 
-pub fn arity_error(span: Span, name: &str, required: usize, max: usize, given: usize) -> Diagnostic {
-    let expected = if required == max { format!("{required}") } else { format!("{required} to {max}") };
+pub fn arity_error(
+    span: Span,
+    name: &str,
+    required: usize,
+    max: usize,
+    given: usize,
+) -> Diagnostic {
+    let expected = if required == max {
+        format!("{required}")
+    } else {
+        format!("{required} to {max}")
+    };
     let plural = if max == 1 { "" } else { "s" };
-    Diagnostic::error(span, format!("`{name}` takes {expected} argument{plural} but {given} were given"))
+    Diagnostic::error(
+        span,
+        format!("`{name}` takes {expected} argument{plural} but {given} were given"),
+    )
 }
-
