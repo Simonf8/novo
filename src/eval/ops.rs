@@ -55,8 +55,8 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> R {
             (Str(x), Str(y)) => Ok(Value::Str(format!("{x}{y}").into())),
             (List(x), List(y)) => {
                 let mut items = x.read().clone();
-                items.extend(y.read().iter().cloned());
-                Ok(Value::list(items))
+                items.extend(y.read().iter());
+                Ok(Value::from_items(items))
             }
             _ => float_op(a, b, |x, y| x + y).map_or_else(bad, Ok),
         },
@@ -138,7 +138,7 @@ fn float_op(a: &Value, b: &Value, f: impl Fn(f64, f64) -> f64) -> Option<Value> 
 
 pub fn contains(container: &Value, item: &Value) -> Result<bool, String> {
     match (container, item) {
-        (Value::List(items), _) => Ok(items.read().iter().any(|x| equal(x, item))),
+        (Value::List(items), _) => Ok(items.read().iter().any(|x| equal(&x, item))),
         (Value::Map(dict), _) => Ok(dict.read().get(&Key::from_value(item)?).is_some()),
         (Value::Str(s), Value::Str(sub)) => Ok(s.contains(&**sub)),
         _ => Err(format!(

@@ -7,6 +7,8 @@ use std::fmt::Write;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
+pub use super::list::Items;
+
 #[derive(Debug, Clone)]
 pub enum Value {
     None,
@@ -14,7 +16,7 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(Arc<str>),
-    List(Arc<RwLock<Vec<Value>>>),
+    List(Arc<RwLock<Items>>),
     Tuple(Arc<[Value]>),
     Map(Arc<RwLock<Dict>>),
     Func(Arc<Closure>),
@@ -180,6 +182,10 @@ impl Value {
     }
 
     pub fn list(items: Vec<Value>) -> Value {
+        Value::List(Arc::new(RwLock::new(Items::from(items))))
+    }
+
+    pub fn from_items(items: Items) -> Value {
         Value::List(Arc::new(RwLock::new(items)))
     }
 
@@ -260,7 +266,7 @@ fn write_value(out: &mut String, v: &Value, prog: &Program, depth: usize) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write_value(out, item, prog, depth + 1);
+                write_value(out, &item, prog, depth + 1);
             }
             out.push(']');
         }
@@ -336,7 +342,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
             if Arc::ptr_eq(x, y) {
                 return true;
             }
-            let (x, y) = (x.read().clone(), y.read().clone());
+            let (x, y) = (x.read().to_vec(), y.read().to_vec());
             x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| equal(p, q))
         }
         (Value::Tuple(x), Value::Tuple(y)) => {
@@ -379,7 +385,7 @@ pub fn compare(a: &Value, b: &Value) -> Result<Ordering, String> {
             .ok_or_else(|| "cannot order NaN".to_string()),
         (Value::Str(x), Value::Str(y)) => Ok(x.cmp(y)),
         (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
-        (Value::List(x), Value::List(y)) => compare_seq(&x.read().clone(), &y.read().clone()),
+        (Value::List(x), Value::List(y)) => compare_seq(&x.read().to_vec(), &y.read().to_vec()),
         (Value::Tuple(x), Value::Tuple(y)) => compare_seq(x, y),
         _ => Err(format!(
             "cannot compare a {} with a {}",

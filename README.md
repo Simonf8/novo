@@ -28,14 +28,17 @@ exact source with a suggested fix. Functions are generic by default.
 Every function compiles to machine code with [Cranelift](https://cranelift.dev)
 the first time it is called. Numbers stay in registers; strings, lists, maps
 and objects are handled by a runtime shared with the reference interpreter,
-so both behave identically.
+so both behave identically. Lists of Ints, Floats or Bools store their
+elements unboxed, and loops that only do arithmetic on them read and write
+the elements in place.
 
 | Benchmark (`benches/`) | Rust `-O` | Novo | CPython 3.13 |
 |------------------------|----------:|-----:|-------------:|
 | `fib(32)`              | 0.013 s   | 0.026 s | 0.322 s |
 | nested integer loops   | 0.100 s   | 0.123 s | 1.585 s |
 | Mandelbrot 600×600     | 0.090 s   | 0.101 s | 3.445 s |
-| map and list updates   |           | 0.30 s  | 0.45 s  |
+| numeric lists (sieve, prefix sums, dot product) | 0.054 s | 0.37 s | 2.57 s |
+| map and list updates   |           | 0.26 s  | 0.45 s  |
 
 > **Status:** early development. See the [roadmap](#roadmap).
 

@@ -1,0 +1,75 @@
+# Loops over numeric lists: element access, negative indices, errors and fallbacks.
+function dot(xs: List[Float], ys: List[Float]) -> Float:
+    total = 0.0
+    for k in range(len(xs)):
+        total += xs[k] * ys[k]
+    return total
+
+function reverse_in_place(xs: List[Int]):
+    i = 0
+    j = len(xs) - 1
+    while i < j:
+        t = xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+        i += 1
+        j -= 1
+
+function first_negative(xs: List[Int]) -> Int:
+    found = -1
+    for k in range(len(xs)):
+        if xs[k] >= 0:
+            continue
+        found = k
+        break
+    return found
+
+function last_three(xs: List[Int]) -> Int:
+    total = 0
+    for k in range(1, 4):
+        total += xs[-k]
+    return total
+
+function overflow(xs: List[Int]) -> Int:
+    total = 0
+    for k in range(len(xs) + 1):
+        total += xs[k]
+    return total
+
+values = [1.0, 2.0, 3.0]
+show dot(values, values), dot(values, [0.5, 0.5, 0.5])
+numbers = [1, 2, 3, 4, 5]
+reverse_in_place(numbers)
+show numbers, first_negative([3, 1, -2, -5]), first_negative([1]), last_three(numbers)
+
+# An error inside the loop releases the list, so it is usable afterwards.
+try:
+    show overflow(numbers)
+catch e:
+    show e
+numbers.push(6)
+show numbers
+
+flags: List[Bool] = []
+repeat 3 times:
+    flags.push(false)
+for k in range(len(flags)):
+    flags[k] = k % 2 == 0
+show flags
+
+# A list that holds a boxed value runs the loop the ordinary way.
+mixed: List[Any] = [1.5, 2.5]
+mixed.push("not a number")
+mixed.pop()
+floats: List[Float] = mixed
+show dot(floats, floats)
+
+# Tasks on several threads may loop over the same list at once.
+task total(xs: List[Int]) -> Int:
+    sum = 0
+    for i in range(len(xs)):
+        sum += xs[i]
+    return sum
+
+shared = range(1000)
+show run [total(shared), total(shared), total(shared)] in parallel

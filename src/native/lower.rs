@@ -78,6 +78,16 @@ struct Lower<'a, 'b> {
     refs: HashMap<ClifFunc, ir::FuncRef>,
     base: ir::Value,
     slots: u32,
+    /// Inside a loop that accesses lists directly: each list's element
+    /// pointer, length and kind.
+    direct: Option<HashMap<ListVar, (Variable, Variable, Scalar)>>,
+}
+
+/// A list variable a loop may access directly: a local or a private module variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ListVar {
+    Local(u32),
+    Private(u32),
 }
 
 pub(super) fn lower(
@@ -141,6 +151,7 @@ pub(super) fn lower(
         ret_slot,
         locals: Vec::new(),
         private: HashMap::new(),
+        direct: None,
         ret: compiled.ret,
         ret_var,
         exit,
@@ -536,10 +547,28 @@ impl Lower<'_, '_> {
             Place::Index { target, index }
                 if self.is_list(&target.ty) && self.rep(&index.ty) == Rep::Scalar(Scalar::Int) =>
             {
+                if let Some((addr, s)) = self.direct_element(target, index)? {
+                    let x = self.scalar(v, s);
+                    self.b.ins().store(MemFlagsData::trusted(), x, addr, 0);
+                    return Ok(());
+                }
                 let obj = self.expr(target)?;
                 let obj = self.boxed(obj);
                 let idx = self.expr(index)?;
                 let idx = self.scalar(idx, Scalar::Int);
+                if let Some(s) = self.scalar_elements(&target.ty) {
+                    let h = &self.c.helpers;
+                    let set = match s {
+                        Scalar::Int => h.list_set_int,
+                        Scalar::Float => h.list_set_float,
+                        _ => h.list_set_bool,
+                    };
+                    let x = self.scalar(v, s);
+                    let span = self.span(span);
+                    self.call(set, &[self.ctx, obj, idx, x, span]);
+                    self.check_status();
+                    return Ok(());
+                }
                 let src = self.boxed(v);
                 let span = self.span(span);
                 let set = self.c.helpers.list_set;
@@ -562,6 +591,19 @@ impl Lower<'_, '_> {
     }
 
     fn stmt(&mut self, stmt: &hir::Stmt) -> R<()> {
+        if self.direct.is_none()
+            && matches!(
+                stmt.kind,
+                StmtKind::While { .. } | StmtKind::For { .. } | StmtKind::Repeat { .. }
+            )
+            && let Some(lists) = self.direct_lists(stmt)
+        {
+            return self.direct_loop(stmt, &lists);
+        }
+        self.plain_stmt(stmt)
+    }
+
+    fn plain_stmt(&mut self, stmt: &hir::Stmt) -> R<()> {
         let span = stmt.span;
         match &stmt.kind {
             StmtKind::Expr(e) => {
@@ -689,16 +731,32 @@ impl Lower<'_, '_> {
                     let n = self.list_len(items);
                     let zero = self.iconst(0);
                     let item = self.temp();
+                    let elements = self.scalar_elements(&iter.ty);
                     self.counted_loop(
                         zero,
                         n,
                         None,
                         &Place::Local(hir::LocalId(u32::MAX)),
                         span,
-                        |l, i| {
-                            let get = l.c.helpers.list_get;
-                            l.call(get, &[item, items, i]);
-                            l.store(var, Val::O(item, true), span)
+                        |l, i| match elements {
+                            Some(s) => {
+                                let h = &l.c.helpers;
+                                let get = match s {
+                                    Scalar::Int => h.list_get_int,
+                                    Scalar::Float => h.list_get_float,
+                                    _ => h.list_get_bool,
+                                };
+                                let at = l.span(iter.span);
+                                let v = l
+                                    .call(get, &[l.ctx, items, i, at])
+                                    .expect("returns the element");
+                                l.store(var, Val::S(v, s), span)
+                            }
+                            None => {
+                                let get = l.c.helpers.list_get;
+                                l.call(get, &[item, items, i]);
+                                l.store(var, Val::O(item, true), span)
+                            }
                         },
                         body,
                     )?;
@@ -1250,6 +1308,17 @@ impl Lower<'_, '_> {
         matches!(substitute(ty, &self.subst), Ty::List(_))
     }
 
+    /// The scalar kind of a list's elements, when they are Ints, Floats or Bools.
+    fn scalar_elements(&self, list: &Ty) -> Option<Scalar> {
+        match substitute(list, &self.subst) {
+            Ty::List(e) => match self.rep(&e) {
+                Rep::Scalar(s @ (Scalar::Int | Scalar::Float | Scalar::Bool)) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Whether a method has a dedicated helper for the receiver's static type.
     fn fast_method(&self, recv: &Ty, name: &str, args: usize) -> bool {
         match (substitute(recv, &self.subst), name, args) {
@@ -1307,11 +1376,32 @@ impl Lower<'_, '_> {
     }
 
     fn index(&mut self, target: &hir::Expr, index: &hir::Expr, ty: &Ty) -> R<Val> {
+        if let Some((addr, s)) = self.direct_element(target, index)? {
+            let v = self
+                .b
+                .ins()
+                .load(s.clif(), MemFlagsData::trusted(), addr, 0);
+            return Ok(Val::S(v, s));
+        }
         if self.is_list(&target.ty) && self.rep(&index.ty) == Rep::Scalar(Scalar::Int) {
             let list = self.expr(target)?;
             let list = self.boxed(list);
             let i = self.expr(index)?;
             let i = self.scalar(i, Scalar::Int);
+            if let Some(s) = self.scalar_elements(&target.ty) {
+                let h = &self.c.helpers;
+                let get = match s {
+                    Scalar::Int => h.list_get_int,
+                    Scalar::Float => h.list_get_float,
+                    _ => h.list_get_bool,
+                };
+                let span = self.span(index.span);
+                let v = self
+                    .call(get, &[self.ctx, list, i, span])
+                    .expect("returns the element");
+                self.check_status();
+                return Ok(Val::S(v, s));
+            }
             let t = self.temp();
             let span = self.span(index.span);
             let get = self.c.helpers.list_index;
@@ -1554,6 +1644,13 @@ impl Lower<'_, '_> {
 
     fn builtin(&mut self, b: Builtin, args: &[hir::Expr], ty: &Ty, span: Span) -> R<Val> {
         if b == Builtin::Len
+            && let Some(direct) = &self.direct
+            && let Some((_, len, _)) = self.list_var(&args[0]).and_then(|v| direct.get(&v))
+        {
+            let len = *len;
+            return Ok(Val::S(self.b.use_var(len), Scalar::Int));
+        }
+        if b == Builtin::Len
             && matches!(
                 substitute(&args[0].ty, &self.subst),
                 Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_)
@@ -1795,8 +1892,42 @@ impl Lower<'_, '_> {
         ty: &Ty,
         span: Span,
     ) -> R<Val> {
-        let items = self.items(target)?;
-        let n = self.list_len(items);
+        // `range(start, end)` is counted directly rather than built as a list.
+        let range = match &target.kind {
+            ExprKind::CallBuiltin {
+                builtin: Builtin::Range,
+                args,
+            } if !args.is_empty() && args.len() <= 2 => Some(args),
+            _ => None,
+        };
+        let (items, start, n) = match range {
+            Some(args) => {
+                let bounds = args
+                    .iter()
+                    .map(|a| self.expr(a).map(|v| self.scalar(v, Scalar::Int)))
+                    .collect::<R<Vec<_>>>()?;
+                let (start, end) = if bounds.len() == 2 {
+                    (bounds[0], bounds[1])
+                } else {
+                    (self.iconst(0), bounds[0])
+                };
+                (None, start, end)
+            }
+            None => {
+                let items = self.items(target)?;
+                (Some(items), self.iconst(0), self.list_len(items))
+            }
+        };
+        let source_scalar = if range.is_some() {
+            Some(Scalar::Int)
+        } else {
+            self.scalar_elements(&target.ty)
+        };
+        let out_scalar = match op {
+            QueryOp::Select => self.scalar_elements(ty),
+            QueryOp::Where => source_scalar,
+            _ => None,
+        };
         let local = self.locals[item.0 as usize];
         let collected = matches!(
             op,
@@ -1843,20 +1974,47 @@ impl Lower<'_, '_> {
             None
         };
 
-        let zero_i = self.iconst(0);
         let element = self.temp();
         let marker = Place::Local(hir::LocalId(u32::MAX));
         let empty_body: hir::Block = Vec::new();
+        let push_scalar = |l: &mut Self, list: ir::Value, v: Val, s: Scalar| {
+            let h = &l.c.helpers;
+            let push = match s {
+                Scalar::Int => h.list_push_int,
+                Scalar::Float => h.list_push_float,
+                _ => h.list_push_bool,
+            };
+            let x = l.scalar(v, s);
+            l.call(push, &[list, x]);
+        };
         self.counted_loop(
-            zero_i,
+            start,
             n,
             None,
             &marker,
             span,
             |l, i| {
-                let get = l.c.helpers.list_get;
-                l.call(get, &[element, items, i]);
-                l.store_local(local, Val::O(element, true));
+                match (items, source_scalar) {
+                    (None, _) => l.store_local(local, Val::S(i, Scalar::Int)),
+                    (Some(items), Some(s)) => {
+                        let h = &l.c.helpers;
+                        let get = match s {
+                            Scalar::Int => h.list_get_int,
+                            Scalar::Float => h.list_get_float,
+                            _ => h.list_get_bool,
+                        };
+                        let at = l.span(span);
+                        let v = l
+                            .call(get, &[l.ctx, items, i, at])
+                            .expect("returns the element");
+                        l.store_local(local, Val::S(v, s));
+                    }
+                    (Some(items), None) => {
+                        let get = l.c.helpers.list_get;
+                        l.call(get, &[element, items, i]);
+                        l.store_local(local, Val::O(element, true));
+                    }
+                }
                 let value = match body {
                     Some(b) => l.expr(b)?,
                     None => l.load_local(local),
@@ -1869,17 +2027,25 @@ impl Lower<'_, '_> {
                         l.b.ins().brif(keep, yes, &[], no, &[]);
                         l.b.switch_to_block(yes);
                         let current = l.load_local(local);
-                        let addr = l.boxed(current);
-                        let push = l.c.helpers.list_push;
-                        l.call(push, &[out.unwrap(), addr]);
+                        match out_scalar {
+                            Some(s) => push_scalar(l, out.unwrap(), current, s),
+                            None => {
+                                let addr = l.boxed(current);
+                                let push = l.c.helpers.list_push;
+                                l.call(push, &[out.unwrap(), addr]);
+                            }
+                        }
                         l.b.ins().jump(no, &[]);
                         l.b.switch_to_block(no);
                     }
-                    QueryOp::Select | QueryOp::Min | QueryOp::Max => {
-                        let addr = l.boxed(value);
-                        let push = l.c.helpers.list_push;
-                        l.call(push, &[out.unwrap(), addr]);
-                    }
+                    QueryOp::Select | QueryOp::Min | QueryOp::Max => match out_scalar {
+                        Some(s) => push_scalar(l, out.unwrap(), value, s),
+                        None => {
+                            let addr = l.boxed(value);
+                            let push = l.c.helpers.list_push;
+                            l.call(push, &[out.unwrap(), addr]);
+                        }
+                    },
                     QueryOp::Sum | QueryOp::Average => match (acc_var, acc_slot) {
                         (Some((var, s)), _) => {
                             let acc = l.b.use_var(var);
@@ -1964,5 +2130,320 @@ impl Lower<'_, '_> {
                 _ => Rep::Obj,
             },
         }
+    }
+}
+
+// ---- loops over unboxed lists ----------------------------------------------------------------
+
+/// What a loop body does with the lists it may access directly.
+#[derive(Default)]
+struct DirectUse {
+    lists: Vec<(ListVar, Scalar, bool)>,
+    assigned: Vec<ListVar>,
+}
+
+impl DirectUse {
+    fn note(&mut self, var: ListVar, s: Scalar, write: bool) -> bool {
+        match self.lists.iter_mut().find(|l| l.0 == var) {
+            Some(l) if l.1 != s => false,
+            Some(l) => {
+                l.2 |= write;
+                true
+            }
+            None => {
+                self.lists.push((var, s, write));
+                true
+            }
+        }
+    }
+}
+
+impl Lower<'_, '_> {
+    fn list_var(&self, e: &hir::Expr) -> Option<ListVar> {
+        match &e.kind {
+            ExprKind::Local(l) if matches!(self.locals[l.0 as usize], Local::Obj(_)) => {
+                Some(ListVar::Local(l.0))
+            }
+            ExprKind::Global(g) if matches!(self.private.get(&g.0), Some(Local::Obj(_))) => {
+                Some(ListVar::Private(g.0))
+            }
+            _ => None,
+        }
+    }
+
+    fn list_slot(&mut self, var: ListVar) -> ir::Value {
+        let local = match var {
+            ListVar::Local(l) => self.locals[l as usize],
+            ListVar::Private(g) => self.private[&g],
+        };
+        match local {
+            Local::Obj(index) => self.slot_addr(index),
+            Local::Scalar(..) => unreachable!("list variables live in slots"),
+        }
+    }
+
+    fn scalar_var(&self, place: &Place) -> bool {
+        match place {
+            Place::Local(l) => matches!(self.locals[l.0 as usize], Local::Scalar(..)),
+            Place::Global(g) => matches!(self.private.get(&g.0), Some(Local::Scalar(..))),
+            _ => false,
+        }
+    }
+
+    /// The lists a loop reads and writes, if its body does nothing but scalar
+    /// arithmetic and element access on unboxed lists held in variables the
+    /// loop does not reassign: no calls, so no other code can see or resize
+    /// the lists while it runs.
+    fn direct_lists(&self, stmt: &hir::Stmt) -> Option<Vec<(ListVar, Scalar, bool)>> {
+        let mut used = DirectUse::default();
+        if !self.direct_stmt(stmt, &mut used) || used.lists.is_empty() {
+            return None;
+        }
+        if used.lists.iter().any(|l| used.assigned.contains(&l.0)) {
+            return None;
+        }
+        Some(used.lists)
+    }
+
+    fn direct_block(&self, block: &hir::Block, used: &mut DirectUse) -> bool {
+        block.iter().all(|s| self.direct_stmt(s, used))
+    }
+
+    fn direct_stmt(&self, stmt: &hir::Stmt, used: &mut DirectUse) -> bool {
+        match &stmt.kind {
+            StmtKind::Expr(e) => self.direct_expr(e, used),
+            StmtKind::Assign { place, value, .. } => {
+                let target_ok = match place {
+                    Place::Index { target, index } => {
+                        self.direct_element_use(target, index, true, used)
+                    }
+                    p if self.scalar_var(p) => true,
+                    Place::Local(l) => {
+                        used.assigned.push(ListVar::Local(l.0));
+                        false
+                    }
+                    _ => false,
+                };
+                target_ok && self.direct_expr(value, used)
+            }
+            StmtKind::If {
+                branches,
+                otherwise,
+            } => {
+                branches
+                    .iter()
+                    .all(|(c, b)| self.direct_expr(c, used) && self.direct_block(b, used))
+                    && self.direct_block(otherwise, used)
+            }
+            StmtKind::While { cond, body } => {
+                self.direct_expr(cond, used) && self.direct_block(body, used)
+            }
+            StmtKind::For { var, iter, body } => {
+                let range = matches!(&iter.kind, ExprKind::CallBuiltin { builtin: Builtin::Range, args } if args.iter().all(|a| self.direct_expr(a, used)));
+                range && self.scalar_var(var) && self.direct_block(body, used)
+            }
+            StmtKind::Repeat { count, body, .. } => {
+                self.direct_expr(count, used) && self.direct_block(body, used)
+            }
+            StmtKind::Break | StmtKind::Continue => true,
+            _ => false,
+        }
+    }
+
+    fn direct_element_use(
+        &self,
+        target: &hir::Expr,
+        index: &hir::Expr,
+        write: bool,
+        used: &mut DirectUse,
+    ) -> bool {
+        match (self.list_var(target), self.scalar_elements(&target.ty)) {
+            (Some(var), Some(s)) => {
+                self.rep(&index.ty) == Rep::Scalar(Scalar::Int)
+                    && self.direct_expr(index, used)
+                    && used.note(var, s, write)
+            }
+            _ => false,
+        }
+    }
+
+    fn direct_expr(&self, e: &hir::Expr, used: &mut DirectUse) -> bool {
+        let scalar = |t: &Ty| matches!(self.rep(t), Rep::Scalar(_));
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => true,
+            ExprKind::Local(l) => self.scalar_var(&Place::Local(*l)),
+            ExprKind::Global(g) => self.scalar_var(&Place::Global(*g)),
+            ExprKind::Unary { operand, .. } => scalar(&e.ty) && self.direct_expr(operand, used),
+            ExprKind::IntToFloat(x) => self.direct_expr(x, used),
+            ExprKind::Binary { op, lhs, rhs } => {
+                !matches!(op, BinOp::In | BinOp::MatMul)
+                    && scalar(&e.ty)
+                    && scalar(&lhs.ty)
+                    && scalar(&rhs.ty)
+                    && self.direct_expr(lhs, used)
+                    && self.direct_expr(rhs, used)
+            }
+            ExprKind::IfElse {
+                cond,
+                then,
+                otherwise,
+            } => {
+                scalar(&e.ty)
+                    && self.direct_expr(cond, used)
+                    && self.direct_expr(then, used)
+                    && self.direct_expr(otherwise, used)
+            }
+            ExprKind::Index { target, index } => {
+                self.direct_element_use(target, index, false, used)
+            }
+            ExprKind::CallBuiltin {
+                builtin: Builtin::Len,
+                args,
+            } => match (
+                args.first().and_then(|a| self.list_var(a)),
+                args.first().and_then(|a| self.scalar_elements(&a.ty)),
+            ) {
+                (Some(var), Some(s)) => used.note(var, s, false),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Lowers a loop twice: a version that locks its lists and reads and
+    /// writes their unboxed elements in place, and the ordinary version for
+    /// when a list is not stored unboxed.
+    fn direct_loop(&mut self, stmt: &hir::Stmt, lists: &[(ListVar, Scalar, bool)]) -> R<()> {
+        let slots: Vec<ir::Value> = lists.iter().map(|l| self.list_slot(l.0)).collect();
+        let kinds: Vec<ir::Value> = lists
+            .iter()
+            .map(|(_, s, write)| {
+                let kind = match s {
+                    Scalar::Int => 0,
+                    Scalar::Float => 1,
+                    _ => 2,
+                } | if *write { 4 } else { 0 };
+                self.iconst(kind)
+            })
+            .collect();
+        let n = self.iconst(lists.len() as i64);
+        let slot_array = self.ptr_array(&slots);
+        let kind_bytes = self.byte_array(&kinds);
+        let ptrs = self.word_buffer(lists.len());
+        let lens = self.word_buffer(lists.len());
+        let lock = self.c.helpers.lock_lists;
+        let ok = self
+            .call(lock, &[n, slot_array, kind_bytes, ptrs, lens])
+            .expect("returns whether it locked");
+        let (fast, slow, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        self.b.ins().brif(ok, fast, &[], slow, &[]);
+
+        self.b.switch_to_block(fast);
+        let mut direct = HashMap::new();
+        for (i, (var, s, _)) in lists.iter().enumerate() {
+            let p = self
+                .b
+                .ins()
+                .load(types::I64, MemFlagsData::trusted(), ptrs, (i * 8) as i32);
+            let len = self
+                .b
+                .ins()
+                .load(types::I64, MemFlagsData::trusted(), lens, (i * 8) as i32);
+            let (pv, lv) = (
+                self.b.declare_var(types::I64),
+                self.b.declare_var(types::I64),
+            );
+            self.b.def_var(pv, p);
+            self.b.def_var(lv, len);
+            direct.insert(*var, (pv, lv, *s));
+        }
+        let unlock = self.c.helpers.unlock_lists;
+        let unlock_then_fail = self.b.create_block();
+        let outer_fail = std::mem::replace(&mut self.fail, unlock_then_fail);
+        self.direct = Some(direct);
+        let lowered = self.plain_stmt(stmt);
+        self.direct = None;
+        self.fail = outer_fail;
+        lowered?;
+        if !self.terminated() {
+            self.call(unlock, &[n, slot_array, kind_bytes]);
+            self.b.ins().jump(done, &[]);
+        }
+        self.b.switch_to_block(unlock_then_fail);
+        self.call(unlock, &[n, slot_array, kind_bytes]);
+        self.b.ins().jump(self.fail, &[]);
+
+        self.b.switch_to_block(slow);
+        self.plain_stmt(stmt)?;
+        if !self.terminated() {
+            self.b.ins().jump(done, &[]);
+        }
+        self.b.switch_to_block(done);
+        Ok(())
+    }
+
+    /// The address of `target[index]` inside a direct loop, after checking the
+    /// index (negative ones count from the end) against the list's length.
+    fn direct_element(
+        &mut self,
+        target: &hir::Expr,
+        index: &hir::Expr,
+    ) -> R<Option<(ir::Value, Scalar)>> {
+        let Some((ptr, len, s)) = self
+            .list_var(target)
+            .and_then(|v| self.direct.as_ref()?.get(&v).copied())
+        else {
+            return Ok(None);
+        };
+        let i = self.expr(index)?;
+        let i = self.scalar(i, Scalar::Int);
+        let len = self.b.use_var(len);
+        let negative = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, i, 0);
+        let wrapped = self.b.ins().iadd(i, len);
+        let at = self.b.ins().select(negative, wrapped, i);
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, at, len);
+        let (ok, bad) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(inside, ok, &[], bad, &[]);
+        self.b.switch_to_block(bad);
+        let span = self.span(index.span);
+        let raise = self.c.helpers.raise_index;
+        self.call(raise, &[self.ctx, i, len, span]);
+        self.b.ins().jump(self.fail, &[]);
+        self.b.switch_to_block(ok);
+        let size = match s {
+            Scalar::Bool => 1,
+            _ => 8,
+        };
+        let offset = self.b.ins().imul_imm_s(at, size);
+        let base = self.b.use_var(ptr);
+        Ok(Some((self.b.ins().iadd(base, offset), s)))
+    }
+
+    /// A fresh stack array holding one byte per value.
+    fn byte_array(&mut self, values: &[ir::Value]) -> ir::Value {
+        let slot = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            values.len().max(1) as u32,
+            0,
+        ));
+        for (i, v) in values.iter().enumerate() {
+            let byte = self.b.ins().ireduce(types::I8, *v);
+            self.b.ins().stack_store(types::I64, byte, slot, i as i32);
+        }
+        self.b.ins().stack_addr(types::I64, slot, 0)
+    }
+
+    /// A fresh stack array of `n` words for a helper to fill.
+    fn word_buffer(&mut self, n: usize) -> ir::Value {
+        let slot = self.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (n.max(1) * 8) as u32,
+            3,
+        ));
+        self.b.ins().stack_addr(types::I64, slot, 0)
     }
 }

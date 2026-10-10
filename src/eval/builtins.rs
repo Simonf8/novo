@@ -20,7 +20,7 @@ fn float(v: &Value) -> Result<f64, String> {
 
 fn list(v: &Value) -> Result<Vec<Value>, String> {
     match v {
-        Value::List(l) => Ok(l.read().clone()),
+        Value::List(l) => Ok(l.read().to_vec()),
         other => Err(format!("expected a List, found a {}", other.type_name())),
     }
 }
@@ -32,7 +32,7 @@ fn string_list(v: &Value) -> Result<Vec<String>, String> {
     items
         .read()
         .iter()
-        .map(|s| string(s).map(|s| s.to_string()))
+        .map(|s| string(&s).map(|s| s.to_string()))
         .collect()
 }
 
@@ -82,7 +82,7 @@ fn string_rows(v: &Value) -> Result<Vec<Vec<String>>, String> {
             Value::List(fields) => fields
                 .read()
                 .iter()
-                .map(|f| string(f).map(|s| s.to_string()))
+                .map(|f| string(&f).map(|s| s.to_string()))
                 .collect(),
             other => Err(format!("expected a List, found a {}", other.type_name())),
         })
@@ -197,7 +197,7 @@ impl Interp {
             Builtin::Min | Builtin::Max => {
                 let items = if args.len() == 1 {
                     match &args[0] {
-                        Value::List(l) => l.read().clone(),
+                        Value::List(l) => l.read().to_vec(),
                         other => {
                             return Err(format!(
                                 "`{}` needs a list, found a {}",
@@ -613,11 +613,11 @@ impl Interp {
                     let i = index(int(&args[0])?, l.len())?;
                     l.remove(i)
                 }
-                "contains" => Value::Bool(list.read().iter().any(|x| equal(x, &args[0]))),
+                "contains" => Value::Bool(list.read().iter().any(|x| equal(&x, &args[0]))),
                 "index_of" => Value::Int(
                     list.read()
                         .iter()
-                        .position(|x| equal(x, &args[0]))
+                        .position(|x| equal(&x, &args[0]))
                         .map(|i| i as i64)
                         .unwrap_or(-1),
                 ),
@@ -628,14 +628,14 @@ impl Interp {
                         None => None,
                     };
                     let (a, b) = bounds(Some(int(&args[0])?), end, l.len());
-                    Value::list(l[a..b].to_vec())
+                    Value::from_items(l.slice(a, b))
                 }
                 "reverse" => {
                     list.write().reverse();
                     Value::None
                 }
                 "sort" => {
-                    let mut items = list.read().clone();
+                    let mut items = list.read().to_vec();
                     let mut err = None;
                     items.sort_by(|a, b| {
                         compare(a, b).unwrap_or_else(|e| {
@@ -646,7 +646,7 @@ impl Interp {
                     if let Some(e) = err {
                         return Err(e);
                     }
-                    *list.write() = items;
+                    *list.write() = items.into();
                     Value::None
                 }
                 "clear" => {
@@ -658,12 +658,12 @@ impl Interp {
                         Some(s) => string(s)?,
                         None => "".into(),
                     };
-                    let parts: Vec<String> = list.read().iter().map(|v| self.display(v)).collect();
+                    let parts: Vec<String> = list.read().iter().map(|v| self.display(&v)).collect();
                     Value::Str(parts.join(&sep).into())
                 }
                 "extend" => {
                     let other = match &args[0] {
-                        Value::List(o) => o.read().clone(),
+                        Value::List(o) => o.read().to_vec(),
                         other => {
                             return Err(format!(
                                 "`extend` needs a list, found a {}",
@@ -674,17 +674,15 @@ impl Interp {
                     list.write().extend(other);
                     Value::None
                 }
-                "copy" | "clone" => Value::list(list.read().clone()),
-                "first" => list
-                    .read()
-                    .first()
-                    .cloned()
-                    .ok_or("`first` of an empty list")?,
-                "last" => list
-                    .read()
-                    .last()
-                    .cloned()
-                    .ok_or("`last` of an empty list")?,
+                "copy" | "clone" => Value::from_items(list.read().clone()),
+                "first" => list.read().get(0).ok_or("`first` of an empty list")?,
+                "last" => {
+                    let l = list.read();
+                    l.len()
+                        .checked_sub(1)
+                        .and_then(|i| l.get(i))
+                        .ok_or("`last` of an empty list")?
+                }
                 "is_empty" => Value::Bool(list.read().is_empty()),
                 _ => return Err(format!("List has no method `{name}`")),
             }),
@@ -1085,7 +1083,7 @@ pub mod json {
                     if i > 0 {
                         out.push(',');
                     }
-                    write(out, item, depth + 1)?;
+                    write(out, &item, depth + 1)?;
                 }
                 out.push(']');
             }

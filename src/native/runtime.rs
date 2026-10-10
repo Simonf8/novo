@@ -8,7 +8,7 @@
 use crate::check::builtins::Builtin;
 use crate::check::hir::{self, FuncId, GlobalId, ModuleId};
 use crate::check::types::ClassId;
-use crate::eval::value::{Closure, Dict, Instance, Key, Value, format_float};
+use crate::eval::value::{Closure, Dict, Instance, Items, Key, Value, format_float};
 use crate::eval::{Interp, RtError};
 use crate::source::{FileId, Span};
 use crate::syntax::ast::BinOp;
@@ -588,9 +588,141 @@ unsafe extern "C" fn novo_global_set(c: *mut Ctx, g: u32, src: *mut Value) {
 
 unsafe extern "C" fn novo_items(c: *mut Ctx, dst: *mut Value, iterable: *mut Value, span: u64) {
     let c = unsafe { ctx(c) };
+    if let Value::List(items) = unsafe { slot(iterable) } {
+        let copy = items.read().clone();
+        *unsafe { slot(dst) } = Value::from_items(copy);
+        return;
+    }
     let result = c.interp().items(unsafe { slot(iterable) });
     if let Some(items) = c.check(result, span) {
         *unsafe { slot(dst) } = Value::list(items);
+    }
+}
+
+/// The distinct lists among `n` slots, in address order, each with whether any
+/// use writes to it. Bit 2 of a kind marks a write.
+unsafe fn distinct_lists<'a>(
+    n: usize,
+    slots: *const *mut Value,
+    kinds: *const u8,
+) -> Option<Vec<(usize, &'a RwLock<Items>, bool)>> {
+    let mut lists: Vec<(usize, &RwLock<Items>, bool)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let Value::List(list) = (unsafe { slot(*slots.add(i)) }) else {
+            return None;
+        };
+        let write = unsafe { *kinds.add(i) } & 4 != 0;
+        let lock: &RwLock<Items> = list;
+        lists.push((lock as *const _ as usize, lock, write));
+    }
+    lists.sort_by_key(|l| l.0);
+    lists.dedup_by(|later, kept| {
+        let same = later.0 == kept.0;
+        if same {
+            kept.2 |= later.2;
+        }
+        same
+    });
+    Some(lists)
+}
+
+unsafe fn release(lists: &[(usize, &RwLock<Items>, bool)]) {
+    use parking_lot::lock_api::RawRwLock as _;
+    for (_, lock, write) in lists {
+        // SAFETY: `novo_lock_lists` locked each list in this mode.
+        unsafe {
+            if *write {
+                lock.raw().unlock_exclusive();
+            } else {
+                lock.raw().unlock_shared();
+            }
+        }
+    }
+}
+
+/// Locks the lists a loop reads and writes directly, in address order so that
+/// loops on different threads cannot deadlock, and reports where each list's
+/// unboxed elements are. Returns 0, holding no locks, if a list is not stored
+/// unboxed with the element kind the loop expects.
+unsafe extern "C" fn novo_lock_lists(
+    n: usize,
+    slots: *const *mut Value,
+    kinds: *const u8,
+    ptrs: *mut u64,
+    lens: *mut u64,
+) -> u8 {
+    use parking_lot::lock_api::RawRwLock as _;
+    let Some(lists) = (unsafe { distinct_lists(n, slots, kinds) }) else {
+        return 0;
+    };
+    for (_, lock, write) in &lists {
+        // SAFETY: each lock is released by `release`, after the loop or on failure.
+        unsafe {
+            if *write {
+                lock.raw().lock_exclusive();
+            } else {
+                lock.raw().lock_shared();
+            }
+        }
+    }
+    for i in 0..n {
+        let Value::List(list) = (unsafe { slot(*slots.add(i)) }) else {
+            unreachable!("checked above")
+        };
+        let kind = unsafe { *kinds.add(i) };
+        // SAFETY: the list is locked, exclusively if this loop writes to it.
+        let items = unsafe { &mut *list.data_ptr() };
+        if kind & 4 != 0 && items.is_empty() && matches!(items, Items::Values(_)) {
+            *items = match kind & 3 {
+                0 => Items::Ints(Vec::new()),
+                1 => Items::Floats(Vec::new()),
+                _ => Items::Bools(Vec::new()),
+            };
+        }
+        let found = match (kind & 3, items) {
+            (0, Items::Ints(v)) => Some((v.as_mut_ptr() as u64, v.len())),
+            (1, Items::Floats(v)) => Some((v.as_mut_ptr() as u64, v.len())),
+            (2, Items::Bools(v)) => Some((v.as_mut_ptr() as u64, v.len())),
+            _ => None,
+        };
+        let Some((ptr, len)) = found else {
+            unsafe { release(&lists) };
+            return 0;
+        };
+        unsafe {
+            *ptrs.add(i) = ptr;
+            *lens.add(i) = len as u64;
+        }
+    }
+    1
+}
+
+unsafe extern "C" fn novo_unlock_lists(n: usize, slots: *const *mut Value, kinds: *const u8) {
+    if let Some(lists) = unsafe { distinct_lists(n, slots, kinds) } {
+        unsafe { release(&lists) };
+    }
+}
+
+unsafe extern "C" fn novo_raise_index(c: *mut Ctx, i: i64, len: i64, span: u64) {
+    let c = unsafe { ctx(c) };
+    c.check::<usize>(crate::eval::builtins::index(i, len as usize), span);
+}
+
+unsafe extern "C" fn novo_list_push_int(list: *mut Value, v: i64) {
+    if let Value::List(items) = unsafe { slot(list) } {
+        items.write().push(Value::Int(v));
+    }
+}
+
+unsafe extern "C" fn novo_list_push_float(list: *mut Value, v: f64) {
+    if let Value::List(items) = unsafe { slot(list) } {
+        items.write().push(Value::Float(v));
+    }
+}
+
+unsafe extern "C" fn novo_list_push_bool(list: *mut Value, v: u8) {
+    if let Value::List(items) = unsafe { slot(list) } {
+        items.write().push(Value::Bool(v != 0));
     }
 }
 
@@ -603,7 +735,7 @@ unsafe extern "C" fn novo_list_len(list: *mut Value) -> i64 {
 
 unsafe extern "C" fn novo_list_get(dst: *mut Value, list: *mut Value, i: i64) {
     let v = match unsafe { slot(list) } {
-        Value::List(items) => items.read().get(i as usize).cloned().unwrap_or(Value::None),
+        Value::List(items) => items.read().get(i as usize).unwrap_or(Value::None),
         _ => Value::None,
     };
     *unsafe { slot(dst) } = v;
@@ -672,11 +804,89 @@ unsafe extern "C" fn novo_list_index(
     };
     let items = items.read();
     if let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) {
-        let v = items[at].clone();
+        let v = items.get(at).expect("index in range");
         drop(items);
         *unsafe { slot(dst) } = v;
     }
 }
+
+/// List element access for compiled code working with raw Ints, Floats and
+/// Bools (passed as bytes): unboxed lists are read and written directly, and
+/// other lists convert, raising an error if an element has the wrong kind.
+macro_rules! typed_list_access {
+    ($get:ident, $set:ident, $raw:ty, $items:ident, $value:ident, $name:literal, $to_raw:expr, $from_raw:expr) => {
+        unsafe extern "C" fn $get(c: *mut Ctx, list: *mut Value, i: i64, span: u64) -> $raw {
+            let c = unsafe { ctx(c) };
+            let Value::List(items) = (unsafe { slot(list) }) else {
+                return Default::default();
+            };
+            let items = items.read();
+            let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) else {
+                return Default::default();
+            };
+            let found = match &*items {
+                Items::$items(xs) => Some(xs[at]),
+                other => match other.get(at) {
+                    Some(Value::$value(x)) => Some(x),
+                    _ => None,
+                },
+            };
+            match found {
+                Some(x) => $to_raw(x),
+                None => {
+                    c.check::<()>(Err(format!("expected {} in the list", $name)), span);
+                    Default::default()
+                }
+            }
+        }
+
+        unsafe extern "C" fn $set(c: *mut Ctx, list: *mut Value, i: i64, v: $raw, span: u64) {
+            let c = unsafe { ctx(c) };
+            let Value::List(items) = (unsafe { slot(list) }) else {
+                return;
+            };
+            let mut items = items.write();
+            let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) else {
+                return;
+            };
+            match &mut *items {
+                Items::$items(xs) => xs[at] = $from_raw(v),
+                other => other.set(at, Value::$value($from_raw(v))),
+            }
+        }
+    };
+}
+
+typed_list_access!(
+    novo_list_get_int,
+    novo_list_set_int,
+    i64,
+    Ints,
+    Int,
+    "an Int",
+    |x| x,
+    |x| x
+);
+typed_list_access!(
+    novo_list_get_float,
+    novo_list_set_float,
+    f64,
+    Floats,
+    Float,
+    "a Float",
+    |x| x,
+    |x| x
+);
+typed_list_access!(
+    novo_list_get_bool,
+    novo_list_set_bool,
+    u8,
+    Bools,
+    Bool,
+    "a Bool",
+    u8::from,
+    |x: u8| x != 0
+);
 
 unsafe extern "C" fn novo_list_set(
     c: *mut Ctx,
@@ -691,7 +901,7 @@ unsafe extern "C" fn novo_list_set(
     };
     let mut items = items.write();
     if let Some(at) = c.check(crate::eval::builtins::index(i, items.len()), span) {
-        items[at] = unsafe { slot(v) }.clone();
+        items.set(at, unsafe { slot(v) }.clone());
     }
 }
 
@@ -723,7 +933,7 @@ unsafe extern "C" fn novo_parallel_map(
     let c = unsafe { ctx(c) };
     let f = unsafe { slot(f) }.clone();
     let items = match unsafe { slot(list) } {
-        Value::List(items) => items.read().clone(),
+        Value::List(items) => items.read().to_vec(),
         _ => Vec::new(),
     };
     let jobs = items
@@ -927,6 +1137,18 @@ helpers! {
     map_has = novo_map_has(I64, I64, I64, I64) -> I8;
     list_index = novo_list_index(I64, I64, I64, I64, I64);
     list_set = novo_list_set(I64, I64, I64, I64, I64);
+    list_get_int = novo_list_get_int(I64, I64, I64, I64) -> I64;
+    list_push_int = novo_list_push_int(I64, I64);
+    lock_lists = novo_lock_lists(I64, I64, I64, I64, I64) -> I8;
+    unlock_lists = novo_unlock_lists(I64, I64, I64);
+    raise_index = novo_raise_index(I64, I64, I64, I64);
+    list_push_float = novo_list_push_float(I64, F64);
+    list_push_bool = novo_list_push_bool(I64, I8);
+    list_get_float = novo_list_get_float(I64, I64, I64, I64) -> F64;
+    list_get_bool = novo_list_get_bool(I64, I64, I64, I64) -> I8;
+    list_set_int = novo_list_set_int(I64, I64, I64, I64, I64);
+    list_set_float = novo_list_set_float(I64, I64, I64, F64, I64);
+    list_set_bool = novo_list_set_bool(I64, I64, I64, I8, I64);
     run_parallel = novo_run_parallel(I64, I64, I64, I64, I64);
     parallel_map = novo_parallel_map(I64, I64, I64, I64, I64);
     try_mark = novo_try_mark(I64) -> I64;

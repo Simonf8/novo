@@ -97,6 +97,7 @@ fn shape_arg(v: &Value) -> R<Vec<usize>> {
     };
     items
         .read()
+        .to_vec()
         .iter()
         .map(|d| match d {
             Value::Int(n) if *n >= 0 => Ok(*n as usize),
@@ -110,7 +111,12 @@ fn reshape_arg(v: &Value, from: &[usize]) -> R<Vec<usize>> {
     let Value::List(items) = v else {
         return Err("a shape must be a list of Ints".into());
     };
-    let dims: Vec<i64> = items.read().iter().map(int_arg).collect::<R<_>>()?;
+    let dims: Vec<i64> = items
+        .read()
+        .to_vec()
+        .iter()
+        .map(int_arg)
+        .collect::<R<_>>()?;
     let total: usize = from.iter().product();
     let known: i64 = dims.iter().filter(|d| **d != -1).product();
     let holes = dims.iter().filter(|d| **d == -1).count();
@@ -225,8 +231,8 @@ fn from_value(v: &Value) -> R<Tensor> {
             Value::List(items) => {
                 let items = items.read();
                 shape.push(items.len());
-                match items.first() {
-                    Some(first) => first.clone(),
+                match items.get(0) {
+                    Some(first) => first,
                     None => break,
                 }
             }
@@ -247,7 +253,7 @@ fn flatten(v: &Value, shape: &[usize], depth: usize, out: &mut Vec<f32>) -> R<()
                 return Err("nested lists must form a rectangular shape".into());
             }
             for item in items.iter() {
-                flatten(item, shape, depth + 1, out)?;
+                flatten(&item, shape, depth + 1, out)?;
             }
             Ok(())
         }
@@ -334,9 +340,12 @@ impl State {
                     if items.is_empty() {
                         return Err("`random.choice` of an empty list".into());
                     }
-                    return Ok(items[(rng.next() % items.len() as u64) as usize].clone());
+                    return Ok(items
+                        .get((rng.next() % items.len() as u64) as usize)
+                        .expect("index in range"));
                 }
                 let mut items = items.write();
+                let items = items.values_mut();
                 for i in (1..items.len()).rev() {
                     let j = (rng.next() % (i as u64 + 1)) as usize;
                     items.swap(i, j);
@@ -422,8 +431,8 @@ impl State {
                 let mut bytes = Vec::with_capacity(items.read().len() * 4);
                 for v in items.read().iter() {
                     match v {
-                        Value::Int(i) if (0..=u32::MAX as i64).contains(i) => {
-                            bytes.extend_from_slice(&(*i as u32).to_le_bytes())
+                        Value::Int(i) if (0..=u32::MAX as i64).contains(&i) => {
+                            bytes.extend_from_slice(&(i as u32).to_le_bytes())
                         }
                         _ => return Err("token ids must be Ints from 0 to 4294967295".into()),
                     }
@@ -521,7 +530,12 @@ impl State {
                 let Value::List(items) = &args[0] else {
                     return Err(format!("`{name}` takes a list of tensors"));
                 };
-                let tensors = items.read().iter().map(tensor_arg).collect::<R<Vec<_>>>()?;
+                let tensors = items
+                    .read()
+                    .to_vec()
+                    .iter()
+                    .map(tensor_arg)
+                    .collect::<R<Vec<_>>>()?;
                 if tensors.is_empty() {
                     return Err(format!("`{name}` needs at least one tensor"));
                 }
@@ -693,7 +707,7 @@ impl State {
                 let ids = items
                     .read()
                     .iter()
-                    .map(|v| match int_arg(v)? {
+                    .map(|v| match int_arg(&v)? {
                         i if (0..n).contains(&i) => Ok(i as u32),
                         i => Err(format!(
                             "index {i} is out of range for a first dimension of size {n}"

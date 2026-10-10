@@ -3,6 +3,7 @@
 
 pub mod builtins;
 mod csv;
+mod list;
 mod ops;
 mod optim;
 mod pool;
@@ -525,7 +526,7 @@ impl Interp {
 
     pub(crate) fn items(&self, v: &Value) -> Result<Vec<Value>, String> {
         match v {
-            Value::List(l) => Ok(l.read().clone()),
+            Value::List(l) => Ok(l.read().to_vec()),
             Value::Str(s) => Ok(s
                 .chars()
                 .map(|c| Value::Str(c.to_string().into()))
@@ -638,7 +639,8 @@ impl Interp {
         match (obj, idx) {
             (Value::List(l), Value::Int(i)) => {
                 let l = l.read();
-                Ok(l[builtins::index(*i, l.len())?].clone())
+                Ok(l.get(builtins::index(*i, l.len())?)
+                    .expect("index in range"))
             }
             (Value::Str(s), Value::Int(i)) => {
                 let len = s.chars().count();
@@ -676,7 +678,7 @@ impl Interp {
             (Value::List(l), Value::Int(i)) => {
                 let mut l = l.write();
                 let at = builtins::index(*i, l.len())?;
-                l[at] = v;
+                l.set(at, v);
                 Ok(())
             }
             (Value::Map(m), k) => {
@@ -1140,7 +1142,7 @@ pub(crate) fn slice_value(obj: &Value, s: Option<i64>, t: Option<i64>) -> Result
         Value::List(l) => {
             let l = l.read();
             let (a, b) = builtins::bounds(s, t, l.len());
-            Ok(Value::list(l[a..b].to_vec()))
+            Ok(Value::from_items(l.slice(a, b)))
         }
         Value::Str(text) => {
             let chars: Vec<char> = text.chars().collect();

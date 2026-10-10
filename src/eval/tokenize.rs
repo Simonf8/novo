@@ -63,7 +63,7 @@ fn ints(v: &Value) -> R<Vec<u32>> {
         .read()
         .iter()
         .map(|x| match x {
-            Value::Int(i) if (0..=u32::MAX as i64).contains(i) => Ok(*i as u32),
+            Value::Int(i) if (0..=u32::MAX as i64).contains(&i) => Ok(i as u32),
             other => Err(format!("a {} is not a token id", other.type_name())),
         })
         .collect()

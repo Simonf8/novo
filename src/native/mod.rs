@@ -276,6 +276,9 @@ impl Compiler {
                 Ok(functions) => {
                     let mut ctx = Context::new();
                     for (id, func) in functions {
+                        if std::env::var_os("NOVO_CLIF").is_some() {
+                            eprintln!("{}", func.display());
+                        }
                         ctx.func = func;
                         if let Err(e) = self.module.define_function(id, &mut ctx) {
                             if log {
