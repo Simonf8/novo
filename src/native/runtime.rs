@@ -733,11 +733,18 @@ unsafe extern "C" fn novo_parallel_map(
     }
 }
 
-unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value) {
+/// How much output and f-string text is pending when a `try` starts, so a
+/// `catch` discards only what its own body left unfinished.
+unsafe extern "C" fn novo_try_mark(c: *mut Ctx) -> u64 {
+    let c = unsafe { ctx(c) };
+    c.line.len() as u64 | ((c.fstrings.len() as u64) << 32)
+}
+
+unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value, mark: u64) {
     let c = unsafe { ctx(c) };
     c.status = 0;
-    c.line.clear();
-    c.fstrings.clear();
+    c.line.truncate((mark & 0xFFFF_FFFF) as usize);
+    c.fstrings.truncate((mark >> 32) as usize);
     let message = c.error.take().map(|e| e.message).unwrap_or_default();
     *unsafe { slot(dst) } = Value::Str(message.into());
 }
@@ -906,7 +913,8 @@ helpers! {
     list_set = novo_list_set(I64, I64, I64, I64, I64);
     run_parallel = novo_run_parallel(I64, I64, I64, I64, I64);
     parallel_map = novo_parallel_map(I64, I64, I64, I64, I64);
-    take_error = novo_take_error(I64, I64);
+    try_mark = novo_try_mark(I64) -> I64;
+    take_error = novo_take_error(I64, I64, I64);
     init_module = novo_init_module(I64, I32, I64);
     eval_closed = novo_eval_closed(I64, I64, I64);
     together = novo_together(I64, I64, I64, I64);

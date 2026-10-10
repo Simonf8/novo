@@ -1,0 +1,8 @@
+1
+3
+caught: too big: 3
+caught: division by zero
+caught: index 0 is out of range for length 0
+1 fallback
+2 and fallback
+the partial line is dropped

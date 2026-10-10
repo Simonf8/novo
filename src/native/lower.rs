@@ -708,6 +708,8 @@ impl Lower<'_, '_> {
             StmtKind::Try { body, var, handler } => {
                 let catch = self.b.create_block();
                 let done = self.b.create_block();
+                let try_mark = self.c.helpers.try_mark;
+                let mark = self.call(try_mark, &[self.ctx]).expect("returns the mark");
                 let outer = std::mem::replace(&mut self.fail, catch);
                 self.block(body)?;
                 self.fail = outer;
@@ -717,7 +719,7 @@ impl Lower<'_, '_> {
                 self.b.switch_to_block(catch);
                 let message = self.temp();
                 let take = self.c.helpers.take_error;
-                self.call(take, &[self.ctx, message]);
+                self.call(take, &[self.ctx, message, mark]);
                 self.store(var, Val::O(message, true), span)?;
                 self.block(handler)?;
                 if !self.terminated() {
