@@ -6,6 +6,7 @@ mod csv;
 mod ops;
 mod optim;
 mod tensor;
+mod tokenize;
 pub mod value;
 
 use crate::check::hir::{self, Block, ExprKind, FuncId, ModuleId, Place, Program, StmtKind};
@@ -968,6 +969,7 @@ impl Interp {
             }
             Value::Tensor(t) => self.tensors.method(t, name, &args).at(span),
             Value::Optimizer(o) => tensor::optimizer_method(o, name, &args).at(span),
+            Value::Tokenizer(t) => tokenize::method(t, name, &args).at(span),
             Value::Map(m) if !is_map_method(name) => {
                 let f = m.read().get(&Key::Str(name.into())).cloned();
                 match f {

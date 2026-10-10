@@ -1,0 +1,33 @@
+use fs
+use json
+use tokenizer
+
+# A tokenizer in the format Llama 3 publishes, checked against Hugging Face's own output.
+dir = "tests/fixtures/llama-tokenizer"
+tok = tokenizer.load(dir)
+show tok, tok.vocab_size(), tok.id("<|begin_of_text|>"), tok.token(0)
+matches = 0
+cases = json.parse(fs.read_file(dir + "/expected.json"))
+for case in cases:
+    text: String = case["text"]
+    ids = tok.encode(text)
+    expected: List[Int] = case["ids"]
+    plain: List[Int] = case["plain"]
+    decoded: String = case["decoded"]
+    if ids == expected and tok.encode(text, false) == plain and tok.decode(ids) == decoded:
+        matches += 1
+    else:
+        show "mismatch:", text, ids
+show f"{matches} of {len(cases)} samples match"
+
+# Training a byte-level BPE tokenizer on our own text.
+corpus = range(20) select "the quick brown fox jumps over the lazy dog"
+small = tokenizer.train(corpus, 300, ["<eos>"])
+ids = small.encode("the lazy fox<eos>")
+show len(ids) < len("the lazy fox") + 1, small.decode(ids), small.decode(ids, false)
+small.save("target/novo-test-tokenizer.json")
+show tokenizer.load("target/novo-test-tokenizer.json").encode("the lazy fox") == small.encode("the lazy fox")
+try:
+    tok.token(100000)
+catch e:
+    show e

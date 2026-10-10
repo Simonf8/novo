@@ -22,6 +22,7 @@ pub enum Ty {
     /// One dimension of a tensor shape.
     Dim(u64),
     Optimizer,
+    Tokenizer,
     Any,
     Var(u32),
 }
@@ -152,6 +153,7 @@ impl<'a> fmt::Display for TyDisplay<'a> {
             }
             Ty::Dim(n) => write!(f, "{n}"),
             Ty::Optimizer => f.write_str("Optimizer"),
+            Ty::Tokenizer => f.write_str("Tokenizer"),
             Ty::Any => f.write_str("Any"),
             Ty::Var(_) => f.write_str("_"),
         }

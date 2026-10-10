@@ -396,6 +396,67 @@ impl State {
                 candle_core::safetensors::save(&named, &**path).map_err(err)?;
                 return Ok(Value::None);
             }
+            Builtin::NnSaveTokens => {
+                let Value::List(items) = &args[0] else {
+                    return Err("`nn.save_tokens` takes a list of token ids".into());
+                };
+                let mut bytes = Vec::with_capacity(items.read().len() * 4);
+                for v in items.read().iter() {
+                    match v {
+                        Value::Int(i) if (0..=u32::MAX as i64).contains(i) => {
+                            bytes.extend_from_slice(&(*i as u32).to_le_bytes())
+                        }
+                        _ => return Err("token ids must be Ints from 0 to 4294967295".into()),
+                    }
+                }
+                let Value::Str(path) = &args[1] else {
+                    return Err("`nn.save_tokens` needs a file path".into());
+                };
+                std::fs::write(&**path, bytes)
+                    .map_err(|e| format!("cannot write `{path}`: {e}"))?;
+                return Ok(Value::None);
+            }
+            Builtin::NnLoadTokens => {
+                let Value::Str(path) = &args[0] else {
+                    return Err("`nn.load_tokens` needs a file path".into());
+                };
+                let bytes =
+                    std::fs::read(&**path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+                if bytes.len() % 4 != 0 {
+                    return Err(format!(
+                        "`{path}` is not a token file: its size is not a multiple of 4 bytes"
+                    ));
+                }
+                let ids: Vec<f32> = bytes
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
+                    .collect();
+                let n = ids.len();
+                Tensor::from_vec(ids, n, cpu).map_err(err)?
+            }
+            Builtin::NnSampleWindows => {
+                let tokens = tensor_arg(&args[0])?;
+                let (batch, context) = (int_arg(&args[1])?, int_arg(&args[2])?);
+                if tokens.rank() != 1 || batch <= 0 || context <= 0 {
+                    return Err("`nn.sample_windows` needs a 1-D token tensor and a positive batch size and context".into());
+                }
+                let (batch, context, n) = (batch as usize, context as usize, tokens.dims()[0]);
+                if n <= context {
+                    return Err(format!(
+                        "{n} tokens are too few for windows of {context} plus a target"
+                    ));
+                }
+                let mut inputs = Vec::with_capacity(batch);
+                let mut targets = Vec::with_capacity(batch);
+                for _ in 0..batch {
+                    let start = (self.rng.lock().next() % (n - context) as u64) as usize;
+                    inputs.push(tokens.narrow(0, start, context).map_err(err)?);
+                    targets.push(tokens.narrow(0, start + 1, context).map_err(err)?);
+                }
+                let x = Tensor::stack(&inputs, 0).map_err(err)?;
+                let y = Tensor::stack(&targets, 0).map_err(err)?;
+                return Ok(Value::Tuple(vec![wrap(x), wrap(y)].into()));
+            }
             Builtin::NnLoadParams => {
                 let vars = param_vars(&args[0], "`nn.load_params`")?;
                 let Value::Str(path) = &args[1] else {

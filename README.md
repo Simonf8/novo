@@ -184,7 +184,7 @@ generates text in a few seconds.
 shuffled minibatches.
 
 Modules: `use "path/to/file.nv" as m` loads another file; `use math`,
-`use json`, `use csv`, `use time`, `use fs`, `use env`, `use random`, `use nn` and `use layers` bring in
+`use json`, `use csv`, `use tokenizer`, `use time`, `use fs`, `use env`, `use random`, `use nn` and `use layers` bring in
 the standard library;
 `use python numpy as np` imports a Python module when built with the
 `python` feature.

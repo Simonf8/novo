@@ -22,6 +22,7 @@ pub enum Value {
     Task(Arc<TaskHandle>),
     Tensor(Arc<super::tensor::NTensor>),
     Optimizer(Arc<Mutex<super::optim::Optimizer>>),
+    Tokenizer(Arc<tokenizers::Tokenizer>),
     #[allow(dead_code)]
     Py(crate::python::PyHandle),
 }
@@ -201,6 +202,7 @@ impl Value {
             Value::Task(_) => "Task",
             Value::Tensor(_) => "Tensor",
             Value::Optimizer(_) => "Optimizer",
+            Value::Tokenizer(_) => "Tokenizer",
             Value::Py(_) => "Python object",
         }
     }
@@ -311,6 +313,9 @@ fn write_value(out: &mut String, v: &Value, prog: &Program, depth: usize) {
         }
         Value::Task(_) => out.push_str("<task>"),
         Value::Tensor(t) => out.push_str(&super::tensor::display(t)),
+        Value::Tokenizer(t) => {
+            let _ = write!(out, "<tokenizer with {} tokens>", t.get_vocab_size(true));
+        }
         Value::Optimizer(o) => {
             let _ = write!(out, "<{:?} optimizer>", o.lock());
         }
@@ -349,6 +354,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         (Value::Task(x), Value::Task(y)) => Arc::ptr_eq(x, y),
         (Value::Tensor(x), Value::Tensor(y)) => Arc::ptr_eq(x, y),
         (Value::Optimizer(x), Value::Optimizer(y)) => Arc::ptr_eq(x, y),
+        (Value::Tokenizer(x), Value::Tokenizer(y)) => Arc::ptr_eq(x, y),
         _ => false,
     }
 }

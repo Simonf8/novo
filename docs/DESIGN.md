@@ -255,6 +255,25 @@ type annotations to build models out of them.
 RFC 4180. `csv.read(path)` and `csv.parse(text)` return a `List[List[String]]`
 of rows; `csv.write(path, rows)` and `csv.format(rows)` go the other way.
 
+`fs.read_lines_from(path, offset, count)` returns up to `count` lines starting
+at byte `offset`, and the offset to continue from, so a large text or JSONL
+file can be processed a piece at a time without loading it whole.
+
+`use tokenizer` reads tokenizers in the Hugging Face `tokenizer.json` format,
+which is how current models (Llama, Qwen, Mistral, SmolLM and others) publish
+theirs: `tokenizer.load(path)` takes the file or the model's directory.
+`tokenizer.train(texts, vocab_size, special_tokens)` trains a byte-level BPE
+tokenizer on your own text. A `Tokenizer` has `encode(text)` (pass `false` to
+leave out the model's special tokens such as a start-of-text marker),
+`decode(ids)` (pass `false` to keep special tokens), `vocab_size()`,
+`id(token)` (`-1` if absent), `token(id)` and `save(path)`.
+
+Tokenized datasets are stored as binary files of 32-bit ids:
+`nn.save_tokens(ids, path)` writes one and `nn.load_tokens(path)` reads it as
+a 1-D tensor. `nn.sample_windows(tokens, batch, context)` picks `batch`
+random windows of `context` tokens and returns the inputs and, shifted by one
+token, the targets, ready for next-token prediction.
+
 For training on minibatches, `t.take(indices)` gathers rows by index and
 `t.batches(size)` splits a tensor into consecutive pieces along its first
 dimension, the last one possibly shorter. Shuffling the same index list into

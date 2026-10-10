@@ -25,6 +25,44 @@ fn list(v: &Value) -> Result<Vec<Value>, String> {
     }
 }
 
+fn string_list(v: &Value) -> Result<Vec<String>, String> {
+    let Value::List(items) = v else {
+        return Err(format!("expected a List, found a {}", v.type_name()));
+    };
+    items
+        .read()
+        .iter()
+        .map(|s| string(s).map(|s| s.to_string()))
+        .collect()
+}
+
+/// Up to `max` lines starting at byte `offset`, and the offset just after them,
+/// so a large file can be read a piece at a time.
+fn read_lines_from(path: &str, offset: i64, max: i64) -> Result<Value, String> {
+    use std::io::{BufRead, Seek};
+    let mut file = std::fs::File::open(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    file.seek(std::io::SeekFrom::Start(offset.max(0) as u64))
+        .map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut lines = Vec::new();
+    let mut next = offset.max(0);
+    let mut line = String::new();
+    while (lines.len() as i64) < max {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("cannot read `{path}`: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        next += n as i64;
+        lines.push(Value::str(line.trim_end_matches(['\n', '\r'])));
+    }
+    Ok(Value::Tuple(
+        vec![Value::list(lines), Value::Int(next)].into(),
+    ))
+}
+
 fn csv_rows(text: &str) -> Result<Value, String> {
     let rows = super::csv::parse(text)?;
     Ok(Value::list(
@@ -354,6 +392,22 @@ impl Interp {
                 Value::None
             }
             Builtin::JsonStringify => Value::Str(json::stringify(&args[0])?.into()),
+            Builtin::TokLoad => super::tokenize::load(&string(&args[0])?)?,
+            Builtin::TokTrain => {
+                let texts = string_list(&args[0])?;
+                let special = match args.get(2) {
+                    Some(v) => string_list(v)?,
+                    None => Vec::new(),
+                };
+                let size = int(&args[1])?;
+                if size <= 0 {
+                    return Err("the vocabulary size must be positive".into());
+                }
+                super::tokenize::train(&texts, size as usize, &special)?
+            }
+            Builtin::FsReadLinesFrom => {
+                read_lines_from(&string(&args[0])?, int(&args[1])?, int(&args[2])?)?
+            }
             Builtin::FsRead => Value::Str(
                 std::fs::read_to_string(&*string(&args[0])?)
                     .map_err(|e| e.to_string())?
@@ -436,6 +490,9 @@ impl Interp {
             | Builtin::NnCosineLr
             | Builtin::NnSaveParams
             | Builtin::NnLoadParams
+            | Builtin::NnSaveTokens
+            | Builtin::NnLoadTokens
+            | Builtin::NnSampleWindows
             | Builtin::RandomSeed
             | Builtin::RandomInt
             | Builtin::RandomFloat

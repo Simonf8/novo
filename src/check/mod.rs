@@ -913,6 +913,7 @@ impl Checker {
             "Any" => Some(Ty::Any),
             "Tensor" if t.args.is_empty() => Some(Ty::tensor()),
             "Optimizer" => Some(Ty::Optimizer),
+            "Tokenizer" => Some(Ty::Tokenizer),
             _ => None,
         };
         if let Some(ty) = simple {
@@ -975,7 +976,7 @@ impl Checker {
                     Ty::Class(c)
                 }
                 _ => {
-                    self.error(Diagnostic::error(t.span, format!("unknown type `{name}`")).with_help("built-in types are Int, Float, Bool, String, None, Any, List[T], Map[K, V], Task[T], Tensor, Tensor[dims...] and Optimizer"));
+                    self.error(Diagnostic::error(t.span, format!("unknown type `{name}`")).with_help("built-in types are Int, Float, Bool, String, None, Any, List[T], Map[K, V], Task[T], Tensor, Tensor[dims...], Optimizer and Tokenizer"));
                     Ty::Any
                 }
             },

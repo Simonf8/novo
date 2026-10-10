@@ -1,0 +1,5 @@
+<tokenizer with 600 tokens> 600 0 <|begin_of_text|>
+6 of 6 samples match
+true the lazy fox the lazy fox<eos>
+true
+100000 is not a token id of this tokenizer

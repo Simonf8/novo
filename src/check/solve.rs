@@ -695,7 +695,7 @@ impl Checker {
                     format!("`{}` has no method `{name}`", class.name),
                 ))
             }
-            Ty::Str | Ty::List(_) | Ty::Map(..) | Ty::Tensor(_) | Ty::Optimizer => {
+            Ty::Str | Ty::List(_) | Ty::Map(..) | Ty::Tensor(_) | Ty::Optimizer | Ty::Tokenizer => {
                 let Some((params, required, ret)) = method_signature(&recv, name) else {
                     return Outcome::Fail(Diagnostic::error(
                         span,
