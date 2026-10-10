@@ -201,3 +201,19 @@ fn examples_type_check() {
         }
     }
 }
+
+#[test]
+fn examples_are_formatted() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let output = Command::new(env!("CARGO_BIN_EXE_novo"))
+        .arg("fmt")
+        .arg("--check")
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "run `novo fmt examples`; unformatted:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}

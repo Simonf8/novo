@@ -2,7 +2,7 @@ task calc(n):
     return n * 3
 
 # Test run in parallel with task calls
-res = run [ calc(1), calc(2), calc(3), calc(4) ] in parallel
+res = run [calc(1), calc(2), calc(3), calc(4)] in parallel
 show res
 
 # Test postfix together with select query

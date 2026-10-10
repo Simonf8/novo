@@ -23,6 +23,7 @@ Usage:
     novo test [path]                 Run test_*.nv and *_test.nv files
     novo bench <file.nv> [-n N]      Time repeated runs of a program
     novo new <name>                  Create a project
+    novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
     novo [repl]                      Start the interactive prompt
 
 Options:
@@ -47,6 +48,7 @@ fn main() {
         Some("test") => cmd_test(&args[1..]),
         Some("bench") => cmd_bench(&args[1..]),
         Some("new") => cmd_new(&args[1..]),
+        Some("fmt") => cmd_fmt(&args[1..]),
         Some(file) if file.ends_with(".nv") => cmd_run(&args),
         Some(other) => {
             eprintln!("error: unknown command `{other}`\n\n{USAGE}");
@@ -108,6 +110,53 @@ fn render_runtime_error(sources: &SourceMap, e: eval::RtError) {
         ));
     }
     render(sources, &[diag]);
+}
+
+fn cmd_fmt(args: &[String]) -> i32 {
+    let check = args.iter().any(|a| a == "--check");
+    let mut paths: Vec<PathBuf> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(PathBuf::from)
+        .collect();
+    if paths.is_empty() {
+        paths.push(PathBuf::from("."));
+    }
+    let mut files = Vec::new();
+    for p in paths {
+        collect_files(&p, &mut files, |p| p.extension().is_some_and(|e| e == "nv"));
+    }
+    let mut sources = SourceMap::default();
+    let mut code = 0;
+    for path in files {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {e}", path.display());
+                code = 1;
+                continue;
+            }
+        };
+        let file = sources.add(path.display().to_string(), text.clone());
+        match syntax::format::format(file, &text) {
+            Ok(formatted) if formatted == text => {}
+            Ok(_) if check => {
+                println!("{}", path.display());
+                code = 1;
+            }
+            Ok(formatted) => {
+                if let Err(e) = std::fs::write(&path, formatted) {
+                    eprintln!("error: cannot write {}: {e}", path.display());
+                    code = 1;
+                }
+            }
+            Err(d) => {
+                render(&sources, &[d]);
+                code = 1;
+            }
+        }
+    }
+    code
 }
 
 /// Reads inputs from stdin and runs each against the state the earlier ones left.
@@ -232,17 +281,25 @@ fn is_test_file(path: &Path) -> bool {
         && (stem.starts_with("test_") || stem.ends_with("_test"))
 }
 
-fn collect_tests(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+/// Collects matching files under `path`, skipping hidden directories and build output.
+fn collect_files(path: &Path, out: &mut Vec<PathBuf>, wanted: fn(&Path) -> bool) {
+    if !path.is_dir() {
+        out.push(path.to_path_buf());
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
         return;
     };
     let mut entries: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
     entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_tests(&path, out);
-        } else if is_test_file(&path) {
-            out.push(path);
+    for entry in entries {
+        let name = entry.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if entry.is_dir() {
+            if !name.starts_with('.') && name != "target" {
+                collect_files(&entry, out, wanted);
+            }
+        } else if wanted(&entry) {
+            out.push(entry);
         }
     }
 }
@@ -255,11 +312,7 @@ fn cmd_test(args: &[String]) -> i32 {
             .unwrap_or("tests"),
     );
     let mut files = Vec::new();
-    if target.is_file() {
-        files.push(target.clone());
-    } else {
-        collect_tests(&target, &mut files);
-    }
+    collect_files(&target, &mut files, is_test_file);
     if files.is_empty() {
         eprintln!(
             "error: no test files (test_*.nv or *_test.nv) under {}",

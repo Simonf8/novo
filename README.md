@@ -65,10 +65,14 @@ novo check <file.nv> [--json]    Type-check without running
 novo test [path]                 Run test_*.nv and *_test.nv files
 novo bench <file.nv> [-n N]      Time repeated runs of a program
 novo new <name>                  Create a project
+novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
 novo [repl]                      Start the interactive prompt
 ```
 
 `novo check --json` prints one JSON object per diagnostic, for editors.
+`novo fmt` normalizes indentation and spacing but keeps comments, blank lines
+(up to two in a row) and line breaks inside brackets. It refuses to write a
+file if the result would not read back as the same tokens.
 
 At the interactive prompt each input runs against the state the earlier ones
 left, and a bare expression shows its value. Defining a function again
@@ -216,7 +220,7 @@ errors (`# expect-error: ...`) and required features
    unboxed lists of numbers, inlining, and ahead-of-time executables.
 2. **Shapes in types.** Catch tensor dimension mismatches at check time.
 3. **Data and models.** Reusable layers and more pretrained architectures.
-4. **Tooling.** Language server and a comment-preserving formatter.
+4. **Tooling.** Language server and editor extension.
 
 ## License
 
