@@ -76,7 +76,13 @@ class Block:
     eps: Float
 
     function forward(x: Tensor, cos: Tensor, sin: Tensor, layer: Int, cache: Cache) -> Tensor:
-        h = x + self.attention.forward(x.rms_norm(self.attention_norm, self.eps), cos, sin, layer, cache)
+        h = x + self.attention.forward(
+            x.rms_norm(self.attention_norm, self.eps),
+            cos,
+            sin,
+            layer,
+            cache
+        )
         both = h.rms_norm(self.mlp_norm, self.eps) @ self.gate_up
         return h + (both.narrow(2, 0, self.hidden).silu() * both.narrow(2, self.hidden, self.hidden)) @ self.down
 
@@ -131,7 +137,13 @@ class Llama:
 
     # Continues `ids` by up to `count` tokens, stopping at an end-of-sequence
     # token. Temperature 0 always picks the most likely token.
-    function generate_ids(ids: List[Int], count: Int, temperature: Float = 0.0, top_k: Int = 0, top_p: Float = 1.0) -> List[Int]:
+    function generate_ids(
+        ids: List[Int],
+        count: Int,
+        temperature: Float = 0.0,
+        top_k: Int = 0,
+        top_p: Float = 1.0
+    ) -> List[Int]:
         cache = self.new_cache()
         logits = self.forward(nn.tensor([ids]), cache, true)
         out: List[Int] = []
@@ -144,7 +156,13 @@ class Llama:
                 logits = self.forward(nn.tensor([[next]]), cache, true)
         return out
 
-    function generate(prompt: String, count: Int, temperature: Float = 0.0, top_k: Int = 0, top_p: Float = 1.0) -> String:
+    function generate(
+        prompt: String,
+        count: Int,
+        temperature: Float = 0.0,
+        top_k: Int = 0,
+        top_p: Float = 1.0
+    ) -> String:
         ids = self.tokenizer.encode(prompt)
         return self.tokenizer.decode(self.generate_ids(ids, count, temperature, top_k, top_p))
 
@@ -189,8 +207,22 @@ function load(dir: String, dtype: String = "f32") -> Llama:
     for i in range(layers):
         p = f"model.layers.{i}."
         a = p + "self_attn."
-        qkv_bias = nn.cat([bias(weights, a + "q_proj", heads * head_dim), bias(weights, a + "k_proj", kv_heads * head_dim), bias(weights, a + "v_proj", kv_heads * head_dim)], 0)
-        attention = Attention(fused(weights, [a + "q_proj", a + "k_proj", a + "v_proj"]), qkv_bias, linear(weights, a + "o_proj"), heads, kv_heads, head_dim)
+        qkv_bias = nn.cat(
+            [
+                bias(weights, a + "q_proj", heads * head_dim),
+                bias(weights, a + "k_proj", kv_heads * head_dim),
+                bias(weights, a + "v_proj", kv_heads * head_dim)
+            ],
+            0
+        )
+        attention = Attention(
+            fused(weights, [a + "q_proj", a + "k_proj", a + "v_proj"]),
+            qkv_bias,
+            linear(weights, a + "o_proj"),
+            heads,
+            kv_heads,
+            head_dim
+        )
         m = p + "mlp."
         intermediate: Int = config["intermediate_size"]
         blocks.push(Block(weights[p + "input_layernorm.weight"], attention, weights[p + "post_attention_layernorm.weight"], fused(weights, [m + "gate_proj", m + "up_proj"]), linear(weights, m + "down_proj"), intermediate, eps))
@@ -204,4 +236,15 @@ function load(dir: String, dtype: String = "f32") -> Llama:
             eos.push(id)
     else if stop != none:
         eos.push(stop)
-    return Llama(embed, blocks, weights["model.norm.weight"], head, cos, sin, eps, positions, eos, tokenizer.load(dir))
+    return Llama(
+        embed,
+        blocks,
+        weights["model.norm.weight"],
+        head,
+        cos,
+        sin,
+        eps,
+        positions,
+        eos,
+        tokenizer.load(dir)
+    )

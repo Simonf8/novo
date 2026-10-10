@@ -119,4 +119,9 @@ class TransformerBlock:
         return all
 
 function transformer_block(width: Int, heads: Int) -> TransformerBlock:
-    return TransformerBlock(layer_norm(width), attention(width, heads), layer_norm(width), mlp(width, 4 * width))
+    return TransformerBlock(
+        layer_norm(width),
+        attention(width, heads),
+        layer_norm(width),
+        mlp(width, 4 * width)
+    )

@@ -2,7 +2,8 @@
 
 Syntax highlighting for `.nv` files, plus the Novo language server: type errors
 as you type, the type of whatever is under the cursor on hover, Go to
-Definition, and Format Document.
+Definition, Find All References, Rename Symbol, completion (including members
+after `.`), and Format Document.
 
 The language server is `novo lsp`, so `novo` must be on your `PATH`, or set
 `novo.path` to the executable.

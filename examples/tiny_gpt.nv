@@ -53,7 +53,13 @@ class GPT:
         all.extend(self.head.params())
         return all
 
-model = GPT(layers.embedding(vocab, width), layers.embedding(context, width), range(depth) select layers.transformer_block(width, heads), layers.layer_norm(width), layers.linear(width, vocab))
+model = GPT(
+    layers.embedding(vocab, width),
+    layers.embedding(context, width),
+    range(depth) select layers.transformer_block(width, heads),
+    layers.layer_norm(width),
+    layers.linear(width, vocab)
+)
 optimizer = nn.adam(model.params(), 0.01)
 
 function batch(size: Int) -> List[Tensor]:

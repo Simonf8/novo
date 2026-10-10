@@ -1,6 +1,7 @@
 //! Source formatting. Works on the token stream rather than the syntax tree so
 //! comments, blank lines and the author's line breaks inside brackets survive;
-//! only indentation and the spacing between tokens are normalized.
+//! indentation and the spacing between tokens are normalized, and lines too
+//! long to read are split one item per line inside their widest brackets.
 
 use super::ast::QueryOp;
 use super::lexer::tokenize;
@@ -10,6 +11,7 @@ use crate::source::FileId;
 
 const INDENT: &str = "    ";
 const MAX_BLANK_LINES: usize = 2;
+const MAX_WIDTH: usize = 100;
 
 /// Formats a whole file. Fails only when the file does not tokenize.
 pub fn format(file: FileId, src: &str) -> Result<String, Diagnostic> {
@@ -35,6 +37,11 @@ pub fn format(file: FileId, src: &str) -> Result<String, Diagnostic> {
     if !f.line_start {
         f.out.push('\n');
     }
+    let mut wrapped = String::with_capacity(f.out.len());
+    for line in f.out.lines() {
+        wrap_line(line, &mut wrapped);
+    }
+    f.out = wrapped;
     // Keep Windows line endings in files that use them.
     let formatted = if src.contains("\r\n") {
         f.out.replace("\r\n", "\n").replace('\n', "\r\n")
@@ -60,6 +67,80 @@ pub fn format(file: FileId, src: &str) -> Result<String, Diagnostic> {
             "the formatter would change this file's meaning; it was left unchanged",
         ))
     }
+}
+
+/// Writes `line`, splitting it inside its widest brackets if it is too long
+/// and those brackets hold a comma-separated list.
+fn wrap_line(line: &str, out: &mut String) {
+    let line = line.trim_end_matches('\r');
+    let push = |out: &mut String, text: &str| {
+        out.push_str(text);
+        out.push('\n');
+    };
+    if line.chars().count() <= MAX_WIDTH {
+        return push(out, line);
+    }
+    let code = line.trim_start();
+    let indent = &line[..line.len() - code.len()];
+    let Some((open, commas, close)) = widest_list(code, indent.len()) else {
+        return push(out, line);
+    };
+    let inner = format!("{indent}{INDENT}");
+    wrap_line(&format!("{indent}{}", &code[..open]), out);
+    let mut start = open;
+    for &comma in commas.iter().chain(std::iter::once(&close)) {
+        let item = code[start..comma].trim();
+        let sep = if comma == close { "" } else { "," };
+        wrap_line(&format!("{inner}{item}{sep}"), out);
+        start = comma + 1;
+    }
+    wrap_line(&format!("{indent}{}", &code[close..]), out);
+}
+
+/// In one line of code, the brackets with the most text between them that
+/// hold a comma at their own level: the byte offsets just after the opener,
+/// of those commas, and of the closer. Brackets holding less than half the
+/// line, or whose split would leave the text around them too long, are not
+/// worth splitting.
+fn widest_list(code: &str, indent: usize) -> Option<(usize, Vec<usize>, usize)> {
+    let tokens = tokenize(FileId(0), code).ok()?;
+    let last = tokens
+        .iter()
+        .rev()
+        .find(|t| !matches!(t.tok, Tok::Newline | Tok::Eof | Tok::Dedent))?;
+    if code[last.span.hi as usize..].contains('#') {
+        return None;
+    }
+    let mut best: Option<(usize, Vec<usize>, usize)> = None;
+    let mut depth = 0usize;
+    let mut open = 0;
+    let mut commas = Vec::new();
+    let mut in_params = false;
+    for t in &tokens {
+        match t.tok {
+            Tok::LParen | Tok::LBracket | Tok::LBrace => {
+                if depth == 0 {
+                    open = t.span.hi as usize;
+                    commas.clear();
+                }
+                depth += 1;
+            }
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                depth = depth.checked_sub(1)?;
+                let close = t.span.lo as usize;
+                let wider = best.as_ref().is_none_or(|b| close - open > b.2 - b.0);
+                let fits = indent + open <= MAX_WIDTH && indent + code.len() - close <= MAX_WIDTH;
+                let big = 2 * (close - open) >= code.len();
+                if depth == 0 && !commas.is_empty() && wider && fits && big {
+                    best = Some((open, std::mem::take(&mut commas), close));
+                }
+            }
+            Tok::Pipe if depth == 1 => in_params = !in_params,
+            Tok::Comma if depth == 1 && !in_params => commas.push(t.span.lo as usize),
+            _ => {}
+        }
+    }
+    best.filter(|_| depth == 0)
 }
 
 struct Formatter<'a> {
@@ -286,6 +367,28 @@ mod tests {
         let want = "# head\n\n\nx = [1,\n    2]  # two\nif x:\n    y = 1\n    # inner\n# outer\nz = |a| a + 1\n";
         assert_eq!(fmt(src), want);
         assert_eq!(fmt(want), want);
+    }
+
+    #[test]
+    fn wraps_long_lines() {
+        let src = format!(
+            "model = build(layers.linear({}, 10), layers.linear(10, 2), name=\"classifier\", seed=42, dropout=0.1)\n",
+            "x".repeat(30)
+        );
+        let want = format!(
+            "model = build(\n    layers.linear({}, 10),\n    layers.linear(10, 2),\n    name=\"classifier\",\n    seed=42,\n    dropout=0.1\n)\n",
+            "x".repeat(30)
+        );
+        assert_eq!(fmt(&src), want);
+        assert_eq!(fmt(&want), want);
+        let closure = format!("ys = map(xs, |a, b| a + b, {})\n", "z".repeat(100));
+        assert_eq!(
+            fmt(&closure),
+            format!(
+                "ys = map(\n    xs,\n    |a, b| a + b,\n    {}\n)\n",
+                "z".repeat(100)
+            )
+        );
     }
 
     #[test]

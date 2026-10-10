@@ -93,6 +93,7 @@ impl Class {
 #[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
+    pub ty: Ty,
 }
 
 pub type Block = Vec<Stmt>;

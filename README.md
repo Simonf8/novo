@@ -81,7 +81,9 @@ novo lsp                         Run the language server on stdio
 every file it imports, on machines without Novo or the sources; it passes its
 command-line arguments to the program.
 `novo lsp` is a language server: errors as you type, hover types, go to
-definition and formatting. [editors/vscode](editors/vscode) is a VS Code extension that uses
+definition, find references, rename, completion and formatting. `novo fmt`
+splits lines longer than 100 characters one item per line inside their widest
+brackets. [editors/vscode](editors/vscode) is a VS Code extension that uses
 it and adds syntax highlighting.
 
 `novo fmt` normalizes indentation and spacing but keeps comments, blank lines

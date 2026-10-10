@@ -1,8 +1,12 @@
-//! A language server over stdio: diagnostics as you type, hover types and formatting.
+//! A language server over stdio: diagnostics as you type, hover types,
+//! definitions, references, renaming, completion and formatting.
 
+use crate::check::builtins::{Builtin, METHOD_NAMES, StdModule, method_signature};
+use crate::check::types::{ClassId, Ty};
 use crate::check::{self, hir};
 use crate::diagnostic::Diagnostic;
 use crate::source::{FileId, SourceMap, Span};
+use crate::syntax::token::Tok;
 use serde_json::{Value as Json, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
@@ -37,6 +41,9 @@ pub fn serve() -> i32 {
                     "hoverProvider": true,
                     "definitionProvider": true,
                     "documentFormattingProvider": true,
+                    "referencesProvider": true,
+                    "renameProvider": true,
+                    "completionProvider": { "triggerCharacters": ["."] },
                 },
                 "serverInfo": { "name": "novo", "version": env!("CARGO_PKG_VERSION") },
             })),
@@ -95,6 +102,30 @@ pub fn serve() -> i32 {
                     docs.get(&uri)
                         .and_then(|doc| definition(doc, &params))
                         .unwrap_or(Json::Null),
+                )
+            }
+            "textDocument/references" => {
+                let uri = str_at(&params, &["textDocument", "uri"]);
+                Some(
+                    docs.get(&uri)
+                        .and_then(|doc| references(doc, &params))
+                        .unwrap_or(Json::Null),
+                )
+            }
+            "textDocument/rename" => {
+                let uri = str_at(&params, &["textDocument", "uri"]);
+                Some(
+                    docs.get(&uri)
+                        .and_then(|doc| rename(doc, &params))
+                        .unwrap_or(Json::Null),
+                )
+            }
+            "textDocument/completion" => {
+                let uri = str_at(&params, &["textDocument", "uri"]);
+                Some(
+                    docs.get(&uri)
+                        .map(|doc| completion(doc, &params))
+                        .unwrap_or(json!([])),
                 )
             }
             "textDocument/formatting" => {
@@ -355,6 +386,425 @@ fn definition(doc: &Document, params: &Json) -> Option<Json> {
         path_to_uri(&file.path)
     };
     Some(json!({ "uri": uri, "range": range(&analysis.sources, span) }))
+}
+
+/// Something a name can refer to. Locals are known by where they are
+/// declared, which captured copies in closures share.
+#[derive(Clone, Copy, PartialEq)]
+enum Symbol {
+    Local(Span),
+    Global(hir::GlobalId),
+    Func(hir::FuncId),
+    Class(ClassId),
+}
+
+fn cursor(doc: &Document, params: &Json) -> Option<u32> {
+    let pos = params.get("position")?;
+    let line = pos.get("line")?.as_u64()? as usize;
+    let character = pos.get("character")?.as_u64()? as usize;
+    Some(offset(&doc.text, line, character) as u32)
+}
+
+fn contains(span: Span, file: FileId, at: u32) -> bool {
+    span.file == file && span.lo <= at && at <= span.hi
+}
+
+/// The symbol under the cursor, from a use or from its definition.
+fn symbol_at<'a>(doc: &'a Document, params: &Json) -> Option<(&'a Analysis, Symbol)> {
+    let analysis = doc.analysis.as_ref()?;
+    let prog = &analysis.program;
+    let at = cursor(doc, params)?;
+    let file = analysis.file;
+    if let Some((_, f, node)) = node_at(doc, params) {
+        let symbol = match node {
+            Node::Expr(e) => match &e.kind {
+                hir::ExprKind::Local(l) => Some(Symbol::Local(f.locals[l.0 as usize].span)),
+                hir::ExprKind::Global(g) => Some(Symbol::Global(*g)),
+                hir::ExprKind::Func { func, .. } | hir::ExprKind::CallFunc { func, .. } => {
+                    Some(Symbol::Func(*func))
+                }
+                hir::ExprKind::New { class, .. } => Some(Symbol::Class(*class)),
+                _ => None,
+            },
+            Node::Target(_, hir::Place::Local(l)) => {
+                Some(Symbol::Local(f.locals[l.0 as usize].span))
+            }
+            Node::Target(_, hir::Place::Global(g)) => Some(Symbol::Global(*g)),
+            Node::Target(..) => None,
+        };
+        if let Some(s) = symbol.filter(|s| *s != Symbol::Local(Span::default())) {
+            return Some((analysis, s));
+        }
+    }
+    for (i, f) in prog.funcs.iter().enumerate() {
+        if contains(f.span, file, at) {
+            return Some((analysis, Symbol::Func(hir::FuncId(i as u32))));
+        }
+        if let Some(l) = f.locals.iter().find(|l| contains(l.span, file, at)) {
+            return Some((analysis, Symbol::Local(l.span)));
+        }
+    }
+    for (i, c) in prog.classes.iter().enumerate() {
+        if contains(c.span, file, at) {
+            return Some((analysis, Symbol::Class(ClassId(i as u32))));
+        }
+    }
+    for (i, g) in prog.globals.iter().enumerate() {
+        if contains(g.span, file, at) {
+            return Some((analysis, Symbol::Global(hir::GlobalId(i as u32))));
+        }
+    }
+    None
+}
+
+/// The name a symbol is written with and where it is defined.
+fn symbol_name(prog: &hir::Program, symbol: Symbol) -> (String, Span) {
+    match symbol {
+        Symbol::Local(span) => {
+            let name = prog
+                .funcs
+                .iter()
+                .flat_map(|f| &f.locals)
+                .find(|l| l.span == span)
+                .map(|l| l.name.clone())
+                .unwrap_or_default();
+            (name, span)
+        }
+        Symbol::Global(g) => (
+            prog.globals[g.0 as usize].name.clone(),
+            prog.globals[g.0 as usize].span,
+        ),
+        Symbol::Func(f) => {
+            let func = &prog.funcs[f.0 as usize];
+            let name = func.name.rsplit('.').next().unwrap_or(&func.name);
+            (name.to_string(), func.span)
+        }
+        Symbol::Class(c) => (
+            prog.classes[c.0 as usize].name.clone(),
+            prog.classes[c.0 as usize].span,
+        ),
+    }
+}
+
+/// The first place `name` appears as a whole word inside `span`.
+fn word_in(sources: &SourceMap, span: Span, name: &str) -> Option<Span> {
+    let text = &sources.files().nth(span.file.0 as usize)?.text;
+    let hay = text.get(span.lo as usize..(span.hi as usize).min(text.len()))?;
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(i) = hay[from..].find(name) {
+        let lo = from + i;
+        let hi = lo + name.len();
+        let before = hay[..lo].chars().next_back();
+        let after = hay[hi..].chars().next();
+        if !before.is_some_and(is_word) && !after.is_some_and(is_word) {
+            return Some(Span {
+                file: span.file,
+                lo: span.lo + lo as u32,
+                hi: span.lo + hi as u32,
+            });
+        }
+        from = hi;
+    }
+    None
+}
+
+/// Every place the symbol is written, its definition included.
+fn occurrences(analysis: &Analysis, symbol: Symbol) -> Vec<Span> {
+    let prog = &analysis.program;
+    let (name, def) = symbol_name(prog, symbol);
+    let mut spans = vec![def];
+    for f in &prog.funcs {
+        walk_block(&f.body, &mut |node| {
+            let (span, hit) = match node {
+                Node::Expr(e) => (
+                    e.span,
+                    match &e.kind {
+                        hir::ExprKind::Local(l) => {
+                            symbol == Symbol::Local(f.locals[l.0 as usize].span)
+                        }
+                        hir::ExprKind::Global(g) => symbol == Symbol::Global(*g),
+                        hir::ExprKind::Func { func, .. } | hir::ExprKind::CallFunc { func, .. } => {
+                            symbol == Symbol::Func(*func)
+                        }
+                        hir::ExprKind::New { class, .. } => symbol == Symbol::Class(*class),
+                        _ => false,
+                    },
+                ),
+                Node::Target(span, hir::Place::Local(l)) => {
+                    (span, symbol == Symbol::Local(f.locals[l.0 as usize].span))
+                }
+                Node::Target(span, hir::Place::Global(g)) => (span, symbol == Symbol::Global(*g)),
+                Node::Target(..) => return,
+            };
+            if hit && let Some(s) = word_in(&analysis.sources, span, &name) {
+                spans.push(s);
+            }
+        });
+    }
+    if let Symbol::Class(c) = symbol {
+        // Classes also appear in type annotations, which the program does not keep.
+        let variant = prog.classes[c.0 as usize].variant;
+        for (i, file) in analysis.sources.files().enumerate() {
+            let Ok(tokens) = crate::syntax::lexer::tokenize(FileId(i as u32), &file.text) else {
+                continue;
+            };
+            for (k, t) in tokens.iter().enumerate() {
+                let after_dot = k > 0 && tokens[k - 1].tok == Tok::Dot;
+                if t.tok == Tok::Ident(name.clone()) && (variant || !after_dot) {
+                    spans.push(t.span);
+                }
+            }
+        }
+    }
+    spans.retain(|s| *s != Span::default());
+    spans.sort_by_key(|s| (s.file.0, s.lo));
+    spans.dedup();
+    spans
+}
+
+fn location(analysis: &Analysis, uri: &str, span: Span) -> Option<(String, Json)> {
+    let file = analysis.sources.files().nth(span.file.0 as usize)?;
+    if file.path.to_string_lossy().starts_with('<') {
+        return None;
+    }
+    let uri = if span.file == analysis.file {
+        uri.to_string()
+    } else {
+        path_to_uri(&file.path)
+    };
+    Some((uri, range(&analysis.sources, span)))
+}
+
+fn references(doc: &Document, params: &Json) -> Option<Json> {
+    let (analysis, symbol) = symbol_at(doc, params)?;
+    let uri = str_at(params, &["textDocument", "uri"]);
+    let locations: Vec<Json> = occurrences(analysis, symbol)
+        .into_iter()
+        .filter_map(|s| location(analysis, &uri, s))
+        .map(|(uri, range)| json!({ "uri": uri, "range": range }))
+        .collect();
+    Some(Json::Array(locations))
+}
+
+fn rename(doc: &Document, params: &Json) -> Option<Json> {
+    let new_name = params.get("newName")?.as_str()?;
+    let valid = new_name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && new_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && Tok::keyword(new_name).is_none();
+    if !valid {
+        return None;
+    }
+    let (analysis, symbol) = symbol_at(doc, params)?;
+    let uri = str_at(params, &["textDocument", "uri"]);
+    let mut changes: HashMap<String, Vec<Json>> = HashMap::new();
+    for span in occurrences(analysis, symbol) {
+        // Names defined in the standard library cannot be renamed.
+        let (target, range) = location(analysis, &uri, span)?;
+        changes
+            .entry(target)
+            .or_default()
+            .push(json!({ "range": range, "newText": new_name }));
+    }
+    Some(json!({ "changes": changes }))
+}
+
+const KEYWORDS: &[&str] = &[
+    "show",
+    "if",
+    "otherwise",
+    "repeat",
+    "for",
+    "in",
+    "while",
+    "function",
+    "task",
+    "return",
+    "true",
+    "false",
+    "none",
+    "and",
+    "or",
+    "not",
+    "use",
+    "python",
+    "as",
+    "class",
+    "try",
+    "catch",
+    "break",
+    "continue",
+    "pass",
+    "together",
+    "await",
+    "match",
+    "enum",
+    "interface",
+    "where",
+    "select",
+    "times",
+];
+
+const STD_MODULES: &[&str] = &[
+    "math",
+    "time",
+    "json",
+    "fs",
+    "env",
+    "nn",
+    "random",
+    "csv",
+    "tokenizer",
+    "layers",
+    "llama",
+];
+
+/// Completion kinds from the LSP specification.
+const METHOD: u32 = 2;
+const FUNCTION: u32 = 3;
+const FIELD: u32 = 5;
+const VARIABLE: u32 = 6;
+const CLASS: u32 = 7;
+const MODULE: u32 = 9;
+const KEYWORD: u32 = 14;
+
+fn completion(doc: &Document, params: &Json) -> Json {
+    let Some(at) = cursor(doc, params) else {
+        return json!([]);
+    };
+    let line_start = doc.text[..at as usize].rfind('\n').map_or(0, |i| i + 1);
+    let before = &doc.text[line_start..at as usize];
+    let word_start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |i| i + 1);
+    let mut items: Vec<(String, u32, String)> = Vec::new();
+    if let Some(receiver) = before[..word_start].strip_suffix('.') {
+        let start = receiver
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+            .map_or(0, |i| i + 1);
+        members(doc, at, &receiver[start..], &mut items);
+    } else {
+        names(doc, at, &mut items);
+    }
+    let mut seen = HashSet::new();
+    let items: Vec<Json> = items
+        .into_iter()
+        .filter(|(label, ..)| seen.insert(label.clone()))
+        .map(|(label, kind, detail)| json!({ "label": label, "kind": kind, "detail": detail }))
+        .collect();
+    Json::Array(items)
+}
+
+/// The function whose definition most closely precedes `at` in this file.
+fn enclosing(analysis: &Analysis, at: u32) -> Option<&hir::Func> {
+    analysis
+        .program
+        .funcs
+        .iter()
+        .filter(|f| f.span.file == analysis.file && f.span.lo <= at)
+        .max_by_key(|f| f.span.lo)
+}
+
+fn names(doc: &Document, at: u32, items: &mut Vec<(String, u32, String)>) {
+    if let Some(analysis) = &doc.analysis {
+        let prog = &analysis.program;
+        let classes: Vec<String> = prog.classes.iter().map(|c| c.name.clone()).collect();
+        if let Some(f) = enclosing(analysis, at) {
+            for l in f.locals.iter().filter(|l| l.span != Span::default()) {
+                items.push((l.name.clone(), VARIABLE, l.ty.display(&classes).to_string()));
+            }
+        }
+        for g in &prog.globals {
+            if g.span.file == analysis.file {
+                items.push((g.name.clone(), VARIABLE, g.ty.display(&classes).to_string()));
+            }
+        }
+        for f in &prog.funcs {
+            if f.span.file == analysis.file && !f.name.contains(['.', '<']) {
+                items.push((f.name.clone(), FUNCTION, f.ty.display(&classes).to_string()));
+            }
+        }
+        for c in &prog.classes {
+            if c.span.file == analysis.file && !c.variant {
+                items.push((c.name.clone(), CLASS, String::new()));
+            }
+        }
+    }
+    for b in Builtin::ALL {
+        if !b.name().contains('.') {
+            items.push((b.name().to_string(), FUNCTION, "builtin".into()));
+        }
+    }
+    for m in STD_MODULES {
+        items.push((m.to_string(), MODULE, "module".into()));
+    }
+    for k in KEYWORDS {
+        items.push((k.to_string(), KEYWORD, String::new()));
+    }
+}
+
+fn members(doc: &Document, at: u32, receiver: &str, items: &mut Vec<(String, u32, String)>) {
+    let mut parts = receiver.split('.');
+    let first = parts.next().unwrap_or_default();
+    if StdModule::from_name(first).is_some() {
+        let prefix = format!("{first}.");
+        for b in Builtin::ALL {
+            if let Some(member) = b.name().strip_prefix(&prefix) {
+                items.push((member.to_string(), FUNCTION, b.name().to_string()));
+            }
+        }
+        return;
+    }
+    let Some(analysis) = &doc.analysis else {
+        return;
+    };
+    let prog = &analysis.program;
+    let local = enclosing(analysis, at)
+        .and_then(|f| f.locals.iter().rev().find(|l| l.name == first))
+        .map(|l| l.ty.clone());
+    let global = || {
+        prog.globals
+            .iter()
+            .find(|g| g.name == first && g.span.file == analysis.file)
+            .map(|g| g.ty.clone())
+    };
+    let Some(mut ty) = local.or_else(global) else {
+        return;
+    };
+    for field in parts {
+        let Ty::Class(c) = ty else { return };
+        let Some(f) = prog.classes[c.0 as usize]
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+        else {
+            return;
+        };
+        ty = f.ty.clone();
+    }
+    let classes: Vec<String> = prog.classes.iter().map(|c| c.name.clone()).collect();
+    match &ty {
+        Ty::Class(c) => {
+            let class = &prog.classes[c.0 as usize];
+            for f in &class.fields {
+                items.push((f.name.clone(), FIELD, f.ty.display(&classes).to_string()));
+            }
+            for (name, func) in &class.methods {
+                let ty = prog.funcs[func.0 as usize].ty.display(&classes).to_string();
+                items.push((name.clone(), METHOD, ty));
+            }
+        }
+        _ => {
+            for name in METHOD_NAMES {
+                if method_signature(&ty, name).is_some() {
+                    items.push((name.to_string(), METHOD, String::new()));
+                }
+            }
+        }
+    }
 }
 
 enum Node<'a> {

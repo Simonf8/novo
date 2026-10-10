@@ -64,10 +64,28 @@ class Block:
         return x + hidden @ self.down
 
     function params() -> List[Tensor]:
-        return [self.norm1_w, self.norm1_b, self.qkv, self.proj, self.norm2_w, self.norm2_b, self.up, self.down]
+        return [
+            self.norm1_w,
+            self.norm1_b,
+            self.qkv,
+            self.proj,
+            self.norm2_w,
+            self.norm2_b,
+            self.up,
+            self.down
+        ]
 
 function block() -> Block:
-    return Block(ones(width), zeros(width), weight(width, 3 * width), weight(width, width), ones(width), zeros(width), weight(width, 4 * width), weight(4 * width, width))
+    return Block(
+        ones(width),
+        zeros(width),
+        weight(width, 3 * width),
+        weight(width, width),
+        ones(width),
+        zeros(width),
+        weight(width, 4 * width),
+        weight(4 * width, width)
+    )
 
 class GPT:
     tokens: Tensor
@@ -91,7 +109,14 @@ class GPT:
             all.extend(b.params())
         return all
 
-model = GPT(weight(vocab, width), weight(context, width), range(depth) select block(), ones(width), zeros(width), weight(width, vocab))
+model = GPT(
+    weight(vocab, width),
+    weight(context, width),
+    range(depth) select block(),
+    ones(width),
+    zeros(width),
+    weight(width, vocab)
+)
 optimizer = nn.adam(model.params(), 0.02)
 
 function batch(size: Int) -> List[Tensor]:

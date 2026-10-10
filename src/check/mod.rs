@@ -1333,6 +1333,7 @@ impl Checker {
                     .iter()
                     .map(|f| hir::Field {
                         name: f.name.clone(),
+                        ty: self.infer.zonk(&f.ty),
                     })
                     .collect(),
                 methods: c.methods.clone(),
