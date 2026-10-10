@@ -16,7 +16,11 @@ pub enum Ty {
     Func(Vec<Ty>, Box<Ty>),
     Class(ClassId),
     Task(Box<Ty>),
-    Tensor,
+    /// A tensor, with its shape when known. Each dimension is a `Dim`, a
+    /// variable, or `Any` for a dimension of unknown size.
+    Tensor(Option<Vec<Ty>>),
+    /// One dimension of a tensor shape.
+    Dim(u64),
     Optimizer,
     Any,
     Var(u32),
@@ -39,6 +43,33 @@ impl Ty {
         Ty::Func(params, Box::new(ret))
     }
 
+    /// A tensor of unknown shape.
+    pub fn tensor() -> Ty {
+        Ty::Tensor(None)
+    }
+
+    pub fn shaped(dims: impl IntoIterator<Item = u64>) -> Ty {
+        Ty::Tensor(Some(dims.into_iter().map(Ty::Dim).collect()))
+    }
+
+    pub fn is_tensor(&self) -> bool {
+        matches!(self, Ty::Tensor(_))
+    }
+
+    /// The type with every tensor shape forgotten.
+    pub fn unshaped(&self) -> Ty {
+        match self {
+            Ty::Tensor(_) => Ty::tensor(),
+            Ty::List(t) => Ty::list(t.unshaped()),
+            Ty::Task(t) => Ty::task(t.unshaped()),
+            Ty::Map(k, v) => Ty::map(k.unshaped(), v.unshaped()),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(Ty::unshaped).collect()),
+            Ty::Func(ps, r) => Ty::func(ps.iter().map(Ty::unshaped).collect(), r.unshaped()),
+            Ty::Dim(_) => Ty::Any,
+            other => other.clone(),
+        }
+    }
+
     pub fn is_numeric(&self) -> bool {
         matches!(self, Ty::Int | Ty::Float)
     }
@@ -49,6 +80,7 @@ impl Ty {
             Ty::Map(k, v) => vec![k, v],
             Ty::Tuple(ts) => ts.iter().collect(),
             Ty::Func(ps, r) => ps.iter().chain(std::iter::once(&**r)).collect(),
+            Ty::Tensor(Some(dims)) => dims.iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -107,7 +139,18 @@ impl<'a> fmt::Display for TyDisplay<'a> {
                     .unwrap_or("<class>"),
             ),
             Ty::Task(t) => write!(f, "Task[{}]", sub(t)),
-            Ty::Tensor => f.write_str("Tensor"),
+            Ty::Tensor(None) => f.write_str("Tensor"),
+            Ty::Tensor(Some(dims)) => {
+                f.write_str("Tensor[")?;
+                for (i, d) in dims.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", sub(d))?;
+                }
+                f.write_str("]")
+            }
+            Ty::Dim(n) => write!(f, "{n}"),
             Ty::Optimizer => f.write_str("Optimizer"),
             Ty::Any => f.write_str("Any"),
             Ty::Var(_) => f.write_str("_"),
@@ -145,6 +188,7 @@ impl Infer {
             Ty::Map(k, v) => Ty::map(self.zonk(&k), self.zonk(&v)),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.zonk(t)).collect()),
             Ty::Func(ps, r) => Ty::func(ps.iter().map(|p| self.zonk(p)).collect(), self.zonk(&r)),
+            Ty::Tensor(Some(dims)) => Ty::Tensor(Some(dims.iter().map(|d| self.zonk(d)).collect())),
             other => other,
         }
     }
@@ -206,6 +250,11 @@ impl Infer {
                     && p1.iter().zip(p2).all(|(x, y)| self.unify(x, y))
                     && self.unify(r1, r2)
             }
+            // A tensor of unknown shape is compatible with every shape.
+            (Ty::Tensor(Some(x)), Ty::Tensor(Some(y))) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(p, q)| self.unify(p, q))
+            }
+            (Ty::Tensor(_), Ty::Tensor(_)) => true,
             _ => a == b,
         }
     }
@@ -226,6 +275,9 @@ impl Infer {
                 ps.iter().map(|p| self.substitute(p, map)).collect(),
                 self.substitute(&r, map),
             ),
+            Ty::Tensor(Some(dims)) => {
+                Ty::Tensor(Some(dims.iter().map(|d| self.substitute(d, map)).collect()))
+            }
             other => other,
         }
     }

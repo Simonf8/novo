@@ -34,7 +34,8 @@ try:
 catch e:
     show e
 try:
-    show a.reshape([4, -1])
+    unknown: Tensor = a
+    show unknown.reshape([4, -1])
 catch e:
     show e
 try:

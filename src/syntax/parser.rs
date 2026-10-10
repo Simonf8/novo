@@ -518,6 +518,7 @@ impl<'a> Parser<'a> {
         let name = match self.peek().clone() {
             Tok::Ident(n) => n,
             Tok::None => "None".to_string(),
+            Tok::Int(n) => n.to_string(),
             _ => return Err(self.unexpected("expected a type")),
         };
         self.bump();

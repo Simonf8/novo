@@ -1,0 +1,25 @@
+use nn
+
+# Shapes are inferred through expressions and function signatures.
+function linear(x: Tensor[B, I], w: Tensor[I, O], b: Tensor[O]) -> Tensor[B, O]:
+    return x @ w + b
+
+x = nn.randn([5, 3])
+w1 = nn.randn([3, 4])
+w2 = nn.randn([4, 2])
+h = linear(x, w1, nn.zeros([4])).relu()
+out = linear(h, w2, nn.zeros([2]))
+show out.shape()
+show out.sum(1).shape(), out.sum(0, true).shape(), out.t().shape()
+show out.reshape([-1]).shape(), out.flatten().shape(), out.unsqueeze(0).shape()
+
+# Values stored in lists, or variables assigned more than once, keep only
+# their type, so their shape may change.
+params = [w1, w2, nn.zeros([4])]
+state = nn.zeros([2, 3])
+state = state @ nn.ones([3, 7])
+show len(params), state.shape()
+
+for row in x:
+    show row.shape()
+    break

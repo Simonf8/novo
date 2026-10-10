@@ -5,6 +5,7 @@ pub mod builtins;
 mod expr;
 pub mod hir;
 pub mod session;
+mod shape;
 mod solve;
 mod stmt;
 pub mod types;
@@ -15,7 +16,7 @@ use crate::syntax::{self, ast};
 use builtins::StdModule;
 use hir::{FuncId, GlobalId, LocalId, ModuleId};
 use solve::Constraint;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use types::{ClassId, Infer, Ty};
@@ -50,6 +51,21 @@ pub fn analyze(
     };
     *sources = std::mem::take(&mut checker.sources);
     (program, checker.diags)
+}
+
+fn varied_names(body: &[ast::Stmt]) -> HashSet<String> {
+    let mut names = HashMap::new();
+    let mut returns = 0;
+    stmt::count_assignments(body, &mut names, &mut returns);
+    let mut varied: HashSet<String> = names
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(name, _)| name)
+        .collect();
+    if returns > 1 {
+        varied.insert("return".into());
+    }
+    varied
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -123,6 +139,9 @@ struct FnCtx {
     loop_depth: u32,
     depth: u32,
     pending: Vec<Constraint>,
+    /// Names assigned in more than one place, and `return` if the function has
+    /// more than one; these do not keep tensor shapes.
+    varied: HashSet<String>,
 }
 
 impl FnCtx {
@@ -152,6 +171,8 @@ struct Checker {
     redefine: bool,
     /// Text to use for one file instead of what is on disk, as an editor has it.
     overlay: Option<(PathBuf, String)>,
+    /// Named tensor dimensions such as `B` in `Tensor[B, 784]`, one scope per function.
+    dim_names: Vec<HashMap<String, Ty>>,
     infer: Infer,
     diags: Vec<Diagnostic>,
     funcs: Vec<FuncSlot>,
@@ -168,6 +189,7 @@ impl Checker {
             sources,
             redefine: false,
             overlay: None,
+            dim_names: Vec::new(),
             infer: Infer::default(),
             diags: Vec::new(),
             funcs: Vec::new(),
@@ -422,6 +444,7 @@ impl Checker {
             };
             let default = field.default.as_ref().map(|e| {
                 let value = self.infer_expr(e);
+                let value = self.unshape(value);
                 self.coerce(value, &ty)
             });
             fields.push(FieldSlot {
@@ -477,9 +500,12 @@ impl Checker {
         self.stack.push(FnCtx {
             module: id.0,
             is_toplevel: true,
+            varied: varied_names(stmts),
             ..FnCtx::default()
         });
+        self.dim_names.push(HashMap::new());
         let body = self.check_block(stmts);
+        self.dim_names.pop();
         self.solve_pending();
         let ctx = self.stack.pop().unwrap();
         self.deferred.extend(ctx.pending);
@@ -538,6 +564,7 @@ impl Checker {
             ..FnCtx::default()
         };
 
+        self.dim_names.push(HashMap::new());
         let mut param_tys = Vec::new();
         if let Some(cid) = class {
             let ty = Ty::Class(cid);
@@ -597,6 +624,7 @@ impl Checker {
         let body = self.check_function_body(&def.body, def.name.span, &def.name.name);
         self.solve_pending();
         let ctx = self.stack.pop().unwrap();
+        self.dim_names.pop();
 
         self.funcs[id.0 as usize].state = FnState::Pending;
         let scheme = self.generalize(&fty, ctx.pending);
@@ -621,6 +649,7 @@ impl Checker {
 
     /// Adds a local for every name the body assigns that is not a module global.
     fn declare_locals(&mut self, ctx: &mut FnCtx, body: &[ast::Stmt]) {
+        ctx.varied = varied_names(body);
         let mut assigned = Vec::new();
         stmt::assigned_names(body, &mut assigned);
         let names = &self.modules[ctx.module as usize].names;
@@ -795,6 +824,37 @@ impl Checker {
         }
     }
 
+    /// A dimension in `Tensor[...]`: a size, `_` for any size, or a name that
+    /// stands for the same size wherever it appears in the function.
+    fn resolve_dim(&mut self, t: &ast::TypeExpr) -> Ty {
+        if !t.args.is_empty() {
+            self.error(Diagnostic::error(
+                t.span,
+                "a tensor dimension is a number or a name",
+            ));
+            return Ty::Any;
+        }
+        if let Ok(n) = t.name.parse::<u64>() {
+            return Ty::Dim(n);
+        }
+        if t.name == "_" {
+            return Ty::Any;
+        }
+        if let Some(d) = self
+            .dim_names
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&t.name))
+        {
+            return d.clone();
+        }
+        let d = self.infer.fresh();
+        if let Some(scope) = self.dim_names.last_mut() {
+            scope.insert(t.name.clone(), d.clone());
+        }
+        d
+    }
+
     fn resolve_type(&mut self, t: &ast::TypeExpr) -> Ty {
         let arity = |c: &mut Self, n: usize| -> bool {
             if t.args.len() != n {
@@ -815,7 +875,7 @@ impl Checker {
             "String" | "str" | "string" => Some(Ty::Str),
             "None" => Some(Ty::None),
             "Any" => Some(Ty::Any),
-            "Tensor" => Some(Ty::Tensor),
+            "Tensor" if t.args.is_empty() => Some(Ty::tensor()),
             "Optimizer" => Some(Ty::Optimizer),
             _ => None,
         };
@@ -842,6 +902,7 @@ impl Checker {
                 let items = t.args.iter().map(|a| self.resolve_type(a)).collect();
                 Ty::Tuple(items)
             }
+            "Tensor" => Ty::Tensor(Some(t.args.iter().map(|a| self.resolve_dim(a)).collect())),
             "Map" | "map" | "dict" => {
                 if !arity(self, 2) {
                     return Ty::Any;
@@ -856,7 +917,7 @@ impl Checker {
                     Ty::Class(c)
                 }
                 _ => {
-                    self.error(Diagnostic::error(t.span, format!("unknown type `{name}`")).with_help("built-in types are Int, Float, Bool, String, None, Any, List[T], Map[K, V], Task[T], Tensor and Optimizer"));
+                    self.error(Diagnostic::error(t.span, format!("unknown type `{name}`")).with_help("built-in types are Int, Float, Bool, String, None, Any, List[T], Map[K, V], Task[T], Tensor, Tensor[dims...] and Optimizer"));
                     Ty::Any
                 }
             },
@@ -975,8 +1036,9 @@ impl Zonk<'_> {
         if inst.is_empty() && !generics.is_empty() {
             *inst = generics.iter().map(|v| Ty::Var(*v)).collect();
         }
+        // Engines do not use shapes, so they must not split instantiations.
         for t in inst {
-            *t = self.infer.zonk(t);
+            *t = self.infer.zonk(t).unshaped();
         }
     }
 

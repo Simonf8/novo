@@ -30,12 +30,15 @@ show nn.zeros([2, 3]).shape(), nn.rand([3]).shape()
 rows = a select it.sum().item()
 show rows
 
+# A plain `Tensor` annotation forgets the shape, leaving the check to run time.
+square: Tensor = nn.ones([3, 3])
+row: Tensor = nn.ones([3])
 try:
-    show a @ nn.ones([3, 3])
+    show a @ square
 catch e:
     show e
 try:
-    show a + nn.ones([3])
+    show a + row
 catch e:
     show e
 try:

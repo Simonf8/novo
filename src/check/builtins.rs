@@ -416,17 +416,17 @@ impl Builtin {
             EnvGet => (vec![s(), s()], 1, s()),
             EnvSet => (vec![s(), s()], 2, Ty::None),
             EnvArgs => (vec![], 0, Ty::list(s())),
-            NnTensor => (vec![Ty::Any], 1, Ty::Tensor),
-            NnZeros | NnOnes | NnRandn | NnRand => (vec![Ty::list(Ty::Int)], 1, Ty::Tensor),
-            NnArange | NnEye => (vec![Ty::Int], 1, Ty::Tensor),
-            NnParam => (vec![Ty::Tensor], 1, Ty::Tensor),
+            NnTensor => (vec![Ty::Any], 1, Ty::tensor()),
+            NnZeros | NnOnes | NnRandn | NnRand => (vec![Ty::list(Ty::Int)], 1, Ty::tensor()),
+            NnArange | NnEye => (vec![Ty::Int], 1, Ty::tensor()),
+            NnParam => (vec![Ty::tensor()], 1, Ty::tensor()),
             NnSeed => (vec![Ty::Int], 1, Ty::None),
-            NnSgd | NnAdam => (vec![Ty::list(Ty::Tensor), f()], 2, Ty::Optimizer),
-            NnMse | NnCrossEntropy => (vec![Ty::Tensor, Ty::Tensor], 2, Ty::Tensor),
-            NnStack | NnCat => (vec![Ty::list(Ty::Tensor), Ty::Int], 1, Ty::Tensor),
-            NnTril => (vec![Ty::Int], 1, Ty::Tensor),
-            NnSave => (vec![Ty::map(s(), Ty::Tensor), s()], 2, Ty::None),
-            NnLoad => (vec![s(), s()], 1, Ty::map(s(), Ty::Tensor)),
+            NnSgd | NnAdam => (vec![Ty::list(Ty::tensor()), f()], 2, Ty::Optimizer),
+            NnMse | NnCrossEntropy => (vec![Ty::tensor(), Ty::tensor()], 2, Ty::tensor()),
+            NnStack | NnCat => (vec![Ty::list(Ty::tensor()), Ty::Int], 1, Ty::tensor()),
+            NnTril => (vec![Ty::Int], 1, Ty::tensor()),
+            NnSave => (vec![Ty::map(s(), Ty::tensor()), s()], 2, Ty::None),
+            NnLoad => (vec![s(), s()], 1, Ty::map(s(), Ty::tensor())),
             NnDevice => (vec![s()], 0, s()),
             RandomSeed => (vec![Ty::Int], 1, Ty::None),
             RandomInt => (vec![Ty::Int, Ty::Int], 2, Ty::Int),
@@ -502,8 +502,8 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
                 _ => return None,
             })
         }
-        Ty::Tensor => {
-            let t = || Ty::Tensor;
+        Ty::Tensor(_) => {
+            let t = || Ty::tensor();
             Some(match name {
                 "shape" => (vec![], 0, Ty::list(i())),
                 "rank" | "size" => (vec![], 0, i()),
@@ -536,7 +536,7 @@ pub fn method_signature(recv: &Ty, name: &str) -> Option<(Vec<Ty>, usize, Ty)> {
             })
         }
         Ty::Optimizer => Some(match name {
-            "step" => (vec![Ty::Tensor], 1, Ty::None),
+            "step" => (vec![Ty::tensor()], 1, Ty::None),
             "lr" => (vec![], 0, Ty::Float),
             "set_lr" => (vec![Ty::Float], 1, Ty::None),
             _ => return None,

@@ -1,0 +1,6 @@
+# expect-error: inner dimensions 3 and 4 differ
+use nn
+
+x = nn.randn([8, 3])
+w = nn.randn([4, 2])
+show x @ w

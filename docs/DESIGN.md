@@ -175,7 +175,36 @@ it requires building with `--features python`.
   changes its precision (`f32`, `f16`, `bf16`, `f64`), and `nn.load(path,
   "bf16")` loads weights in a given precision.
 
-Shape errors are run-time errors that name both shapes.
+### Shapes
+
+Tensor types carry shapes when they can be known: `nn.zeros([2, 3])` is a
+`Tensor[2, 3]`, `nn.tensor` of a nested list literal has the literal's shape,
+and arithmetic, `@`, indexing, iteration and most methods (`t`, `transpose`,
+`reshape`, `sum`, `mean`, `max`, `argmax`, `squeeze`, `unsqueeze`, `narrow`,
+`flatten`, `embed`, element-wise functions) compute the shape of their result.
+Mismatches that would certainly fail at run time are reported by `novo check`:
+
+```
+x = nn.randn([8, 3])
+w = nn.randn([4, 2])
+show x @ w      # error: cannot multiply shapes Tensor[8, 3] and Tensor[4, 2]
+```
+
+Annotations can state shapes. A number is a fixed size, `_` is any size, and a
+name stands for the same size everywhere it appears in one function, so
+functions can be generic over sizes:
+
+```
+function linear(x: Tensor[B, I], w: Tensor[I, O], b: Tensor[O]) -> Tensor[B, O]:
+    return x @ w + b
+```
+
+Plain `Tensor` means a tensor of unknown shape and is compatible with every
+shape. Because a variable has one type for its whole life, only variables
+assigned in one place keep shapes; values stored in lists, maps, fields,
+variables assigned in several places, or returned from several `return`
+statements are just `Tensor`. Shape errors that the checker cannot see are
+run-time errors that name both shapes.
 
 `use random` gives `random.int(low, high)` (high excluded), `random.float()`,
 `random.choice(list)`, `random.shuffle(list)` and `random.seed(n)`. It shares

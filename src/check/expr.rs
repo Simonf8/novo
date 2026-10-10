@@ -1,5 +1,6 @@
 use super::builtins::Builtin;
 use super::hir::{self, ExprKind, FuncId, LocalId};
+use super::shape::{self, Lit};
 use super::solve::{Constraint, arity_error};
 use super::types::{ClassId, Ty};
 use super::{Checker, FnCtx, FnState, Item, Resolved, Scheme};
@@ -56,7 +57,10 @@ impl Checker {
             ast::ExprKind::Map(entries) => {
                 let (keys, values): (Vec<_>, Vec<_>) = entries
                     .iter()
-                    .map(|(k, v)| (self.infer_expr(k), self.infer_expr(v)))
+                    .map(|(k, v)| {
+                        let (k, v) = (self.infer_expr(k), self.infer_expr(v));
+                        (self.unshape(k), self.unshape(v))
+                    })
                     .unzip();
                 let (k, v) = (self.element_type(&keys), self.element_type(&values));
                 let entries = keys
@@ -267,7 +271,13 @@ impl Checker {
     }
 
     fn infer_list(&mut self, items: &[ast::Expr], span: Span) -> hir::Expr {
-        let items: Vec<hir::Expr> = items.iter().map(|i| self.infer_expr(i)).collect();
+        let items: Vec<hir::Expr> = items
+            .iter()
+            .map(|i| {
+                let item = self.infer_expr(i);
+                self.unshape(item)
+            })
+            .collect();
         let elem = self.element_type(&items);
         let items = items.into_iter().map(|i| self.coerce(i, &elem)).collect();
         expr(ExprKind::List(items), Ty::list(elem), span)
@@ -447,7 +457,14 @@ impl Checker {
                     target: target.ty.clone(),
                     span,
                 });
-                let ty = target.ty.clone();
+                let ty = match self.infer.zonk(&target.ty) {
+                    Ty::Tensor(Some(d)) if !d.is_empty() => Ty::Tensor(Some(
+                        std::iter::once(Ty::Any)
+                            .chain(d[1..].iter().cloned())
+                            .collect(),
+                    )),
+                    _ => target.ty.clone(),
+                };
                 expr(
                     ExprKind::Slice {
                         target: Box::new(target),
@@ -674,7 +691,10 @@ impl Checker {
         for (i, slot) in bound.into_iter().enumerate() {
             let field_ty = self.classes[c.0 as usize].fields[i].ty.clone();
             let arg = match slot {
-                Some(e) => self.coerce(e, &field_ty),
+                Some(e) => {
+                    let e = self.unshape(e);
+                    self.coerce(e, &field_ty)
+                }
                 None => self.classes[c.0 as usize].fields[i]
                     .default
                     .clone()
@@ -724,6 +744,7 @@ impl Checker {
             recv: recv.ty.clone(),
             name: name.name.clone(),
             args: args.iter().map(|a| a.ty.clone()).collect(),
+            lits: args.iter().map(Lit::of).collect(),
             out: out.clone(),
             span: name.span,
         });
@@ -746,6 +767,39 @@ impl Checker {
         self.call_builtin(b, args, span)
     }
 
+    /// The shaped tensor type a tensor-creating builtin returns, when its arguments tell.
+    fn builtin_shape(&self, b: Builtin, args: &[hir::Expr]) -> Option<Ty> {
+        let sizes = |e: &hir::Expr| match Lit::of(e) {
+            Lit::Ints(dims) if dims.iter().all(|d| *d >= 0) => {
+                Some(dims.iter().map(|d| *d as u64).collect::<Vec<_>>())
+            }
+            _ => None,
+        };
+        let size = |e: &hir::Expr| match Lit::of(e) {
+            Lit::Int(n) if n >= 0 => Some(n as u64),
+            _ => None,
+        };
+        let first = args.first()?;
+        match b {
+            Builtin::NnZeros | Builtin::NnOnes | Builtin::NnRandn | Builtin::NnRand => {
+                sizes(first).map(Ty::shaped)
+            }
+            Builtin::NnEye | Builtin::NnTril => size(first).map(|n| Ty::shaped([n, n])),
+            Builtin::NnArange => size(first).map(|n| Ty::shaped([n])),
+            Builtin::NnTensor => shape::of_literal(first).map(|d| Ty::Tensor(Some(d))),
+            Builtin::NnParam => Some(self.infer.zonk(&first.ty)).filter(Ty::is_tensor),
+            Builtin::NnMse | Builtin::NnCrossEntropy => Some(Ty::shaped([])),
+            _ => None,
+        }
+    }
+
+    /// Forgets the tensor shapes in a value about to be stored somewhere that
+    /// may hold tensors of different shapes over time.
+    pub(super) fn unshape(&self, mut value: hir::Expr) -> hir::Expr {
+        value.ty = self.unshaped(&value.ty);
+        value
+    }
+
     fn call_builtin(&mut self, b: Builtin, args: Vec<hir::Expr>, span: Span) -> hir::Expr {
         let arity = |c: &mut Self, min: usize, max: usize| -> bool {
             if args.len() < min || args.len() > max {
@@ -758,11 +812,12 @@ impl Checker {
             if !arity(self, required, params.len()) {
                 return error_expr(span);
             }
-            let args = args
+            let args: Vec<hir::Expr> = args
                 .into_iter()
                 .zip(&params)
                 .map(|(a, p)| self.coerce(a, p))
                 .collect();
+            let ret = self.builtin_shape(b, &args).unwrap_or(ret);
             return expr(ExprKind::CallBuiltin { builtin: b, args }, ret, span);
         }
         let ty = match b {
@@ -1019,8 +1074,9 @@ impl Checker {
     ) -> hir::Expr {
         let target = self.infer_expr(target);
         let item_ty = self.infer.fresh();
-        if self.infer.shallow(&target.ty) == Ty::Tensor {
-            self.infer.unify(&item_ty, &Ty::Tensor);
+        if let Ty::Tensor(shape) = self.infer.zonk(&target.ty) {
+            let row = shape.map(|d| d.get(1..).unwrap_or_default().to_vec());
+            self.infer.unify(&item_ty, &Ty::Tensor(row));
         } else if !self.infer.unify(&target.ty, &Ty::list(item_ty.clone())) {
             let msg = format!(
                 "`{}` works on lists and tensors, found `{}`",

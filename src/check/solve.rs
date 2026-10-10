@@ -4,6 +4,7 @@
 
 use super::Checker;
 use super::builtins::method_signature;
+use super::shape::{self, Lit};
 use super::types::{Infer, Ty};
 use crate::diagnostic::Diagnostic;
 use crate::source::Span;
@@ -27,6 +28,7 @@ pub enum Constraint {
         recv: Ty,
         name: String,
         args: Vec<Ty>,
+        lits: Vec<Lit>,
         out: Ty,
         span: Span,
     },
@@ -122,12 +124,14 @@ impl Constraint {
                 recv,
                 name,
                 args,
+                lits,
                 out,
                 span,
             } => Constraint::Method {
                 recv: s(recv),
                 name: name.clone(),
                 args: args.iter().map(s).collect(),
+                lits: lits.clone(),
                 out: s(out),
                 span: *span,
             },
@@ -243,7 +247,7 @@ impl Checker {
             } => self.solve_binary(*op, lhs, rhs, out, *span),
             Constraint::Neg { operand, out, span } => match self.infer.shallow(operand) {
                 Ty::Var(_) => Outcome::Wait,
-                t @ (Ty::Int | Ty::Float | Ty::Tensor | Ty::Any) => self.settle(out, &t, *span),
+                t @ (Ty::Int | Ty::Float | Ty::Tensor(_) | Ty::Any) => self.settle(out, &t, *span),
                 t => Outcome::Fail(Diagnostic::error(
                     *span,
                     format!("cannot negate a `{}`", self.show(&t)),
@@ -253,9 +257,10 @@ impl Checker {
                 recv,
                 name,
                 args,
+                lits,
                 out,
                 span,
-            } => self.solve_method(recv, name, args, out, *span),
+            } => self.solve_method(recv, name, args, lits, out, *span),
             Constraint::Field {
                 recv,
                 name,
@@ -330,7 +335,7 @@ impl Checker {
                     }
                     self.settle(out, &e, *span)
                 }
-                t @ (Ty::Str | Ty::Tensor) => {
+                t @ (Ty::Str | Ty::Tensor(_)) => {
                     if !self.infer.unify(index, &Ty::Int) {
                         let msg = format!(
                             "{} index must be an `Int`, found `{}`",
@@ -339,7 +344,17 @@ impl Checker {
                         );
                         return Outcome::Fail(Diagnostic::error(*span, msg));
                     }
-                    self.settle(out, &t, *span)
+                    let item = match t {
+                        Ty::Tensor(Some(d)) if d.is_empty() => {
+                            return Outcome::Fail(Diagnostic::error(
+                                *span,
+                                "cannot index into a tensor with no dimensions",
+                            ));
+                        }
+                        Ty::Tensor(Some(d)) => Ty::Tensor(Some(d[1..].to_vec())),
+                        t => t,
+                    };
+                    self.settle(out, &item, *span)
                 }
                 Ty::Map(k, v) => {
                     if !self.infer.unify(&k, index) {
@@ -354,7 +369,7 @@ impl Checker {
             },
             Constraint::Slice { target, span } => match self.infer.shallow(target) {
                 Ty::Var(_) => Outcome::Wait,
-                Ty::List(_) | Ty::Str | Ty::Tensor | Ty::Any => Outcome::Done,
+                Ty::List(_) | Ty::Str | Ty::Tensor(_) | Ty::Any => Outcome::Done,
                 t => Outcome::Fail(Diagnostic::error(
                     *span,
                     format!("cannot slice a `{}`", self.show(&t)),
@@ -369,7 +384,10 @@ impl Checker {
                 Ty::Any => self.settle(item, &Ty::Any, *span),
                 Ty::List(e) => self.settle(item, &e, *span),
                 Ty::Str => self.settle(item, &Ty::Str, *span),
-                Ty::Tensor => self.settle(item, &Ty::Tensor, *span),
+                Ty::Tensor(shape) => {
+                    let row = shape.map(|d| d.get(1..).unwrap_or_default().to_vec());
+                    self.settle(item, &Ty::Tensor(row), *span)
+                }
                 Ty::Map(k, _) => self.settle(item, &k, *span),
                 t => Outcome::Fail(
                     Diagnostic::error(*span, format!("cannot iterate over a `{}`", self.show(&t)))
@@ -378,7 +396,7 @@ impl Checker {
             },
             Constraint::Len { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
-                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_) | Ty::Tensor | Ty::Any => {
+                Ty::List(_) | Ty::Str | Ty::Map(..) | Ty::Tuple(_) | Ty::Tensor(_) | Ty::Any => {
                     Outcome::Done
                 }
                 t => Outcome::Fail(Diagnostic::error(
@@ -399,7 +417,7 @@ impl Checker {
             },
             Constraint::Summable { ty, span } => match self.infer.shallow(ty) {
                 Ty::Var(_) => Outcome::Wait,
-                Ty::Int | Ty::Float | Ty::Tensor | Ty::Any => Outcome::Done,
+                Ty::Int | Ty::Float | Ty::Tensor(_) | Ty::Any => Outcome::Done,
                 t => Outcome::Fail(Diagnostic::error(
                     *span,
                     format!(
@@ -432,7 +450,7 @@ impl Checker {
             Outcome::Fail(Diagnostic::error(span, msg))
         };
         let is_var = |t: &Ty| matches!(t, Ty::Var(_));
-        if l == Ty::Tensor || r == Ty::Tensor {
+        if l.is_tensor() || r.is_tensor() {
             return self.solve_tensor_binary(op, &l, &r, out, span);
         }
         match op {
@@ -571,17 +589,23 @@ impl Checker {
     /// Operators with at least one `Tensor` operand: arithmetic broadcasts against
     /// tensors and numbers, `**` takes a number exponent, and `@` needs two tensors.
     fn solve_tensor_binary(&mut self, op: BinOp, l: &Ty, r: &Ty, out: &Ty, span: Span) -> Outcome {
-        let tensor_or_number = |t: &Ty| matches!(t, Ty::Tensor | Ty::Int | Ty::Float | Ty::Any);
-        let other = if *l == Ty::Tensor { r } else { l };
+        let tensor_or_number = |t: &Ty| matches!(t, Ty::Tensor(_) | Ty::Int | Ty::Float | Ty::Any);
+        let shape_of = |c: &Self, t: &Ty| match c.infer.zonk(t) {
+            Ty::Tensor(s) => s,
+            _ => Some(Vec::new()),
+        };
         let ok = match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                let other = if l.is_tensor() { r } else { l };
                 if matches!(other, Ty::Var(_)) {
                     return Outcome::Wait;
                 }
                 tensor_or_number(other)
             }
-            BinOp::Pow => *l == Ty::Tensor && (r.is_numeric() || matches!(r, Ty::Var(_) | Ty::Any)),
-            BinOp::MatMul => self.infer.unify(l, &Ty::Tensor) && self.infer.unify(r, &Ty::Tensor),
+            BinOp::Pow => l.is_tensor() && (r.is_numeric() || matches!(r, Ty::Var(_) | Ty::Any)),
+            BinOp::MatMul => {
+                self.infer.unify(l, &Ty::tensor()) && self.infer.unify(r, &Ty::tensor())
+            }
             _ => false,
         };
         if !ok {
@@ -600,7 +624,17 @@ impl Checker {
             }
             return Outcome::Fail(diag);
         }
-        self.settle(out, &Ty::Tensor, span)
+        let result = match (op, shape_of(self, l), shape_of(self, r)) {
+            (BinOp::Pow, a, _) => Ok(a),
+            (BinOp::MatMul, Some(a), Some(b)) => shape::matmul(&mut self.infer, &a, &b).map(Some),
+            (BinOp::MatMul, ..) => Ok(None),
+            (_, Some(a), Some(b)) => shape::broadcast(&self.infer, &a, &b).map(Some),
+            _ => Ok(None),
+        };
+        match result {
+            Ok(shape) => self.settle(out, &Ty::Tensor(shape), span),
+            Err(msg) => Outcome::Fail(Diagnostic::error(span, msg)),
+        }
     }
 
     fn solve_method(
@@ -608,6 +642,7 @@ impl Checker {
         recv: &Ty,
         name: &str,
         args: &[Ty],
+        lits: &[Lit],
         out: &Ty,
         span: Span,
     ) -> Outcome {
@@ -660,7 +695,7 @@ impl Checker {
                     format!("`{}` has no method `{name}`", class.name),
                 ))
             }
-            Ty::Str | Ty::List(_) | Ty::Map(..) | Ty::Tensor | Ty::Optimizer => {
+            Ty::Str | Ty::List(_) | Ty::Map(..) | Ty::Tensor(_) | Ty::Optimizer => {
                 let Some((params, required, ret)) = method_signature(&recv, name) else {
                     return Outcome::Fail(Diagnostic::error(
                         span,
@@ -676,17 +711,69 @@ impl Checker {
                         args.len(),
                     ));
                 }
+                let stores = matches!(recv, Ty::List(_) | Ty::Map(..));
                 for (p, a) in params.iter().zip(args) {
-                    if !self.unify_arg(p, a) {
-                        return Outcome::Fail(self.mismatch_diag(span, p, a));
+                    // Collections hold tensors of any shape.
+                    let a = if stores { self.unshaped(a) } else { a.clone() };
+                    if !self.unify_arg(p, &a) {
+                        return Outcome::Fail(self.mismatch_diag(span, p, &a));
                     }
                 }
+                let ret = match (&recv, &ret) {
+                    (Ty::Tensor(_), Ty::Tensor(_)) => {
+                        match self.tensor_method_shape(&recv, name, args, lits) {
+                            Ok(shape) => Ty::Tensor(shape),
+                            Err(msg) => return Outcome::Fail(Diagnostic::error(span, msg)),
+                        }
+                    }
+                    _ => ret,
+                };
                 self.settle(out, &ret, span)
             }
             t => Outcome::Fail(Diagnostic::error(
                 span,
                 format!("`{}` has no method `{name}`", self.show(t)),
             )),
+        }
+    }
+}
+
+impl Checker {
+    /// A type with tensor shapes forgotten, unless it is not yet known.
+    pub(super) fn unshaped(&self, ty: &Ty) -> Ty {
+        match self.infer.shallow(ty) {
+            Ty::Var(_) => ty.clone(),
+            _ => self.infer.zonk(ty).unshaped(),
+        }
+    }
+
+    fn tensor_method_shape(
+        &mut self,
+        recv: &Ty,
+        name: &str,
+        args: &[Ty],
+        lits: &[Lit],
+    ) -> Result<Option<shape::Dims>, String> {
+        let Ty::Tensor(Some(d)) = self.infer.zonk(recv) else {
+            return Ok(None);
+        };
+        let arg = |c: &Self, i: usize| match args.get(i).map(|a| c.infer.zonk(a)) {
+            Some(Ty::Tensor(s)) => s,
+            _ => None,
+        };
+        match name {
+            "matmul" => match arg(self, 0) {
+                Some(b) => shape::matmul(&mut self.infer, &d, &b).map(Some),
+                None => Ok(None),
+            },
+            "eq" => match arg(self, 0) {
+                Some(b) => shape::broadcast(&self.infer, &d, &b).map(Some),
+                None => Ok(None),
+            },
+            "embed" if d.len() == 2 => {
+                Ok(arg(self, 0).map(|ids| ids.into_iter().chain([d[1].clone()]).collect()))
+            }
+            _ => shape::method(&self.infer, name, &d, lits),
         }
     }
 }

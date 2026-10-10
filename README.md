@@ -147,6 +147,18 @@ repeat 200 times:
 show f"w = {w.item():.3f}, b = {b.item():.3f}"     # w = 3.000, b = 2.000
 ```
 
+Tensor types carry shapes where they can be known, so many dimension
+mismatches are caught before the program runs:
+
+```python
+function linear(x: Tensor[B, I], w: Tensor[I, O]) -> Tensor[B, O]:
+    return x @ w
+
+h = linear(nn.randn([32, 784]), nn.randn([784, 128]))   # Tensor[32, 128]
+show h @ nn.randn([64, 10])
+# error: cannot multiply shapes Tensor[32, 128] and Tensor[64, 10]: inner dimensions 128 and 64 differ
+```
+
 ### Running GPT-2
 
 [examples/gpt2](examples/gpt2) is GPT-2 written in Novo: the byte-level BPE
@@ -223,9 +235,8 @@ errors (`# expect-error: ...`) and required features
 
 1. **Faster native code.** Closures and parallel blocks in compiled code,
    unboxed lists of numbers, inlining, and ahead-of-time executables.
-2. **Shapes in types.** Catch tensor dimension mismatches at check time.
-3. **Data and models.** Reusable layers and more pretrained architectures.
-4. **Tooling.** Go to definition, completion, and a package manager.
+2. **Data and models.** Reusable layers and more pretrained architectures.
+3. **Tooling.** Go to definition, completion, and a package manager.
 
 ## License
 

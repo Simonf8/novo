@@ -5,6 +5,7 @@ use super::{Checker, FnCtx, Item, Resolved};
 use crate::diagnostic::Diagnostic;
 use crate::source::Span;
 use crate::syntax::ast;
+use std::collections::HashMap;
 
 /// Collects the names a block assigns, not looking inside nested functions or classes.
 pub(super) fn assigned_names(block: &[ast::Stmt], out: &mut Vec<ast::Ident>) {
@@ -63,6 +64,52 @@ fn target_names(target: &ast::Expr, out: &mut Vec<ast::Ident>) {
         }),
         ast::ExprKind::Tuple(items) => items.iter().for_each(|i| target_names(i, out)),
         _ => {}
+    }
+}
+
+/// Counts the statements assigning each name and the `return`s with a value,
+/// not looking inside nested functions or classes.
+pub(super) fn count_assignments(
+    block: &[ast::Stmt],
+    names: &mut HashMap<String, usize>,
+    returns: &mut usize,
+) {
+    let add = |name: &str, names: &mut HashMap<String, usize>| {
+        *names.entry(name.to_string()).or_default() += 1
+    };
+    for stmt in block {
+        match &stmt.kind {
+            ast::StmtKind::Assign { target, .. } | ast::StmtKind::AugAssign { target, .. } => {
+                let mut targets = Vec::new();
+                target_names(target, &mut targets);
+                targets.iter().for_each(|t| add(&t.name, names));
+            }
+            ast::StmtKind::Return(Some(_)) => *returns += 1,
+            ast::StmtKind::If {
+                branches,
+                otherwise,
+            } => {
+                for (_, b) in branches {
+                    count_assignments(b, names, returns);
+                }
+                if let Some(b) = otherwise {
+                    count_assignments(b, names, returns);
+                }
+            }
+            ast::StmtKind::While { body, .. } | ast::StmtKind::Repeat { body, .. } => {
+                count_assignments(body, names, returns)
+            }
+            ast::StmtKind::For { vars, body, .. } => {
+                vars.iter().for_each(|v| add(&v.name, names));
+                count_assignments(body, names, returns);
+            }
+            ast::StmtKind::Try { body, var, handler } => {
+                count_assignments(body, names, returns);
+                add(&var.name, names);
+                count_assignments(handler, names, returns);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -194,6 +241,7 @@ impl Checker {
             return;
         };
         let place_ty = self.place_ty(&place, target.span);
+        let value = self.store(value, &place, target);
         let value = self.coerce(value, &place_ty);
         out.push(hir::Stmt {
             kind: StmtKind::Assign {
@@ -225,7 +273,10 @@ impl Checker {
                 if let Some(a) = &annotated {
                     self.unify_at(target.span, a, &place_ty);
                 }
-                let value = self.infer_expr(value);
+                let mut value = self.infer_expr(value);
+                if annotated.is_none() {
+                    value = self.store(value, &place, target);
+                }
                 let errors = self.diags.len();
                 let value = self.coerce(value, &place_ty);
                 if self.diags.len() > errors && matches!(place, Place::Local(_) | Place::Global(_))
@@ -305,8 +356,13 @@ impl Checker {
                 if let [var] = vars.as_slice() {
                     let place = self.name_place(&var.name, var.span)?;
                     let item = self.place_ty(&place, var.span);
+                    let iterable = if self.ctx().varied.contains(&var.name) {
+                        self.unshaped(&iter.ty)
+                    } else {
+                        iter.ty.clone()
+                    };
                     self.add_constraint(Constraint::Iter {
-                        iterable: iter.ty.clone(),
+                        iterable,
                         item,
                         span: iter.span,
                     });
@@ -382,7 +438,10 @@ impl Checker {
                 };
                 match value {
                     Some(v) => {
-                        let v = self.infer_expr(v);
+                        let mut v = self.infer_expr(v);
+                        if self.ctx().varied.contains("return") {
+                            v = self.unshape(v);
+                        }
                         let v = self.coerce(v, &ret);
                         StmtKind::Return(Some(v))
                     }
@@ -554,6 +613,19 @@ impl Checker {
                 None
             }
         }
+    }
+
+    /// Prepares a value for storing: fields, elements and variables assigned in
+    /// more than one place may hold tensors of different shapes over time, so
+    /// values stored there keep only their type, not their shape.
+    fn store(&mut self, value: hir::Expr, place: &Place, target: &ast::Expr) -> hir::Expr {
+        let varied = match (place, &target.kind) {
+            (Place::Field { .. } | Place::Index { .. }, _) => true,
+            (Place::Global(_), _) if !self.ctx().is_toplevel => true,
+            (_, ast::ExprKind::Name(n)) => self.ctx().varied.contains(n),
+            _ => false,
+        };
+        if varied { self.unshape(value) } else { value }
     }
 
     fn place_ty(&mut self, place: &Place, span: Span) -> Ty {
