@@ -3,6 +3,10 @@ name = "novo"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.96"
+description = "A statically typed language that reads like Python and compiles to native code"
+license = "MIT"
+repository = "https://github.com/Simonf8/novo"
+readme = "README.md"
 
 [features]
 python = ["dep:pyo3"]
