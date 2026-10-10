@@ -1,0 +1,6 @@
+llama-tiny true true
+qwen-tiny true true
+true
+true true
+f16
+the model handles at most 256 positions

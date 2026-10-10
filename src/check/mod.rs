@@ -60,7 +60,10 @@ pub fn analyze(
 }
 
 /// Standard modules written in Novo, compiled into the executable.
-const SOURCE_MODULES: &[(&str, &str)] = &[("layers", include_str!("../stdlib/layers.nv"))];
+const SOURCE_MODULES: &[(&str, &str)] = &[
+    ("layers", include_str!("../stdlib/layers.nv")),
+    ("llama", include_str!("../stdlib/llama.nv")),
+];
 
 fn source_module_path(name: &str) -> Option<PathBuf> {
     SOURCE_MODULES
@@ -395,7 +398,7 @@ impl Checker {
                         None => {
                             let msg = format!("unknown module `{}`", name.name);
                             let help = format!(
-                                "standard modules are math, time, json, csv, fs, env, random, nn and layers; to load a file write `use \"{}.nv\"`",
+                                "standard modules are math, time, json, csv, fs, env, random, nn, tokenizer, layers and llama; to load a file write `use \"{}.nv\"`",
                                 name.name
                             );
                             self.error(Diagnostic::error(name.span, msg).with_help(help));

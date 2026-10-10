@@ -5,6 +5,7 @@ pub mod builtins;
 mod csv;
 mod ops;
 mod optim;
+mod pool;
 mod tensor;
 mod tokenize;
 pub mod value;

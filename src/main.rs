@@ -34,6 +34,13 @@ Options:
 ";
 
 fn main() {
+    // candle otherwise re-reads /proc/cpuinfo to count cores on every matrix multiply.
+    if std::env::var_os("RAYON_NUM_THREADS").is_none()
+        && let Ok(n) = std::thread::available_parallelism()
+    {
+        // SAFETY: no other threads exist yet.
+        unsafe { std::env::set_var("RAYON_NUM_THREADS", n.to_string()) };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         None | Some("repl") => cmd_repl(),

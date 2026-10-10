@@ -1,0 +1,31 @@
+use fs
+use json
+use llama
+use nn
+
+# Tiny random Llama 3 and Qwen 2 models, checked against Hugging Face transformers.
+for name in ["llama-tiny", "qwen-tiny"]:
+    dir = "tests/fixtures/" + name
+    model = llama.load(dir)
+    expected = json.parse(fs.read_file(dir + "/expected.json"))
+    prompt: List[Int] = expected["prompt"]
+    reference: List[Float] = expected["logits"]
+    logits = model.forward(nn.tensor([prompt]), model.new_cache())
+    last = logits[0][len(prompt) - 1]
+    worst = (last - nn.tensor(reference)).abs().max(0).item()
+    generated: List[Int] = expected["generated"]
+    same = model.generate_ids(prompt, len(generated)) == generated
+    show name, worst < 0.0001, same
+
+model = llama.load("tests/fixtures/llama-tiny")
+show model.generate("The quick brown fox", 8) != ""
+nn.seed(3)
+first = model.generate_ids([0, 41, 506], 10, 0.8, 50, 0.9)
+nn.seed(3)
+show first == model.generate_ids([0, 41, 506], 10, 0.8, 50, 0.9), len(first) <= 10
+half = llama.load("tests/fixtures/llama-tiny", "f16")
+show half.forward(nn.tensor([[0, 41]]), half.new_cache(), true).dtype()
+try:
+    model.generate_ids(range(300), 1)
+catch e:
+    show e

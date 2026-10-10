@@ -1,0 +1,23 @@
+# Generates text with a Llama-family model downloaded from Hugging Face, such
+# as SmolLM2, Llama 3.2, Qwen 2.5 or TinyLlama.
+#
+#     novo run examples/llm/generate.nv path/to/model "Once upon a time" 50 0.7
+
+use env
+use llama
+use time
+
+args = env.args()
+if len(args) < 3:
+    fail("usage: generate.nv MODEL_DIR PROMPT [TOKENS] [TEMPERATURE]")
+tokens = int(args[3]) if len(args) > 3 else 50
+temperature = float(args[4]) if len(args) > 4 else 0.0
+
+start = time.now()
+model = llama.load(args[1])
+show f"loaded in {time.now() - start:.1f}s"
+start = time.now()
+ids = model.generate_ids(model.tokenizer.encode(args[2]), tokens, temperature, 50, 0.9)
+took = time.now() - start
+show args[2] + model.tokenizer.decode(ids)
+show f"{len(ids)} tokens in {took:.1f}s ({float(len(ids)) / took:.1f} tokens/s)"

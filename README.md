@@ -161,19 +161,31 @@ show h @ nn.randn([64, 10])
 # error: cannot multiply shapes Tensor[32, 128] and Tensor[64, 10]: inner dimensions 128 and 64 differ
 ```
 
-### Running GPT-2
+### Running modern language models
 
-[examples/gpt2](examples/gpt2) is GPT-2 written in Novo: the byte-level BPE
-tokenizer and the transformer, loading the published weights. Both are tested
-against Hugging Face `transformers`. They produce identical token ids, logits
-within 1e-4, and the same greedy continuation. Download `config.json`,
-`model.safetensors`, `vocab.json` and `merges.txt` from
-[openai-community/gpt2](https://huggingface.co/openai-community/gpt2) into a
-folder, then:
+`use llama` loads Llama-family checkpoints from Hugging Face as they are
+published: Llama 2 and 3, Qwen 2 and 2.5, SmolLM, Mistral, TinyLlama and
+others with the same layout. It reads `config.json`, single or sharded
+safetensors, and the model's own `tokenizer.json`, and generates with a KV
+cache and temperature, top-k and top-p sampling:
+
+```python
+use llama
+
+model = llama.load("path/to/SmolLM2-135M")
+show model.generate("The capital of France is", 20)
+```
 
 ```bash
-novo run examples/gpt2/generate.nv path/to/gpt2 "The meaning of life is" 30
+novo run examples/llm/generate.nv path/to/model "Once upon a time" 50 0.7
 ```
+
+Tiny random Llama 3 and Qwen 2 models are tested against Hugging Face
+`transformers`: logits agree to within 1e-4 and greedy generation is
+identical. On a 4-core CPU, a model with SmolLM-135M's shape generates
+**42 tokens/s against PyTorch's 32** with identical output (the speed comes
+from a multi-threaded matrix-vector kernel for single-token steps, fused
+projections, and attention that never copies the key/value cache per head).
 
 [examples/xor_mlp.nv](examples/xor_mlp.nv) trains a small neural network
 written as a Novo class, and [examples/tiny_gpt.nv](examples/tiny_gpt.nv) is a

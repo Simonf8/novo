@@ -396,6 +396,25 @@ impl State {
                 candle_core::safetensors::save(&named, &**path).map_err(err)?;
                 return Ok(Value::None);
             }
+            Builtin::NnRopeTables => {
+                let (head_dim, positions) = (int_arg(&args[0])?, int_arg(&args[1])?);
+                if head_dim <= 0 || head_dim % 2 != 0 || positions < 0 {
+                    return Err(
+                        "`nn.rope_tables` needs an even head size and a number of positions".into(),
+                    );
+                }
+                let (head_dim, positions) = (head_dim as usize, positions as usize);
+                let (cos, sin) = rope_tables(
+                    head_dim,
+                    positions,
+                    float_arg(&args[2])?,
+                    args.get(3).unwrap_or(&Value::None),
+                )?;
+                let shape = (positions, head_dim / 2);
+                let cos = Tensor::from_vec(cos, shape, cpu).map_err(err)?;
+                let sin = Tensor::from_vec(sin, shape, cpu).map_err(err)?;
+                return Ok(Value::Tuple(vec![wrap(cos), wrap(sin)].into()));
+            }
             Builtin::NnSaveTokens => {
                 let Value::List(items) = &args[0] else {
                     return Err("`nn.save_tokens` takes a list of token ids".into());
@@ -717,6 +736,60 @@ impl State {
                 };
                 layer_norm(&t, &weight, &bias, eps).map_err(err)?
             }
+            "rms_norm" => {
+                let weight = tensor_arg(&args[0])?;
+                let eps = args.get(1).map(float_arg).transpose()?.unwrap_or(1e-6) as f32;
+                // The fused kernel has no gradient, so training uses the composed version.
+                if t.track_op() || weight.track_op() {
+                    candle_nn::ops::rms_norm_slow(&t, &weight, eps).map_err(err)?
+                } else {
+                    candle_nn::ops::rms_norm(&t.contiguous().map_err(err)?, &weight, eps)
+                        .map_err(err)?
+                }
+            }
+            "rope" => {
+                let (cos, sin) = (tensor_arg(&args[0])?, tensor_arg(&args[1])?);
+                if t.rank() != 4 {
+                    return Err("`rope` needs a [batch, heads, positions, head_dim] tensor".into());
+                }
+                let x = t.contiguous().map_err(err)?;
+                if t.track_op() {
+                    candle_nn::rotary_emb::rope_slow(&x, &cos, &sin).map_err(err)?
+                } else {
+                    candle_nn::rotary_emb::rope(&x, &cos, &sin).map_err(err)?
+                }
+            }
+            "repeat_interleave" => {
+                let n = int_arg(&args[0])?;
+                let d = dim(int_arg(&args[1])?, t.rank())?;
+                if n <= 0 {
+                    return Err("`repeat_interleave` needs a positive count".into());
+                }
+                let mut wide = t.dims().to_vec();
+                wide.insert(d + 1, n as usize);
+                let mut merged = t.dims().to_vec();
+                merged[d] *= n as usize;
+                t.unsqueeze(d + 1)
+                    .and_then(|x| x.broadcast_as(wide))
+                    .and_then(|x| x.contiguous())
+                    .and_then(|x| x.reshape(merged))
+                    .map_err(err)?
+            }
+            "sin" => t.sin().map_err(err)?,
+            "cos" => t.cos().map_err(err)?,
+            "sample_token" => {
+                if t.rank() != 1 {
+                    return Err("`sample_token` needs one-dimensional logits".into());
+                }
+                let logits: Vec<f64> = values(&t)?.into_iter().map(f64::from).collect();
+                let temperature = args.first().map(float_arg).transpose()?.unwrap_or(1.0);
+                let top_k = args.get(1).map(int_arg).transpose()?.unwrap_or(0);
+                let top_p = args.get(2).map(float_arg).transpose()?.unwrap_or(1.0);
+                let draw = self.rng.lock().uniform();
+                return Ok(Value::Int(
+                    sample_token(&logits, temperature, top_k, top_p, draw) as i64,
+                ));
+            }
             "device" => return Ok(Value::Str(device_name(t.device()).into())),
             "dtype" => return Ok(Value::Str(t.dtype().as_str().into())),
             "to" => {
@@ -788,7 +861,8 @@ impl State {
                 .map_err(err)?,
             "flatten" => t.flatten_all().map_err(err)?,
             "detach" => t.detach(),
-            "copy" => t.copy().map_err(err)?,
+            "copy" if t.is_contiguous() => t.copy().map_err(err)?,
+            "copy" => t.contiguous().map_err(err)?,
             "reshape" => {
                 let shape = reshape_arg(&args[0], t.dims())?;
                 t.reshape(shape).map_err(err)?
@@ -827,6 +901,98 @@ pub fn optimizer_method(opt: &Mutex<Optimizer>, name: &str, args: &[Value]) -> R
     Ok(Value::None)
 }
 
+/// Picks a token from logits: the most likely one at temperature 0, otherwise
+/// a draw from the softmax restricted to the `top_k` most likely tokens and to
+/// the smallest set whose probability reaches `top_p`.
+fn sample_token(logits: &[f64], temperature: f64, top_k: i64, top_p: f64, draw: f64) -> usize {
+    let best = (0..logits.len())
+        .max_by(|&a, &b| logits[a].total_cmp(&logits[b]))
+        .unwrap_or(0);
+    if temperature <= 0.0 || logits.is_empty() {
+        return best;
+    }
+    let mut order: Vec<usize> = (0..logits.len()).collect();
+    order.sort_by(|&a, &b| logits[b].total_cmp(&logits[a]));
+    if top_k > 0 {
+        order.truncate(top_k as usize);
+    }
+    let top = logits[order[0]];
+    let weights: Vec<f64> = order
+        .iter()
+        .map(|&i| ((logits[i] - top) / temperature).exp())
+        .collect();
+    let total: f64 = weights.iter().sum();
+    let mut kept = 0.0;
+    let mut cut = order.len();
+    for (n, w) in weights.iter().enumerate() {
+        kept += w / total;
+        if kept >= top_p {
+            cut = n + 1;
+            break;
+        }
+    }
+    let total: f64 = weights[..cut].iter().sum();
+    let mut target = draw * total;
+    for (n, w) in weights[..cut].iter().enumerate() {
+        target -= w;
+        if target < 0.0 {
+            return order[n];
+        }
+    }
+    order[cut - 1]
+}
+
+/// Rotary embedding tables for positions `0..positions`: the cosines and sines,
+/// each `[positions, head_dim / 2]`, with Llama 3 or linear frequency scaling.
+fn rope_tables(
+    head_dim: usize,
+    positions: usize,
+    theta: f64,
+    scaling: &Value,
+) -> R<(Vec<f32>, Vec<f32>)> {
+    let mut inv_freq: Vec<f64> = (0..head_dim / 2)
+        .map(|i| 1.0 / theta.powf((2 * i) as f64 / head_dim as f64))
+        .collect();
+    if let Value::Map(config) = scaling {
+        let get = |k: &str| config.read().get(&Key::Str(k.into())).cloned();
+        let num = |k: &str, default: f64| get(k).and_then(|v| v.as_f64()).unwrap_or(default);
+        let kind = match get("rope_type").or_else(|| get("type")) {
+            Some(Value::Str(s)) => s.to_string(),
+            _ => "default".to_string(),
+        };
+        let factor = num("factor", 1.0);
+        match kind.as_str() {
+            "default" => {}
+            "linear" => inv_freq.iter_mut().for_each(|f| *f /= factor),
+            "llama3" => {
+                let (low, high) = (num("low_freq_factor", 1.0), num("high_freq_factor", 4.0));
+                let old = num("original_max_position_embeddings", 8192.0);
+                let (low_wavelen, high_wavelen) = (old / low, old / high);
+                for f in inv_freq.iter_mut() {
+                    let wavelen = 2.0 * std::f64::consts::PI / *f;
+                    if wavelen > low_wavelen {
+                        *f /= factor;
+                    } else if wavelen >= high_wavelen {
+                        let smooth = (old / wavelen - low) / (high - low);
+                        *f = (1.0 - smooth) * *f / factor + smooth * *f;
+                    }
+                }
+            }
+            other => return Err(format!("rope scaling `{other}` is not supported")),
+        }
+    }
+    let mut cos = Vec::with_capacity(positions * inv_freq.len());
+    let mut sin = Vec::with_capacity(positions * inv_freq.len());
+    for p in 0..positions {
+        for f in &inv_freq {
+            let angle = (p as f32) * (*f as f32);
+            cos.push(angle.cos());
+            sin.push(angle.sin());
+        }
+    }
+    Ok((cos, sin))
+}
+
 fn layer_norm(x: &Tensor, weight: &Tensor, bias: &Tensor, eps: f64) -> candle_core::Result<Tensor> {
     let last = D::Minus1;
     let mean = x.mean_keepdim(last)?;
@@ -844,6 +1010,131 @@ fn dim(d: i64, rank: usize) -> R<usize> {
         ));
     }
     Ok(resolved as usize)
+}
+
+/// `a @ b` for a few rows of `a` against a large `b` held as the transpose of a
+/// contiguous `[cols, k]` matrix, as when generating one token at a time. Each
+/// output is a dot product over one contiguous row of weights; the work is memory
+/// bound, so it is split across threads. `None` when this case does not apply.
+fn small_rows_matmul(
+    a: &Tensor,
+    b: &Tensor,
+    rows: usize,
+    k: usize,
+) -> Option<candle_core::Result<Tensor>> {
+    use candle_core::{CpuStorage, Storage};
+    let cols = b.dims()[1];
+    let w = b.t().ok()?;
+    if a.track_op()
+        || b.track_op()
+        || a.dtype() != DType::F32
+        || b.dtype() != DType::F32
+        || !w.is_contiguous()
+    {
+        return None;
+    }
+    let x: Vec<f32> = match a.reshape((rows * k,)).and_then(|x| x.to_vec1()) {
+        Ok(x) => x,
+        Err(e) => return Some(Err(e)),
+    };
+    let (storage, layout) = w.storage_and_layout();
+    let Storage::Cpu(CpuStorage::F32(data)) = &*storage else {
+        return None;
+    };
+    let weights = &data[layout.start_offset()..layout.start_offset() + cols * k];
+    let total = rows * cols;
+    let mut out = vec![0f32; total];
+    let chunk = cols.div_ceil(rayon::current_num_threads() * 4).max(16);
+    let dst = SharedOut(out.as_mut_ptr());
+    super::pool::for_each(total.div_ceil(chunk), &|c| {
+        for index in c * chunk..((c + 1) * chunk).min(total) {
+            let (r, j) = (index / cols, index % cols);
+            let value = dot(&x[r * k..(r + 1) * k], &weights[j * k..(j + 1) * k]);
+            // SAFETY: each chunk writes only its own indices, all below `total`.
+            unsafe { dst.write(index, value) };
+        }
+    });
+    let mut dims = a.dims().to_vec();
+    *dims.last_mut().expect("rank at least 1") = cols;
+    Some(Tensor::from_vec(out, dims, a.device()))
+}
+
+/// The output buffer of a parallel loop whose iterations write disjoint elements.
+struct SharedOut(*mut f32);
+
+// SAFETY: iterations never write the same element, and the loop finishes before
+// the buffer is used again.
+unsafe impl Sync for SharedOut {}
+
+impl SharedOut {
+    /// # Safety
+    /// `index` is in bounds and no other thread writes it during the loop.
+    unsafe fn write(&self, index: usize, value: f32) {
+        unsafe { self.0.add(index).write(value) }
+    }
+}
+
+fn dot(x: &[f32], y: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        // SAFETY: the CPU supports the features this version is compiled for.
+        return unsafe { dot_avx2(x, y) };
+    }
+    let mut acc = [0f32; 8];
+    let (xc, yc) = (x.chunks_exact(8), y.chunks_exact(8));
+    let tail: f32 = xc
+        .remainder()
+        .iter()
+        .zip(yc.remainder())
+        .map(|(a, b)| a * b)
+        .sum();
+    for (a, b) in xc.zip(yc) {
+        for i in 0..8 {
+            acc[i] += a[i] * b[i];
+        }
+    }
+    acc.iter().sum::<f32>() + tail
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dot_avx2(x: &[f32], y: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = x.len().min(y.len());
+    let (xp, yp) = (x.as_ptr(), y.as_ptr());
+    let mut acc = [_mm256_setzero_ps(); 4];
+    let mut i = 0;
+    // SAFETY: every load reads 8 floats starting below `n - 7`.
+    unsafe {
+        while i + 32 <= n {
+            for (a, lane) in acc.iter_mut().enumerate() {
+                let at = i + a * 8;
+                *lane = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(xp.add(at)),
+                    _mm256_loadu_ps(yp.add(at)),
+                    *lane,
+                );
+            }
+            i += 32;
+        }
+        while i + 8 <= n {
+            acc[0] = _mm256_fmadd_ps(
+                _mm256_loadu_ps(xp.add(i)),
+                _mm256_loadu_ps(yp.add(i)),
+                acc[0],
+            );
+            i += 8;
+        }
+        let sum = _mm256_add_ps(_mm256_add_ps(acc[0], acc[1]), _mm256_add_ps(acc[2], acc[3]));
+        let mut lanes = [0f32; 8];
+        _mm256_storeu_ps(lanes.as_mut_ptr(), sum);
+        lanes.iter().sum::<f32>()
+            + x[i..n]
+                .iter()
+                .zip(&y[i..n])
+                .map(|(a, b)| a * b)
+                .sum::<f32>()
+    }
 }
 
 fn matmul(a: &Tensor, b: &Tensor) -> R<Tensor> {
@@ -869,8 +1160,35 @@ fn matmul(a: &Tensor, b: &Tensor) -> R<Tensor> {
             b.dims()
         ));
     }
-    let (a2, b2) = (a2.contiguous().map_err(err)?, b2.contiguous().map_err(err)?);
-    let out = if a2.rank() == b2.rank() {
+    // A transposed matrix multiplies as it is; anything else is made contiguous first.
+    let usable =
+        |t: &Tensor| t.is_contiguous() || (t.rank() == 2 && t.t().is_ok_and(|x| x.is_contiguous()));
+    let a2 = if usable(&a2) {
+        a2
+    } else {
+        a2.contiguous().map_err(err)?
+    };
+    let b2 = if usable(&b2) {
+        b2
+    } else {
+        b2.contiguous().map_err(err)?
+    };
+    let rows: usize = a2.dims()[..a2.rank() - 1].iter().product();
+    let fast =
+        (b2.rank() == 2 && rows <= 8 && a2.device().is_cpu() && ka * b2.dims()[1] >= 1 << 16)
+            .then(|| small_rows_matmul(&a2, &b2, rows, ka))
+            .flatten();
+    let out = if let Some(out) = fast {
+        out
+    } else if b2.rank() == 2 && a2.rank() > 2 {
+        // Fold the leading dimensions into rows rather than broadcasting (and copying) b.
+        let mut dims = a2.dims().to_vec();
+        let rows: usize = dims[..dims.len() - 1].iter().product();
+        *dims.last_mut().expect("rank above 2") = b2.dims()[1];
+        a2.reshape((rows, ka))
+            .and_then(|x| x.matmul(&b2))
+            .and_then(|x| x.reshape(dims))
+    } else if a2.rank() == b2.rank() {
         a2.matmul(&b2)
     } else {
         a2.broadcast_matmul(&b2)

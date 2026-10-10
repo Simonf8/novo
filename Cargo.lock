@@ -1722,6 +1722,7 @@ dependencies = [
  "cranelift-native",
  "parking_lot",
  "pyo3",
+ "rayon",
  "serde_json",
  "tokenizers 0.23.2",
 ]

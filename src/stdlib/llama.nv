@@ -1,0 +1,207 @@
+# Llama-family language models loaded from Hugging Face checkpoints: Llama 2
+# and 3, Mistral, Qwen 2, SmolLM, TinyLlama and others with the same layout.
+#
+#     model = llama.load("path/to/model")
+#     show model.generate("The capital of France is", 20)
+
+use fs
+use json
+use nn
+use tokenizer
+
+# A Linear weight from a checkpoint, as a transposed view so that `x @ w` applies it.
+function linear(weights: Map[String, Tensor], name: String) -> Tensor:
+    return weights[name + ".weight"].t()
+
+# Several Linear layers applied to the same input, fused into one weight.
+function fused(weights: Map[String, Tensor], names: List[String]) -> Tensor:
+    return nn.cat(names select weights[it + ".weight"], 0).t()
+
+function bias(weights: Map[String, Tensor], name: String, size: Int) -> Tensor:
+    key = name + ".bias"
+    return weights[key] if weights.has(key) else nn.zeros([size]).to_dtype(weights[name + ".weight"].dtype())
+
+function setting(config: Any, key: String, fallback: Any) -> Any:
+    if config.has(key) and config[key] != none:
+        return config[key]
+    return fallback
+
+class Attention:
+    # The query, key and value projections side by side, applied in one product.
+    qkv: Tensor
+    qkv_bias: Tensor
+    o: Tensor
+    heads: Int
+    kv_heads: Int
+    head_dim: Int
+
+    # x is [batch, steps, hidden]; cos and sin cover the new positions.
+    function forward(x: Tensor, cos: Tensor, sin: Tensor, layer: Int, cache: Cache) -> Tensor:
+        shape = x.shape()
+        batch = shape[0]
+        steps = shape[1]
+        projected = x @ self.qkv + self.qkv_bias
+        width = self.heads * self.head_dim
+        kv_width = self.kv_heads * self.head_dim
+        q = projected.narrow(2, 0, width).reshape([batch, steps, self.heads, self.head_dim]).transpose(1, 2).rope(cos, sin)
+        k = projected.narrow(2, width, kv_width).reshape([batch, steps, self.kv_heads, self.head_dim]).transpose(1, 2).rope(cos, sin)
+        v = projected.narrow(2, width + kv_width, kv_width).reshape([batch, steps, self.kv_heads, self.head_dim]).transpose(1, 2)
+        past = cache.length
+        if past > 0:
+            k = nn.cat([cache.keys[layer], k], 2)
+            v = nn.cat([cache.values[layer], v], 2)
+        cache.store(layer, k, v)
+        # Each key/value head serves a group of query heads: fold the group into
+        # the rows of one product instead of copying the keys and values per head.
+        group = self.heads // self.kv_heads
+        total = past + steps
+        grouped = q.reshape([batch, self.kv_heads, group * steps, self.head_dim])
+        scores = (grouped @ k.transpose(2, 3)).reshape([batch, self.heads, steps, total]) * (1.0 / float(self.head_dim) ** 0.5)
+        if steps > 1:
+            # Position past + i may attend to keys 0 through past + i.
+            hidden_future = 1.0 - nn.tril(total).narrow(0, past, steps)
+            scores = scores.masked_fill(hidden_future, -1e9)
+        weights = scores.softmax(3).reshape([batch, self.kv_heads, group * steps, total])
+        mixed = (weights @ v).reshape([batch, self.heads, steps, self.head_dim])
+        return mixed.transpose(1, 2).reshape([batch, steps, self.heads * self.head_dim]) @ self.o
+
+class Block:
+    attention_norm: Tensor
+    attention: Attention
+    mlp_norm: Tensor
+    # The gate and up projections side by side.
+    gate_up: Tensor
+    down: Tensor
+    hidden: Int
+    eps: Float
+
+    function forward(x: Tensor, cos: Tensor, sin: Tensor, layer: Int, cache: Cache) -> Tensor:
+        h = x + self.attention.forward(x.rms_norm(self.attention_norm, self.eps), cos, sin, layer, cache)
+        both = h.rms_norm(self.mlp_norm, self.eps) @ self.gate_up
+        return h + (both.narrow(2, 0, self.hidden).silu() * both.narrow(2, self.hidden, self.hidden)) @ self.down
+
+# Keys and values of the positions already processed, so each new token only
+# runs through the model once.
+class Cache:
+    keys: List[Tensor]
+    values: List[Tensor]
+    length: Int
+
+    function store(layer: Int, k: Tensor, v: Tensor):
+        if layer < len(self.keys):
+            self.keys[layer] = k
+            self.values[layer] = v
+        else:
+            self.keys.push(k)
+            self.values.push(v)
+
+    function advance(steps: Int):
+        self.length += steps
+
+class Llama:
+    embed: Tensor
+    blocks: List[Block]
+    norm: Tensor
+    head: Tensor
+    cos: Tensor
+    sin: Tensor
+    eps: Float
+    max_positions: Int
+    eos: List[Int]
+    tokenizer: Tokenizer
+
+    function new_cache() -> Cache:
+        return Cache([], [], 0)
+
+    # Logits for every position of ids ([batch, steps]), or for only the last
+    # one when `last` is set, continuing from what `cache` holds.
+    function forward(ids: Tensor, cache: Cache, last: Bool = false) -> Tensor:
+        steps = ids.shape()[1]
+        if cache.length + steps > self.max_positions:
+            fail(f"the model handles at most {self.max_positions} positions")
+        cos = self.cos.narrow(0, cache.length, steps)
+        sin = self.sin.narrow(0, cache.length, steps)
+        x = self.embed.embed(ids)
+        for i, block in enumerate(self.blocks):
+            x = block.forward(x, cos, sin, i, cache)
+        cache.advance(steps)
+        if last:
+            x = x.narrow(1, steps - 1, 1)
+        return x.rms_norm(self.norm, self.eps) @ self.head
+
+    # Continues `ids` by up to `count` tokens, stopping at an end-of-sequence
+    # token. Temperature 0 always picks the most likely token.
+    function generate_ids(ids: List[Int], count: Int, temperature: Float = 0.0, top_k: Int = 0, top_p: Float = 1.0) -> List[Int]:
+        cache = self.new_cache()
+        logits = self.forward(nn.tensor([ids]), cache, true)
+        out: List[Int] = []
+        while len(out) < count:
+            next = logits[0][0].sample_token(temperature, top_k, top_p)
+            if next in self.eos:
+                break
+            out.push(next)
+            if len(out) < count:
+                logits = self.forward(nn.tensor([[next]]), cache, true)
+        return out
+
+    function generate(prompt: String, count: Int, temperature: Float = 0.0, top_k: Int = 0, top_p: Float = 1.0) -> String:
+        ids = self.tokenizer.encode(prompt)
+        return self.tokenizer.decode(self.generate_ids(ids, count, temperature, top_k, top_p))
+
+# Loads a model directory holding config.json, tokenizer.json and the weights
+# in model.safetensors or shards listed in model.safetensors.index.json.
+# `dtype` is "f32", "f16" or "bf16".
+function load(dir: String, dtype: String = "f32") -> Llama:
+    config = json.parse(fs.read_file(dir + "/config.json"))
+    weights: Map[String, Tensor] = {}
+    if fs.exists(dir + "/model.safetensors.index.json"):
+        index = json.parse(fs.read_file(dir + "/model.safetensors.index.json"))
+        files: List[String] = []
+        for name in index["weight_map"]:
+            file: String = index["weight_map"][name]
+            if not (file in files):
+                files.push(file)
+        for file in files:
+            for name, tensor in nn.load(dir + "/" + file, dtype).items():
+                weights[name] = tensor
+    else:
+        weights = nn.load(dir + "/model.safetensors", dtype)
+
+    hidden: Int = config["hidden_size"]
+    heads: Int = config["num_attention_heads"]
+    kv_heads: Int = setting(config, "num_key_value_heads", heads)
+    head_dim: Int = setting(config, "head_dim", hidden // heads)
+    eps: Float = setting(config, "rms_norm_eps", 0.00001)
+    positions: Int = setting(config, "max_position_embeddings", 4096)
+    rope = setting(config, "rope_parameters", none)
+    theta: Float = setting(config, "rope_theta", 10000.0)
+    scaling = setting(config, "rope_scaling", none)
+    if rope != none:
+        theta = setting(rope, "rope_theta", theta)
+        scaling = rope
+    cos, sin = nn.rope_tables(head_dim, positions, theta, scaling)
+    if dtype != "f32":
+        cos = cos.to_dtype(dtype)
+        sin = sin.to_dtype(dtype)
+
+    layers: Int = config["num_hidden_layers"]
+    blocks: List[Block] = []
+    for i in range(layers):
+        p = f"model.layers.{i}."
+        a = p + "self_attn."
+        qkv_bias = nn.cat([bias(weights, a + "q_proj", heads * head_dim), bias(weights, a + "k_proj", kv_heads * head_dim), bias(weights, a + "v_proj", kv_heads * head_dim)], 0)
+        attention = Attention(fused(weights, [a + "q_proj", a + "k_proj", a + "v_proj"]), qkv_bias, linear(weights, a + "o_proj"), heads, kv_heads, head_dim)
+        m = p + "mlp."
+        intermediate: Int = config["intermediate_size"]
+        blocks.push(Block(weights[p + "input_layernorm.weight"], attention, weights[p + "post_attention_layernorm.weight"], fused(weights, [m + "gate_proj", m + "up_proj"]), linear(weights, m + "down_proj"), intermediate, eps))
+
+    embed = weights["model.embed_tokens.weight"]
+    head = linear(weights, "lm_head") if weights.has("lm_head.weight") else embed.t()
+    eos: List[Int] = []
+    stop = setting(config, "eos_token_id", none)
+    if type_of(stop) == "List":
+        for id in stop:
+            eos.push(id)
+    else if stop != none:
+        eos.push(stop)
+    return Llama(embed, blocks, weights["model.norm.weight"], head, cos, sin, eps, positions, eos, tokenizer.load(dir))

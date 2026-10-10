@@ -183,7 +183,8 @@ pub fn method(infer: &Infer, name: &str, d: &[Ty], lits: &[Lit]) -> Result<Optio
     Ok(match name {
         "relu" | "sigmoid" | "tanh" | "exp" | "log" | "sqrt" | "abs" | "gelu" | "silu"
         | "square" | "detach" | "copy" | "grad" | "pow" | "clamp" | "masked_fill"
-        | "layer_norm" | "to" | "to_dtype" | "softmax" | "log_softmax" => Some(d.to_vec()),
+        | "layer_norm" | "rms_norm" | "rope" | "sin" | "cos" | "to" | "to_dtype" | "softmax"
+        | "log_softmax" => Some(d.to_vec()),
         "t" if d.len() >= 2 => {
             let mut out = d.to_vec();
             out.swap(d.len() - 1, d.len() - 2);

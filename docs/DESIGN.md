@@ -173,6 +173,11 @@ it requires building with `--features python`.
   `x.masked_fill(mask, value)` replaces entries where the mask is non-zero,
   `x.layer_norm(weight, bias)` normalizes over the last dimension, and
   `probs.sample()` draws an index from a vector of weights.
+- Transformer pieces: `x.rms_norm(weight, eps)`, `x.rope(cos, sin)` on
+  `[batch, heads, positions, head_dim]` with tables from
+  `nn.rope_tables(head_dim, positions, theta, scaling)` (Llama 3 and linear
+  scaling), `t.repeat_interleave(n, dim)`, `sin` and `cos`, and
+  `logits.sample_token(temperature, top_k, top_p)` to pick the next token.
 - Weights: `nn.save(map_of_tensors, path)` and `nn.load(path)` read and write
   the safetensors format.
 - Training: `nn.param(t)` marks a tensor as trainable. `loss.backward()`
@@ -231,6 +236,17 @@ run-time errors that name both shapes.
 `use random` gives `random.int(low, high)` (high excluded), `random.float()`,
 `random.choice(list)`, `random.shuffle(list)` and `random.seed(n)`. It shares
 one generator with `nn`, so a single seed makes a training run reproducible.
+
+### Pretrained models
+
+`use llama` loads Llama-family checkpoints in the Hugging Face layout (Llama 2
+and 3, Qwen 2, Mistral, SmolLM, TinyLlama): `llama.load(dir, dtype)` reads
+`config.json`, `model.safetensors` or its shards, and `tokenizer.json`.
+`model.generate(prompt, tokens, temperature, top_k, top_p)` returns the
+continuation as text and `generate_ids` works on token ids. `forward(ids,
+cache)` gives logits for a `[batch, positions]` tensor of ids, continuing from
+a `model.new_cache()`. On the CPU, `dtype` may be `"f32"` or `"f16"`; `"bf16"`
+needs a GPU.
 
 ### Layers
 

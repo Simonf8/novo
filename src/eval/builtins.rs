@@ -493,6 +493,7 @@ impl Interp {
             | Builtin::NnSaveTokens
             | Builtin::NnLoadTokens
             | Builtin::NnSampleWindows
+            | Builtin::NnRopeTables
             | Builtin::RandomSeed
             | Builtin::RandomInt
             | Builtin::RandomFloat
