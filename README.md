@@ -234,6 +234,12 @@ errors (`# expect-error: ...`) and required features
 (`# requires: python`). After an intentional output change, regenerate with
 `NOVO_BLESS=1 cargo test`.
 
+`tools/fuzz.py` looks for bugs the golden tests miss. `diff` generates random
+valid programs and checks that native code and the interpreter agree,
+`mutate` feeds corrupted programs to the checker and formatter to make sure
+they never crash, and `reduce` shrinks a failing program. CI runs both with a
+new seed each time.
+
 ## Roadmap
 
 1. **Faster native code.** Closures and parallel blocks in compiled code,
