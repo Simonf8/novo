@@ -93,6 +93,10 @@ impl SourceMap {
         &self.files[id.0 as usize]
     }
 
+    pub fn try_get(&self, id: FileId) -> Option<&SourceFile> {
+        self.files.get(id.0 as usize)
+    }
+
     pub fn files(&self) -> impl Iterator<Item = &SourceFile> {
         self.files.iter()
     }

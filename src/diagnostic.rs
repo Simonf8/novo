@@ -44,9 +44,6 @@ impl Diagnostic {
     }
 
     pub fn render(&self, sources: &SourceMap, color: bool) -> String {
-        let file = sources.get(self.span.file);
-        let (line, col) = file.line_col(self.span.lo as usize);
-        let (end_line, end_col) = file.line_col(self.span.hi as usize);
         let (kind, tint) = match self.severity {
             Severity::Error => ("error", "\x1b[1;31m"),
         };
@@ -57,9 +54,6 @@ impl Diagnostic {
                 text.to_string()
             }
         };
-
-        let gutter = line.to_string().len();
-        let pad = " ".repeat(gutter);
         let mut out = String::new();
         let _ = writeln!(
             out,
@@ -68,6 +62,30 @@ impl Diagnostic {
             paint(":", "\x1b[1m"),
             paint(&self.message, "\x1b[1m")
         );
+
+        let Some(file) = sources.try_get(self.span.file) else {
+            if let Some(help) = &self.help {
+                let _ = writeln!(
+                    out,
+                    "  {} {}: {help}",
+                    paint("=", "\x1b[1;34m"),
+                    paint("help", "\x1b[1m")
+                );
+            }
+            for note in &self.notes {
+                let _ = writeln!(
+                    out,
+                    "  {} {}: {note}",
+                    paint("=", "\x1b[1;34m"),
+                    paint("note", "\x1b[1m")
+                );
+            }
+            return out;
+        };
+        let (line, col) = file.line_col(self.span.lo as usize);
+        let (end_line, end_col) = file.line_col(self.span.hi as usize);
+        let gutter = line.to_string().len();
+        let pad = " ".repeat(gutter);
         let _ = writeln!(
             out,
             "{pad}{} {}:{line}:{col}",
@@ -121,9 +139,20 @@ impl Diagnostic {
     }
 
     pub fn to_json(&self, sources: &SourceMap) -> String {
-        let file = sources.get(self.span.file);
-        let (line, col) = file.line_col(self.span.lo as usize);
-        let (end_line, end_col) = file.line_col(self.span.hi as usize);
+        let (path, line, col, end_line, end_col) = match sources.try_get(self.span.file) {
+            Some(file) => {
+                let (line, col) = file.line_col(self.span.lo as usize);
+                let (end_line, end_col) = file.line_col(self.span.hi as usize);
+                (
+                    json_string(&file.path.display().to_string()),
+                    line,
+                    col,
+                    end_line,
+                    end_col,
+                )
+            }
+            None => ("null".into(), 0, 0, 0, 0),
+        };
         let severity = match self.severity {
             Severity::Error => "error",
         };
@@ -135,7 +164,7 @@ impl Diagnostic {
         format!(
             "{{\"severity\":\"{severity}\",\"message\":{},\"file\":{},\"line\":{line},\"column\":{col},\"end_line\":{end_line},\"end_column\":{end_col},\"label\":{},\"help\":{}}}",
             json_string(&self.message),
-            json_string(&file.path.display().to_string()),
+            path,
             opt(&self.label),
             opt(&self.help),
         )
