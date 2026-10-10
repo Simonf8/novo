@@ -21,7 +21,7 @@ pub enum Value {
     Instance(Arc<Instance>),
     Task(Arc<TaskHandle>),
     Tensor(Arc<super::tensor::NTensor>),
-    Optimizer(Arc<Mutex<super::tensor::Opt>>),
+    Optimizer(Arc<Mutex<super::optim::Optimizer>>),
     #[allow(dead_code)]
     Py(crate::python::PyHandle),
 }

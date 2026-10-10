@@ -4,6 +4,7 @@
 pub mod builtins;
 mod csv;
 mod ops;
+mod optim;
 mod tensor;
 pub mod value;
 

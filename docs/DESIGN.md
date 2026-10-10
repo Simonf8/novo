@@ -176,10 +176,20 @@ it requires building with `--features python`.
 - Weights: `nn.save(map_of_tensors, path)` and `nn.load(path)` read and write
   the safetensors format.
 - Training: `nn.param(t)` marks a tensor as trainable. `loss.backward()`
-  computes gradients, readable with `p.grad()`. `nn.sgd(params, lr)` and
-  `nn.adam(params, lr)` create optimizers whose `step(loss)` runs backward and
-  updates the parameters. `nn.mse` and `nn.cross_entropy` are the losses;
-  cross-entropy takes class indices as a tensor of whole numbers.
+  computes gradients, readable with `p.grad()`. `nn.mse` and
+  `nn.cross_entropy` are the losses; cross-entropy takes class indices as a
+  tensor of whole numbers.
+- Optimizers: `nn.sgd(params, lr, momentum)`, `nn.adam(params, lr)` and
+  `nn.adamw(params, lr, weight_decay)` (default 0.01) match PyTorch's. Their
+  `step(loss)` runs backward and updates the parameters. `opt.clip(max_norm)`
+  scales gradients down to a global norm, `opt.grad_norm()` reports the norm
+  of the latest step before clipping, and `opt.lr()` / `opt.set_lr(lr)` read
+  and change the learning rate. `nn.cosine_lr(step, warmup, total, max_lr,
+  min_lr)` gives the usual warmup-then-cosine schedule.
+- Checkpoints: `nn.save_params(params, path)` and `nn.load_params(params,
+  path)` write and restore a list of parameters in place; `opt.save(path)`
+  and `opt.load(path)` do the same for the optimizer's state, so training can
+  resume exactly where it stopped.
 
 - Devices and precision: tensors live on the CPU unless `nn.device("cuda")`
   or `nn.device("metal")` selects a GPU (Novo must be built with the `cuda`

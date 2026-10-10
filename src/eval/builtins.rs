@@ -432,6 +432,10 @@ impl Interp {
             | Builtin::NnSave
             | Builtin::NnLoad
             | Builtin::NnDevice
+            | Builtin::NnAdamW
+            | Builtin::NnCosineLr
+            | Builtin::NnSaveParams
+            | Builtin::NnLoadParams
             | Builtin::RandomSeed
             | Builtin::RandomInt
             | Builtin::RandomFloat

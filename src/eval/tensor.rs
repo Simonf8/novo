@@ -1,11 +1,11 @@
 //! Tensors, gradients and optimizers, backed by candle on the CPU.
 
+use super::optim::{self, Kind, Optimizer};
 use super::value::{Dict, Key, Value};
 use crate::check::builtins::Builtin;
 use crate::syntax::ast::BinOp;
 use candle_core::backprop::GradStore;
 use candle_core::{D, DType, Device, Tensor, Var};
-use candle_nn::optim::{AdamW, Optimizer as _, ParamsAdamW, SGD};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -40,20 +40,6 @@ fn wrap(t: Tensor) -> Value {
         tensor: t,
         var: None,
     }))
-}
-
-pub enum Opt {
-    Sgd(SGD),
-    Adam(AdamW),
-}
-
-impl std::fmt::Debug for Opt {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Opt::Sgd(_) => "SGD",
-            Opt::Adam(_) => "Adam",
-        })
-    }
 }
 
 /// Process-wide state: the random generator, the gradients from the latest
@@ -150,6 +136,26 @@ fn reshape_arg(v: &Value, from: &[usize]) -> R<Vec<usize>> {
         return Err(bad());
     }
     Ok(shape)
+}
+
+/// The trainable variables in a list of parameters.
+fn param_vars(v: &Value, user: &str) -> R<Vec<Var>> {
+    let Value::List(items) = v else {
+        return Err(format!("{user} take a list of parameters"));
+    };
+    items
+        .read()
+        .iter()
+        .map(|item| match item {
+            Value::Tensor(t) => t.var.clone().ok_or_else(|| {
+                format!("{user} can only use parameters; wrap trainable tensors with `nn.param`")
+            }),
+            other => Err(format!(
+                "expected a Tensor parameter, found a {}",
+                other.type_name()
+            )),
+        })
+        .collect()
 }
 
 fn tensor_arg(v: &Value) -> R<Tensor> {
@@ -337,32 +343,87 @@ impl State {
                 }
                 return Ok(Value::None);
             }
-            Builtin::NnSgd | Builtin::NnAdam => {
-                let Value::List(items) = &args[0] else {
-                    return Err("optimizers take a list of parameters".into());
-                };
-                let mut vars = Vec::new();
-                for item in items.read().iter() {
-                    match item {
-                        Value::Tensor(t) => match &t.var {
-                            Some(v) => vars.push(v.clone()),
-                            None => return Err("optimizers can only update parameters; wrap trainable tensors with `nn.param`".into()),
-                        },
-                        other => return Err(format!("expected a Tensor parameter, found a {}", other.type_name())),
-                    }
-                }
+            Builtin::NnSgd | Builtin::NnAdam | Builtin::NnAdamW => {
+                let vars = param_vars(&args[0], "optimizers")?;
                 let lr = float_arg(&args[1])?;
-                let opt = if b == Builtin::NnSgd {
-                    Opt::Sgd(SGD::new(vars, lr).map_err(err)?)
-                } else {
-                    let params = ParamsAdamW {
-                        lr,
-                        weight_decay: 0.0,
-                        ..ParamsAdamW::default()
-                    };
-                    Opt::Adam(AdamW::new(vars, params).map_err(err)?)
+                let extra = args.get(2).map(float_arg).transpose()?;
+                let kind = match b {
+                    Builtin::NnSgd => Kind::Sgd {
+                        momentum: extra.unwrap_or(0.0),
+                    },
+                    _ => Kind::Adam {
+                        beta1: 0.9,
+                        beta2: 0.999,
+                        eps: 1e-8,
+                        weight_decay: if b == Builtin::NnAdamW {
+                            extra.unwrap_or(0.01)
+                        } else {
+                            0.0
+                        },
+                    },
                 };
-                return Ok(Value::Optimizer(Arc::new(Mutex::new(opt))));
+                return Ok(Value::Optimizer(Arc::new(Mutex::new(Optimizer::new(
+                    kind, vars, lr,
+                )?))));
+            }
+            Builtin::NnCosineLr => {
+                let min = args.get(4).map(float_arg).transpose()?.unwrap_or(0.0);
+                let (step, warmup, total) =
+                    (int_arg(&args[0])?, int_arg(&args[1])?, int_arg(&args[2])?);
+                return Ok(Value::Float(optim::cosine_lr(
+                    step,
+                    warmup,
+                    total,
+                    float_arg(&args[3])?,
+                    min,
+                )));
+            }
+            Builtin::NnSaveParams => {
+                let vars = param_vars(&args[0], "`nn.save_params`")?;
+                let named: std::collections::HashMap<String, Tensor> = vars
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        Ok((
+                            format!("param.{i}"),
+                            v.as_tensor().contiguous().map_err(err)?,
+                        ))
+                    })
+                    .collect::<R<_>>()?;
+                let Value::Str(path) = &args[1] else {
+                    return Err("`nn.save_params` needs a file path".into());
+                };
+                candle_core::safetensors::save(&named, &**path).map_err(err)?;
+                return Ok(Value::None);
+            }
+            Builtin::NnLoadParams => {
+                let vars = param_vars(&args[0], "`nn.load_params`")?;
+                let Value::Str(path) = &args[1] else {
+                    return Err("`nn.load_params` needs a file path".into());
+                };
+                let named = candle_core::safetensors::load(&**path, cpu).map_err(err)?;
+                if named.len() != vars.len() {
+                    return Err(format!(
+                        "the file holds {} parameters but {} were given",
+                        named.len(),
+                        vars.len()
+                    ));
+                }
+                for (i, v) in vars.iter().enumerate() {
+                    let saved = named
+                        .get(&format!("param.{i}"))
+                        .ok_or("this file was not written by `nn.save_params`")?;
+                    if saved.dims() != v.dims() {
+                        return Err(format!(
+                            "parameter {i} has shape {:?} but the file holds {:?}",
+                            v.dims(),
+                            saved.dims()
+                        ));
+                    }
+                    v.set(&saved.to_dtype(v.dtype()).map_err(err)?)
+                        .map_err(err)?;
+                }
+                return Ok(Value::None);
             }
             Builtin::NnMse => {
                 candle_nn::loss::mse(&tensor_arg(&args[0])?, &tensor_arg(&args[1])?).map_err(err)?
@@ -686,32 +747,23 @@ impl State {
     }
 }
 
-pub fn optimizer_method(opt: &Mutex<Opt>, name: &str, args: &[Value]) -> R<Value> {
+pub fn optimizer_method(opt: &Mutex<Optimizer>, name: &str, args: &[Value]) -> R<Value> {
     let mut opt = opt.lock();
+    let path = |i: usize| match args.get(i) {
+        Some(Value::Str(p)) => Ok(p.to_string()),
+        _ => Err("expected a file path".to_string()),
+    };
     match name {
-        "step" => {
-            let loss = tensor_arg(&args[0])?;
-            match &mut *opt {
-                Opt::Sgd(o) => o.backward_step(&loss),
-                Opt::Adam(o) => o.backward_step(&loss),
-            }
-            .map_err(err)?;
-            Ok(Value::None)
-        }
-        "lr" => Ok(Value::Float(match &*opt {
-            Opt::Sgd(o) => o.learning_rate(),
-            Opt::Adam(o) => o.learning_rate(),
-        })),
-        "set_lr" => {
-            let lr = float_arg(&args[0])?;
-            match &mut *opt {
-                Opt::Sgd(o) => o.set_learning_rate(lr),
-                Opt::Adam(o) => o.set_learning_rate(lr),
-            }
-            Ok(Value::None)
-        }
-        _ => Err(format!("Optimizer has no method `{name}`")),
+        "step" => opt.step(&tensor_arg(&args[0])?)?,
+        "lr" => return Ok(Value::Float(opt.lr())),
+        "set_lr" => opt.set_lr(float_arg(&args[0])?),
+        "clip" => opt.set_clip(float_arg(&args[0])?),
+        "grad_norm" => return Ok(Value::Float(opt.grad_norm())),
+        "save" => opt.save(&path(0)?)?,
+        "load" => opt.load(&path(0)?)?,
+        _ => return Err(format!("Optimizer has no method `{name}`")),
     }
+    Ok(Value::None)
 }
 
 fn layer_norm(x: &Tensor, weight: &Tensor, bias: &Tensor, eps: f64) -> candle_core::Result<Tensor> {
