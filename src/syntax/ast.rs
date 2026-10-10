@@ -234,7 +234,7 @@ pub enum ExprKind {
     Call { callee: Box<Expr>, args: Vec<Arg> },
     Field { target: Box<Expr>, name: Ident },
     Index { target: Box<Expr>, items: Vec<IndexItem> },
-    Lambda { params: Vec<Ident>, body: Box<Expr> },
+    Lambda { params: Vec<Ident>, types: Vec<Option<TypeExpr>>, body: Box<Expr> },
     Query { op: QueryOp, target: Box<Expr>, body: Option<Box<Expr>>, parallel: bool },
     Together(Box<Expr>),
     Await(Box<Expr>),

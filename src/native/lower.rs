@@ -73,9 +73,7 @@ struct Lower<'a, 'b> {
 
 pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &Key, out: &mut ir::Function, fctx: &mut FunctionBuilderContext) -> R<()> {
     let func = &prog.funcs[key.0 .0 as usize];
-    if !func.captures.is_empty() {
-        return Err("closures are interpreted".into());
-    }
+    let param_slots: HashMap<usize, usize> = param_locals(func).into_iter().enumerate().map(|(arg, local)| (local, arg)).collect();
     let subst: Vec<(u32, Ty)> = func.generics.iter().copied().zip(key.1.iter().cloned()).collect();
     let compiled = batch.pending[key].clone();
     let mut b = FunctionBuilder::new(out, fctx);
@@ -132,17 +130,20 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
         let slot = match rep {
             Rep::Scalar(s) => {
                 let var = l.b.declare_var(s.clif());
-                let init = if i < func.params { args[i] } else { zero(&mut l.b, rep) };
+                let init = match param_slots.get(&i) {
+                    Some(&arg) => args[arg],
+                    None => zero(&mut l.b, rep),
+                };
                 l.b.def_var(var, init);
                 Local::Scalar(var, s)
             }
             Rep::Obj => {
                 let index = l.slots;
                 l.slots += 1;
-                if i < func.params {
+                if let Some(&arg) = param_slots.get(&i) {
                     let dst = l.slot_addr(index);
                     let clone = l.c.helpers.clone;
-                    l.call(clone, &[dst, args[i]]);
+                    l.call(clone, &[dst, args[arg]]);
                 }
                 Local::Obj(index)
             }
@@ -201,6 +202,11 @@ pub(super) fn lower(c: &mut Compiler, prog: &Program, batch: &mut Batch, key: &K
     Ok(())
 }
 
+/// The locals that receive arguments: the parameters, then a closure's captures.
+pub fn param_locals(func: &hir::Func) -> Vec<usize> {
+    (0..func.params).chain(func.captures.iter().map(|l| l.0 as usize)).collect()
+}
+
 fn inst_of(b: &FunctionBuilder, v: ir::Value) -> Inst {
     b.func.dfg.value_def(v).unwrap_inst()
 }
@@ -216,8 +222,6 @@ fn zero(b: &mut FunctionBuilder, rep: Rep) -> ir::Value {
 fn describe(kind: &ExprKind) -> &'static str {
     match kind {
         ExprKind::Recurse => "a nested function calling itself",
-        ExprKind::RunParallel(_) => "`run [...] in parallel`",
-        ExprKind::Query { parallel: true, .. } => "a parallel query",
         _ => "an unsupported expression",
     }
 }
@@ -966,7 +970,23 @@ impl Lower<'_, '_> {
                 let dst = self.helper_into(f, &[obj, has_start, s, has_end, t], span, false);
                 Val::O(dst, true)
             }
-            ExprKind::Query { op, target, item, body, parallel: false } => self.query(*op, target, *item, body.as_deref(), &e.ty, span)?,
+            ExprKind::Query { target, body: Some(body), parallel: true, .. } => {
+                let items = self.items(target)?;
+                let f = self.expr(body)?;
+                let f = self.boxed(f);
+                let map = self.c.helpers.parallel_map;
+                let t = self.helper_into(map, &[f, items], span, true);
+                Val::O(t, true)
+            }
+            ExprKind::Query { op, target, item, body, .. } => self.query(*op, target, *item, body.as_deref(), &e.ty, span)?,
+            ExprKind::RunParallel(items) => {
+                let addrs = self.boxed_all(items)?;
+                let arr = self.ptr_array(&addrs);
+                let n = self.iconst(addrs.len() as i64);
+                let run = self.c.helpers.run_parallel;
+                let t = self.helper_into(run, &[arr, n], span, true);
+                Val::O(t, true)
+            }
             ExprKind::Together(closure) => {
                 let c = self.expr(closure)?;
                 let c = self.boxed(c);

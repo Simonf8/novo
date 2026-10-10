@@ -72,6 +72,8 @@ pub struct Interp {
     out: Arc<Mutex<BufWriter<Stdout>>>,
     args: Arc<Vec<String>>,
     native: Option<Arc<crate::native::Native>>,
+    /// Compiled code for functions called as values, such as closures.
+    closure_entries: Arc<Vec<std::sync::OnceLock<Option<crate::native::Entry>>>>,
     tensors: Arc<tensor::State>,
 }
 
@@ -83,6 +85,7 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
     let entry = prog.entry;
     let prog = Arc::new(prog);
     let native = if native { crate::native::Native::new(prog.clone()).map(Arc::new) } else { None };
+    let closure_entries = Arc::new((0..prog.funcs.len()).map(|_| std::sync::OnceLock::new()).collect());
     let interp = Interp {
         prog,
         globals: Arc::new(globals),
@@ -90,6 +93,7 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
         out: Arc::new(Mutex::new(BufWriter::new(std::io::stdout()))),
         args: Arc::new(args),
         native,
+        closure_entries,
         tensors: Arc::default(),
     };
     let handle = std::thread::Builder::new()
@@ -170,6 +174,15 @@ impl Interp {
     /// with spare capacity to avoid reallocating.
     pub(crate) fn call_func(&self, fid: FuncId, args: Vec<Value>, closure: Option<Arc<Closure>>, span: Span) -> Eval {
         let f = &self.prog.funcs[fid.0 as usize];
+        if let (Some(c), Some(native)) = (&closure, &self.native) {
+            if args.len() == f.params {
+                if let Some(entry) = self.closure_entries[fid.0 as usize].get_or_init(|| native.entry(fid, &[])) {
+                    let mut all = args;
+                    all.extend(c.captures.iter().cloned());
+                    return entry.call(self, &all, DEPTH.with(Cell::get), span).map_err(|e| e.through(&f.name, span));
+                }
+            }
+        }
         let depth = DEPTH.with(|d| {
             d.set(d.get() + 1);
             d.get()
@@ -618,9 +631,15 @@ impl Interp {
                 let (s, t) = (bound(start, frame)?, bound(end, frame)?);
                 slice_value(&obj, s, t).at(span)?
             }
-            ExprKind::Query { op, target, item, body, parallel } => {
+            ExprKind::Query { target, body: Some(body), parallel: true, .. } => {
                 let items = self.items(&self.eval(target, frame)?).at(target.span)?;
-                self.query(*op, items, *item, body.as_deref(), *parallel, &e.ty, frame, span)?
+                let f = self.eval(body, frame)?;
+                let jobs = items.into_iter().map(|item| (f.clone(), vec![item])).collect();
+                Value::list(self.run_parallel(jobs, span)?)
+            }
+            ExprKind::Query { op, target, item, body, .. } => {
+                let items = self.items(&self.eval(target, frame)?).at(target.span)?;
+                self.query(*op, items, *item, body.as_deref(), &e.ty, frame, span)?
             }
             ExprKind::Together(closure) => {
                 let closure = self.eval(closure, frame)?;
@@ -630,7 +649,10 @@ impl Interp {
                 Value::Task(t) => t.wait().at(span)?,
                 other => return fail(format!("`await` needs a Task, found a {}", other.type_name()), span),
             },
-            ExprKind::RunParallel(items) => Value::list(self.parallel(items.len(), frame, |i, f| self.eval(&items[i], f))?),
+            ExprKind::RunParallel(items) => {
+                let jobs = self.eval_all(items, frame)?.into_iter().map(|f| (f, Vec::new())).collect();
+                Value::list(self.run_parallel(jobs, span)?)
+            }
             ExprKind::IntToFloat(inner) => match self.eval(inner, frame)? {
                 Value::Int(i) => Value::Float(i as f64),
                 other => other,
@@ -689,23 +711,24 @@ impl Interp {
         }
     }
 
-    /// Evaluates `n` jobs on scoped threads, each with its own copy of the frame.
-    fn parallel(&self, n: usize, frame: &Frame, job: impl Fn(usize, &mut Frame) -> Eval + Sync) -> Result<Vec<Value>, RtError> {
+    /// Calls each function with its arguments on scoped threads, preserving order.
+    pub(crate) fn run_parallel(&self, jobs: Vec<(Value, Vec<Value>)>, span: Span) -> Result<Vec<Value>, RtError> {
+        let n = jobs.len();
         let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4).min(n.max(1));
         let chunk = n.div_ceil(workers.max(1)).max(1);
+        let mut jobs = jobs.into_iter();
+        let batches: Vec<Vec<(Value, Vec<Value>)>> = (0..n.div_ceil(chunk)).map(|_| jobs.by_ref().take(chunk).collect()).collect();
         let results: Vec<Result<Vec<Value>, RtError>> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..n)
-                .step_by(chunk)
-                .map(|start| {
-                    let mut local = frame.clone();
-                    let job = &job;
+            let handles: Vec<_> = batches
+                .into_iter()
+                .map(|batch| {
                     std::thread::Builder::new()
                         .stack_size(TASK_STACK)
-                        .spawn_scoped(s, move || (start..(start + chunk).min(n)).map(|i| job(i, &mut local)).collect())
+                        .spawn_scoped(s, move || batch.into_iter().map(|(f, args)| self.call_value(&f, args, span)).collect())
                         .expect("spawn a worker thread")
                 })
                 .collect();
-            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| fail("a parallel task panicked", Span::default()))).collect()
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| fail("a parallel task panicked", span))).collect()
         });
         let mut out = Vec::with_capacity(n);
         for r in results {
@@ -715,7 +738,7 @@ impl Interp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn query(&self, op: QueryOp, items: Vec<Value>, slot: hir::LocalId, body: Option<&hir::Expr>, parallel: bool, ty: &Ty, frame: &mut Frame, span: Span) -> Eval {
+    fn query(&self, op: QueryOp, items: Vec<Value>, slot: hir::LocalId, body: Option<&hir::Expr>, ty: &Ty, frame: &mut Frame, span: Span) -> Eval {
         let apply = |item: &Value, frame: &mut Frame| -> Eval {
             match body {
                 Some(b) => {
@@ -725,9 +748,6 @@ impl Interp {
                 None => Ok(item.clone()),
             }
         };
-        if parallel && op == QueryOp::Select {
-            return Ok(Value::list(self.parallel(items.len(), frame, |i, f| apply(&items[i], f))?));
-        }
         Ok(match op {
             QueryOp::Where => {
                 let mut kept = Vec::new();

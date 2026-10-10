@@ -90,7 +90,7 @@ impl<'s> Checker<'s> {
                 let target = self.infer_expr(target);
                 self.index(target, items, span)
             }
-            ast::ExprKind::Lambda { params, body } => self.lambda(params, body, span),
+            ast::ExprKind::Lambda { params, types, body } => self.lambda(params, types, body, span),
             ast::ExprKind::Query { op, target, body, parallel } => self.query(*op, target, body.as_deref(), *parallel, span),
             ast::ExprKind::Together(inner) => {
                 let module = self.module_of_ctx();
@@ -112,11 +112,15 @@ impl<'s> Checker<'s> {
             }
             ast::ExprKind::RunParallel(items) => {
                 let elem = self.infer.fresh();
+                let module = self.module_of_ctx();
                 let items = items
                     .iter()
                     .map(|i| {
+                        self.stack.push(FnCtx { module: module.0, is_closure: true, ..FnCtx::default() });
                         let item = self.infer_expr(i);
-                        self.coerce(item, &elem)
+                        let item = self.coerce(item, &elem);
+                        let block = vec![hir::Stmt { span: item.span, kind: hir::StmtKind::Return(Some(item)) }];
+                        self.finish_closure("<parallel>", 0, Ty::func(vec![], elem.clone()), block, i.span)
                     })
                     .collect();
                 expr(ExprKind::RunParallel(items), Ty::list(elem), span)
@@ -640,12 +644,15 @@ impl<'s> Checker<'s> {
         expr(ExprKind::CallBuiltin { builtin: b, args }, ty, span)
     }
 
-    fn lambda(&mut self, params: &[ast::Ident], body: &ast::Expr, span: Span) -> hir::Expr {
+    fn lambda(&mut self, params: &[ast::Ident], types: &[Option<ast::TypeExpr>], body: &ast::Expr, span: Span) -> hir::Expr {
         let module = self.module_of_ctx();
         let mut ctx = FnCtx { module: module.0, is_closure: true, ..FnCtx::default() };
         let mut param_tys = Vec::new();
-        for p in params {
-            let ty = self.infer.fresh();
+        for (p, annotation) in params.iter().zip(types) {
+            let ty = match annotation {
+                Some(t) => self.resolve_type(t),
+                None => self.infer.fresh(),
+            };
             let local = ctx.add_local(&p.name, ty.clone());
             ctx.names.insert(p.name.clone(), local);
             param_tys.push(ty);
@@ -697,6 +704,9 @@ impl<'s> Checker<'s> {
             self.error(Diagnostic::error(target.span, msg));
         }
         let item = self.ctx().add_local("it", item_ty.clone());
+        if parallel && op == QueryOp::Select {
+            return self.parallel_select(target, item, item_ty, body, span);
+        }
         let body = body.map(|b| self.query_body(b, item, &item_ty));
         let elem = body.as_ref().map(|b| b.ty.clone()).unwrap_or_else(|| item_ty.clone());
         let ty = match op {
@@ -720,9 +730,26 @@ impl<'s> Checker<'s> {
         expr(ExprKind::Query { op, target: Box::new(target), item, body: body.map(Box::new), parallel }, ty, span)
     }
 
+    /// A parallel `select` runs its body as a one-parameter closure on many threads.
+    fn parallel_select(&mut self, target: hir::Expr, item: LocalId, item_ty: Ty, body: Option<&ast::Expr>, span: Span) -> hir::Expr {
+        let module = self.module_of_ctx();
+        let mut ctx = FnCtx { module: module.0, is_closure: true, ..FnCtx::default() };
+        let param = ctx.add_local("it", item_ty.clone());
+        self.stack.push(ctx);
+        let value = match body {
+            Some(b) => self.query_body(b, param, &item_ty),
+            None => expr(ExprKind::Local(param), item_ty.clone(), span),
+        };
+        let out = value.ty.clone();
+        let block = vec![hir::Stmt { span: value.span, kind: hir::StmtKind::Return(Some(value)) }];
+        let closure = self.finish_closure("<select>", 1, Ty::func(vec![item_ty], out.clone()), block, span);
+        let kind = ExprKind::Query { op: QueryOp::Select, target: Box::new(target), item, body: Some(Box::new(closure)), parallel: true };
+        expr(kind, Ty::list(out), span)
+    }
+
     /// Checks a query body with the current item bound to `item`, as `it` or as a closure parameter.
     fn query_body(&mut self, body: &ast::Expr, item: LocalId, item_ty: &Ty) -> hir::Expr {
-        if let ast::ExprKind::Lambda { params, body: inner } = &body.kind {
+        if let ast::ExprKind::Lambda { params, body: inner, .. } = &body.kind {
             if params.len() != 1 {
                 self.error(Diagnostic::error(body.span, "a query closure takes exactly one parameter"));
                 return error_expr(body.span);

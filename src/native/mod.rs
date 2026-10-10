@@ -294,7 +294,7 @@ impl Compiler {
         let func = &prog.funcs[key.0 .0 as usize];
         let subst: Vec<(u32, Ty)> = func.generics.iter().copied().zip(key.1.iter().cloned()).collect();
         let rep = |ty: &Ty| Rep::of(&lower::substitute(ty, &subst));
-        let params: Vec<Rep> = func.locals[..func.params].iter().map(|l| rep(&l.ty)).collect();
+        let params: Vec<Rep> = lower::param_locals(func).iter().map(|&l| rep(&func.locals[l].ty)).collect();
         let ret = match &func.ty {
             Ty::Func(_, r) => rep(r),
             _ => return Err("not a function".into()),

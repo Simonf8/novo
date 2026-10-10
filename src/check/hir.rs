@@ -160,10 +160,12 @@ pub enum ExprKind {
     Field { target: Box<Expr>, name: String },
     Index { target: Box<Expr>, index: Box<Expr> },
     Slice { target: Box<Expr>, start: Option<Box<Expr>>, end: Option<Box<Expr>> },
+    /// When `parallel` is set the body is a one-parameter closure applied to each item.
     Query { op: QueryOp, target: Box<Expr>, item: LocalId, body: Option<Box<Expr>>, parallel: bool },
     /// Runs a zero-argument closure on another thread.
     Together(Box<Expr>),
     Await(Box<Expr>),
+    /// Calls each zero-argument closure on its own thread and collects the results.
     RunParallel(Vec<Expr>),
     IntToFloat(Box<Expr>),
     PyImport(String),

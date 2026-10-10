@@ -758,15 +758,17 @@ impl<'a> Parser<'a> {
             Tok::Pipe => {
                 self.bump();
                 let mut params = Vec::new();
+                let mut types = Vec::new();
                 while !self.at(&Tok::Pipe) {
                     params.push(self.ident("for the closure parameter")?);
+                    types.push(if self.eat(&Tok::Colon) { Some(self.type_expr()?) } else { None });
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
                 }
                 self.expect(&Tok::Pipe, "to close the closure parameters")?;
                 let body = self.expression()?;
-                ExprKind::Lambda { params, body: Box::new(body) }
+                ExprKind::Lambda { params, types, body: Box::new(body) }
             }
             _ => return Err(self.unexpected("expected an expression")),
         };

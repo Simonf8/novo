@@ -508,6 +508,29 @@ unsafe extern "C" fn novo_list_set(c: *mut Ctx, list: *mut Value, i: i64, v: *mu
     }
 }
 
+unsafe extern "C" fn novo_run_parallel(c: *mut Ctx, dst: *mut Value, funcs: *const *const Value, n: usize, span: u64) {
+    let c = unsafe { ctx(c) };
+    let jobs = unsafe { values(funcs, n) }.into_iter().map(|f| (f, Vec::new())).collect();
+    let result = c.interp().run_parallel(jobs, unpack(span));
+    if let Some(v) = c.check_rt(result) {
+        *unsafe { slot(dst) } = Value::list(v);
+    }
+}
+
+unsafe extern "C" fn novo_parallel_map(c: *mut Ctx, dst: *mut Value, f: *mut Value, list: *mut Value, span: u64) {
+    let c = unsafe { ctx(c) };
+    let f = unsafe { slot(f) }.clone();
+    let items = match unsafe { slot(list) } {
+        Value::List(items) => items.read().clone(),
+        _ => Vec::new(),
+    };
+    let jobs = items.into_iter().map(|item| (f.clone(), vec![item])).collect();
+    let result = c.interp().run_parallel(jobs, unpack(span));
+    if let Some(v) = c.check_rt(result) {
+        *unsafe { slot(dst) } = Value::list(v);
+    }
+}
+
 unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value) {
     let c = unsafe { ctx(c) };
     c.status = 0;
@@ -660,6 +683,8 @@ helpers! {
     map_has = novo_map_has(I64, I64, I64, I64) -> I8;
     list_index = novo_list_index(I64, I64, I64, I64, I64);
     list_set = novo_list_set(I64, I64, I64, I64, I64);
+    run_parallel = novo_run_parallel(I64, I64, I64, I64, I64);
+    parallel_map = novo_parallel_map(I64, I64, I64, I64, I64);
     take_error = novo_take_error(I64, I64);
     init_module = novo_init_module(I64, I32, I64);
     eval_closed = novo_eval_closed(I64, I64, I64);
