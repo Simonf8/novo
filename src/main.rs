@@ -24,6 +24,7 @@ Usage:
     novo check <file.nv> [--json]    Type-check without running
     novo test [path]                 Run test_*.nv and *_test.nv files
     novo bench <file.nv> [-n N]      Time repeated runs of a program
+               [--interp]            (in the interpreter)
     novo new <name>                  Create a project
     novo build <file.nv> [-o out]    Make a standalone executable
     novo fmt [paths...] [--check]    Format files in place (or list unformatted ones)
@@ -468,6 +469,7 @@ fn cmd_bench(args: &[String]) -> i32 {
         let status = Command::new(&exe)
             .arg("run")
             .arg(file)
+            .args(args.iter().filter(|a| *a == "--interp"))
             .stdout(std::process::Stdio::null())
             .status();
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;

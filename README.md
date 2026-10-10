@@ -42,6 +42,22 @@ the elements in place.
 
 > **Status:** early development. See the [roadmap](#roadmap).
 
+## Installing
+
+Prebuilt releases cover Linux (x86-64 and ARM), macOS on Apple silicon and
+Windows:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Simonf8/novo/master/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/Simonf8/novo/master/install.ps1 | iex
+```
+
+Both check the download against the release's SHA-256 sums. Changes between
+versions are in [CHANGELOG.md](CHANGELOG.md).
+
 ## Building
 
 Requires Rust 1.96 or newer.

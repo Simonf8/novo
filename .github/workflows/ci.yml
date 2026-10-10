@@ -45,3 +45,22 @@ jobs:
         with:
           name: fuzz-failures
           path: target/fuzz/
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release
+      - name: Run the benchmarks
+        run: |
+          {
+            echo "| Benchmark | Native | Interpreter |"
+            echo "|---|---|---|"
+            for f in benches/*.nv; do
+              native=$(target/release/novo bench "$f" -n 5 | sed -n 's/.*mean \([0-9.]* ms\).*/\1/p')
+              interp=$(target/release/novo bench "$f" -n 3 --interp | sed -n 's/.*mean \([0-9.]* ms\).*/\1/p')
+              echo "| $(basename "$f" .nv) | $native | $interp |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
