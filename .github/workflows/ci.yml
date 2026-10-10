@@ -18,7 +18,7 @@ jobs:
       - run: cargo build --locked
       - run: cargo test --locked
       - if: runner.os == 'macOS'
-        run: cargo build --locked --features metal
+        run: cargo build --locked --features metal,accelerate
 
   python:
     runs-on: ubuntu-latest

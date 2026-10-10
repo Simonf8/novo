@@ -54,6 +54,8 @@ Optional features:
 cargo build --release --features python   # import Python modules
 cargo build --release --features cuda     # run tensors on NVIDIA GPUs
 cargo build --release --features metal    # run tensors on Apple GPUs
+cargo build --release --features accelerate  # faster CPU tensors on macOS
+cargo build --release --features mkl      # faster CPU tensors with Intel MKL
 ```
 
 ## Usage
