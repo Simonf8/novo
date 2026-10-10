@@ -36,7 +36,7 @@ pub struct RtError {
 const MAX_TRACE: usize = 24;
 
 impl RtError {
-    fn through(mut self, function: &str, call: Span) -> RtError {
+    pub(crate) fn through(mut self, function: &str, call: Span) -> RtError {
         if self.trace.len() < MAX_TRACE {
             self.trace.push((function.to_string(), call));
         }
@@ -208,6 +208,10 @@ impl Interp {
 
     pub(crate) fn set_global(&self, g: hir::GlobalId, v: Value) {
         *self.globals[g.0 as usize].write() = Some(v);
+    }
+
+    pub(crate) fn func_name(&self, func: FuncId) -> &str {
+        &self.prog.funcs[func.0 as usize].name
     }
 
     pub(crate) fn output(&self) -> &Mutex<BufWriter<Stdout>> {

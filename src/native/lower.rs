@@ -382,6 +382,22 @@ impl Lower<'_, '_> {
         self.b.switch_to_block(ok);
     }
 
+    /// Like `check_status` after a call to compiled `func`, adding the call to the error's trace.
+    fn check_status_through(&mut self, func: hir::FuncId, span: Span) {
+        let status = self
+            .b
+            .ins()
+            .load(types::I8, MemFlagsData::trusted(), self.ctx, STATUS_OFFSET);
+        let (traced, ok) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(status, traced, &[], ok, &[]);
+        self.b.switch_to_block(traced);
+        let (id, span) = (self.i32const(func.0), self.span(span));
+        let through = self.c.helpers.through;
+        self.call(through, &[self.ctx, id, span]);
+        self.b.ins().jump(self.fail, &[]);
+        self.b.switch_to_block(ok);
+    }
+
     /// Stores `addrs` in a fresh stack array and returns its address.
     fn ptr_array(&mut self, addrs: &[ir::Value]) -> ir::Value {
         let slot = self.b.create_sized_stack_slot(StackSlotData::new(
@@ -1361,7 +1377,7 @@ impl Lower<'_, '_> {
         let result = self
             .call(target.id, &vals)
             .expect("compiled functions return a value");
-        self.check_status();
+        self.check_status_through(func, span);
         Ok(match (target.ret, result_slot) {
             (Rep::Scalar(s), _) => Val::S(result, s),
             (Rep::Obj, Some(slot)) => self.result(slot, ty),

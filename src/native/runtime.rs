@@ -743,6 +743,15 @@ unsafe extern "C" fn novo_try_mark(c: *mut Ctx) -> u64 {
     c.line.len() as u64 | ((c.fstrings.len() as u64) << 32)
 }
 
+/// Records that the pending error passed through a call to `func` at `span`.
+unsafe extern "C" fn novo_through(c: *mut Ctx, func: u32, span: u64) {
+    let c = unsafe { ctx(c) };
+    if let Some(e) = c.error.take() {
+        let name = c.interp().func_name(FuncId(func)).to_string();
+        c.error = Some(e.through(&name, unpack(span)));
+    }
+}
+
 unsafe extern "C" fn novo_take_error(c: *mut Ctx, dst: *mut Value, mark: u64) {
     let c = unsafe { ctx(c) };
     c.status = 0;
@@ -845,7 +854,11 @@ macro_rules! helpers {
                 Ok(Helpers {
                     $($field: {
                         let mut sig: Signature = module.make_signature();
-                        $(sig.params.push(AbiParam::new(types::$p));)*
+                        // Rust expects callers to zero-extend narrow integer arguments.
+                        $(sig.params.push(match types::$p {
+                            types::I8 => AbiParam::new(types::I8).uext(),
+                            t => AbiParam::new(t),
+                        });)*
                         $(sig.returns.push(AbiParam::new(types::$r));)?
                         module.declare_function(stringify!($func), Linkage::Import, &sig)?
                     },)*
@@ -917,6 +930,7 @@ helpers! {
     run_parallel = novo_run_parallel(I64, I64, I64, I64, I64);
     parallel_map = novo_parallel_map(I64, I64, I64, I64, I64);
     try_mark = novo_try_mark(I64) -> I64;
+    through = novo_through(I64, I32, I64);
     take_error = novo_take_error(I64, I64, I64);
     init_module = novo_init_module(I64, I32, I64);
     eval_closed = novo_eval_closed(I64, I64, I64);

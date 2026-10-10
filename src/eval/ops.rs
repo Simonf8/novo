@@ -107,6 +107,21 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> R {
         },
         BinOp::Eq => Ok(Bool(equal(a, b))),
         BinOp::Ne => Ok(Bool(!equal(a, b))),
+        // Float comparisons follow IEEE 754: any comparison with NaN is false.
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            if matches!((a, b), (Float(_), Int(_) | Float(_)) | (Int(_), Float(_))) =>
+        {
+            let (x, y) = (
+                a.as_f64().unwrap_or(f64::NAN),
+                b.as_f64().unwrap_or(f64::NAN),
+            );
+            Ok(Bool(match op {
+                BinOp::Lt => x < y,
+                BinOp::Le => x <= y,
+                BinOp::Gt => x > y,
+                _ => x >= y,
+            }))
+        }
         BinOp::Lt => compare(a, b).map(|o| Bool(o == Ordering::Less)),
         BinOp::Le => compare(a, b).map(|o| Bool(o != Ordering::Greater)),
         BinOp::Gt => compare(a, b).map(|o| Bool(o == Ordering::Greater)),

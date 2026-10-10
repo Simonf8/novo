@@ -1,0 +1,9 @@
+# Comparisons with NaN are false, following IEEE 754.
+nan = 0.0 * 1e400
+show nan < 1.0, nan > 1.0, nan <= nan, 1 >= nan, nan == nan
+
+# Booleans returned by helpers display correctly next to other values.
+table = {"a": 1}
+words = ["b"]
+found = table.has("x")
+show found, words[0]
