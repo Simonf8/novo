@@ -72,8 +72,9 @@ pub struct Interp {
     out: Arc<Mutex<BufWriter<Stdout>>>,
     args: Arc<Vec<String>>,
     native: Option<Arc<crate::native::Native>>,
-    /// Compiled code for functions called as values, such as closures.
-    closure_entries: Arc<Vec<std::sync::OnceLock<Option<crate::native::Entry>>>>,
+    /// Compiled code for functions reached without a recorded instantiation:
+    /// closures, function values and dynamically dispatched methods.
+    dynamic_entries: Arc<Vec<std::sync::OnceLock<Option<crate::native::Entry>>>>,
     tensors: Arc<tensor::State>,
 }
 
@@ -85,7 +86,7 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
     let entry = prog.entry;
     let prog = Arc::new(prog);
     let native = if native { crate::native::Native::new(prog.clone()).map(Arc::new) } else { None };
-    let closure_entries = Arc::new((0..prog.funcs.len()).map(|_| std::sync::OnceLock::new()).collect());
+    let dynamic_entries = Arc::new((0..prog.funcs.len()).map(|_| std::sync::OnceLock::new()).collect());
     let interp = Interp {
         prog,
         globals: Arc::new(globals),
@@ -93,7 +94,7 @@ pub fn run(prog: Program, args: Vec<String>, native: bool) -> Result<(), RtError
         out: Arc::new(Mutex::new(BufWriter::new(std::io::stdout()))),
         args: Arc::new(args),
         native,
-        closure_entries,
+        dynamic_entries,
         tensors: Arc::default(),
     };
     let handle = std::thread::Builder::new()
@@ -174,11 +175,13 @@ impl Interp {
     /// with spare capacity to avoid reallocating.
     pub(crate) fn call_func(&self, fid: FuncId, args: Vec<Value>, closure: Option<Arc<Closure>>, span: Span) -> Eval {
         let f = &self.prog.funcs[fid.0 as usize];
-        if let (Some(c), Some(native)) = (&closure, &self.native) {
-            if args.len() == f.params {
-                if let Some(entry) = self.closure_entries[fid.0 as usize].get_or_init(|| native.entry(fid, &[])) {
+        if let Some(native) = &self.native {
+            if args.len() == f.params && f.name != "<module>" {
+                if let Some(entry) = self.dynamic_entries[fid.0 as usize].get_or_init(|| native.entry(fid, &[])) {
                     let mut all = args;
-                    all.extend(c.captures.iter().cloned());
+                    if let Some(c) = &closure {
+                        all.extend(c.captures.iter().cloned());
+                    }
                     return entry.call(self, &all, DEPTH.with(Cell::get), span).map_err(|e| e.through(&f.name, span));
                 }
             }
