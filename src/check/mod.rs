@@ -912,10 +912,15 @@ impl Checker {
             "None" => Some(Ty::None),
             "Any" => Some(Ty::Any),
             "Tensor" if t.args.is_empty() => Some(Ty::tensor()),
-            "Optimizer" => Some(Ty::Optimizer),
-            "Tokenizer" => Some(Ty::Tokenizer),
             _ => None,
         };
+        // Library types give way to a class of the same name.
+        let simple = simple.or_else(|| match (t.name.as_str(), self.lookup(&t.name)) {
+            (_, Some(Resolved::Class(_))) => None,
+            ("Optimizer", _) => Some(Ty::Optimizer),
+            ("Tokenizer", _) => Some(Ty::Tokenizer),
+            _ => None,
+        });
         if let Some(ty) = simple {
             arity(self, 0);
             return ty;
